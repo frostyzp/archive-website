@@ -1,0 +1,21 @@
+{
+  "name": "archive-website",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --port 5190",
+    "build": "vite build",
+    "preview": "vite preview --port 5190"
+  },
+  "dependencies": {
+    "dialkit": "^1.2.0",
+    "motion": "^12",
+    "papaparse": "^5.5.3",
+    "react": "^19",
+    "react-dom": "^19"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4",
+    "vite": "^6"
+  }
+}
