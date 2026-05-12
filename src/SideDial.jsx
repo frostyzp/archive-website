@@ -51,8 +51,8 @@ const SNAP_EASE = makeCubicBezier(0.77, 0, 0.18, 1);
 // then fades the dial in after a short delay, so the user sees the dial
 // appear *mid-spin* and ride the rest of the rotation into place. Standard
 // ease-out-quart curve so the spin decelerates as it settles.
-const INTRO_SPIN_TURNS = 1.25;
-const INTRO_SPIN_DURATION = 1300;
+const INTRO_SPIN_TURNS = 2.5;
+const INTRO_SPIN_DURATION = 2400;
 const INTRO_SPIN_START_DELAY = 0;
 const INTRO_SPIN_EASE = makeCubicBezier(0.165, 0.84, 0.44, 1);
 
@@ -601,6 +601,8 @@ export function HorizontalConfessionStack({
     .join(' ');
 
   const n = confessions.length;
+  const nRef = useRef(n);
+  nRef.current = n;
   // Which card the cursor is currently over (one card at a time). Drives the
   // metadata overlay (globalId / tags / transcription) on hover.
   const [hoveredKey, setHoveredKey] = useState(null);
@@ -648,6 +650,11 @@ export function HorizontalConfessionStack({
   const copyWidthRef = useRef(0);
   // Has the initial scroll into the middle copy happened yet?
   const hasInitialScrolledRef = useRef(false);
+
+  // Keep ref aligned with props on every render so useLayoutEffect (mount)
+  // and timeouts see the latest index — parent may align activeIndex to the
+  // dial category after the first paint.
+  activeIndexRef.current = activeIndex;
 
   const setActiveFromUserScroll = (i) => {
     activeIndexSourceRef.current = 'user';
@@ -752,7 +759,7 @@ export function HorizontalConfessionStack({
         return;
       }
       const cards = el.querySelectorAll('[data-card]');
-      const card = cards[MIDDLE_COPY * n + activeIndex];
+      const card = cards[MIDDLE_COPY * n + activeIndexRef.current];
       if (!card) {
         requestAnimationFrame(tryInit);
         return;
@@ -787,6 +794,30 @@ export function HorizontalConfessionStack({
       // correct copy width going forward, and recompute tilts now that
       // image widths are stable.
       measureCopyWidth();
+      // Images changing intrinsic widths can leave the strip scrolled to a
+      // "nearest" card that no longer matches `activeIndex` — re-center the
+      // middle copy of the logical active card so one image is clearly active
+      // on landing (and after decode/layout).
+      const el = scrollRef.current;
+      const ni = nRef.current;
+      if (el && hasInitialScrolledRef.current && ni > 0) {
+        const cards = el.querySelectorAll('[data-card]');
+        const ai = activeIndexRef.current;
+        const card = cards[MIDDLE_COPY * ni + ai];
+        if (card) {
+          const target = Math.max(
+            0,
+            card.offsetLeft + card.offsetWidth / 2 - el.offsetWidth / 2
+          );
+          isProgScrollingRef.current = true;
+          progScrollTargetRef.current = target;
+          el.scrollLeft = target;
+          requestAnimationFrame(() => {
+            isProgScrollingRef.current = false;
+            progScrollTargetRef.current = null;
+          });
+        }
+      }
       updateCardTilts();
     }, 800);
     return () => clearTimeout(t);
@@ -795,7 +826,6 @@ export function HorizontalConfessionStack({
 
   // ── External activeIndex changes → scroll to closest copy ──
   useEffect(() => {
-    activeIndexRef.current = activeIndex;
     if (activeIndexSourceRef.current === 'user') {
       activeIndexSourceRef.current = 'external';
       return;
@@ -944,7 +974,11 @@ export function HorizontalConfessionStack({
       el.scrollLeft = newLeft;
     }
 
-    if (logicalIdx !== activeIndexRef.current) {
+    // Until layout has settled, ignore geometry-derived index changes. Early
+    // scroll/reflow events otherwise mark the source as 'user' and skip the
+    // parent's dial-aligned scroll — leaving no card matching `activeIndex`
+    // (everything reads as inactive / blurred).
+    if (layoutSettledRef.current && logicalIdx !== activeIndexRef.current) {
       setActiveFromUserScroll(logicalIdx);
     }
 
@@ -982,10 +1016,11 @@ export function HorizontalConfessionStack({
         // card appears first and its neighbours wash in around it. Outer
         // copies (off-screen buffer for infinite scroll) never get
         // staggered since the user can't see them entering. Per-step
-        // ≈60ms (clearly perceptible) capped at 600ms total cascade.
+        // spacing (seconds between each ring from the active card) capped
+        // so very long lists do not wait forever on the far edges.
         const staggerDelay =
           item.copy === MIDDLE_COPY
-            ? Math.min(Math.abs(item.logicalIndex - activeIndex) * 0.06, 0.6)
+            ? Math.min(Math.abs(item.logicalIndex - activeIndex) * 0.12, 1.15)
             : 0;
         return (
           <motion.div

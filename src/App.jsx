@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import { motion, AnimatePresence, useReducedMotion } from 'motion/react';
 import { Text } from './text';
 import { Sidebar, SIDEBAR_WIDTH, SIDEBAR_PEEK } from './Sidebar';
@@ -249,6 +249,8 @@ function LandingPage({ onEnter }) {
                   letterSpacing: '0.01em',
                   color: '#e5e5e5',
                   margin: 0,
+                  textShadow:
+                    '0 0 28px rgba(255, 255, 255, 0.45), 0 0 56px rgba(255, 255, 255, 0.22), 0 0 96px rgba(255, 255, 255, 0.12)',
                 }}
               >
                 What we tell AI
@@ -384,6 +386,29 @@ function useArchiveNavCompact() {
   return compact;
 }
 
+// Fixed wash behind archive top chrome (black → transparent) so labels stay
+// legible when grid content scrolls underneath.
+const ARCHIVE_NAV_GRADIENT_HEIGHT = 152;
+
+function ArchiveNavGradientWash() {
+  return (
+    <div
+      aria-hidden="true"
+      style={{
+        position: 'fixed',
+        top: 0,
+        left: 0,
+        right: 0,
+        height: ARCHIVE_NAV_GRADIENT_HEIGHT,
+        zIndex: 150,
+        pointerEvents: 'none',
+        background:
+          'linear-gradient(to bottom, rgba(0, 0, 0, 0.88) 0%, rgba(0, 0, 0, 0.42) 52%, rgba(0, 0, 0, 0) 100%)',
+      }}
+    />
+  );
+}
+
 function ViewToggle({
   view,
   onChange,
@@ -466,12 +491,13 @@ function SiteTitle() {
         zIndex: 200,
         padding: '6px 12px',
         color: '#fdfdfd',
-        fontFamily: 'var(--font-mono)',
-        fontSize: 11,
-        letterSpacing: '0.14em',
-        lineHeight: 1.06,
-        opacity: 0.85,
-        textTransform: 'uppercase',
+        fontFamily: "'Reckless Italic', 'News Plantin', Georgia, serif",
+        fontSize: 20,
+        fontWeight: 400,
+        letterSpacing: '0.02em',
+        lineHeight: 1.1,
+        opacity: 0.9,
+        textTransform: 'none',
         pointerEvents: 'none',
       }}
     >
@@ -514,6 +540,10 @@ function AboutHeader({ onClick, open, stacked = false }) {
   );
 }
 
+/** Kit (ConvertKit) inline form — script replaces this node with the form UI. */
+const ABOUT_KIT_FORM_UID = '4e99802b9e';
+const ABOUT_KIT_SCRIPT_SRC = `https://synthetic-wisdom-studio.kit.com/${ABOUT_KIT_FORM_UID}/index.js`;
+
 /**
  * Centered about modal. Mirrors the Lightbox motion choreography (paired
  * backdrop blur + card scale, ESC to close, click-out to close, ~20% faster
@@ -522,6 +552,24 @@ function AboutHeader({ onClick, open, stacked = false }) {
  */
 function AboutModal({ open, onClose }) {
   const reduceMotion = useReducedMotion();
+  const kitMountRef = useRef(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const root = kitMountRef.current;
+    if (!root) return;
+
+    root.replaceChildren();
+    const script = document.createElement('script');
+    script.async = true;
+    script.dataset.uid = ABOUT_KIT_FORM_UID;
+    script.src = ABOUT_KIT_SCRIPT_SRC;
+    root.appendChild(script);
+
+    return () => {
+      root.replaceChildren();
+    };
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -582,59 +630,25 @@ function AboutModal({ open, onClose }) {
               width: '100%',
               maxHeight: '88vh',
               overflowY: 'auto',
-              padding: '40px 40px 32px',
-              background: 'rgba(15,15,18,0.96)',
-              border: '1px solid rgba(255,255,255,0.08)',
+              padding: '36px 40px 32px',
+              background: '#ebe9e4',
+              border: '1px solid rgba(0,0,0,0.08)',
               borderRadius: 8,
               cursor: 'default',
-              color: '#e5e5e5',
-              boxShadow: '0 18px 60px rgba(0,0,0,0.6)',
+              color: '#121212',
+              boxShadow: '0 20px 50px rgba(0,0,0,0.25)',
             }}
           >
-            <button
-              onClick={onClose}
-              aria-label="Close about"
-              style={{
-                position: 'absolute',
-                top: 14,
-                right: 14,
-                background: 'transparent',
-                border: '1px solid rgba(255,255,255,0.18)',
-                color: 'rgba(255,255,255,0.65)',
-                cursor: 'pointer',
-                fontSize: 16,
-                lineHeight: 1,
-                width: 28,
-                height: 28,
-                borderRadius: 4,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                fontFamily: 'var(--font-mono, ui-monospace, monospace)',
-                transition: 'color 0.2s, border-color 0.2s',
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.color = '#fff';
-                e.currentTarget.style.borderColor = 'rgba(255,255,255,0.4)';
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.color = 'rgba(255,255,255,0.65)';
-                e.currentTarget.style.borderColor = 'rgba(255,255,255,0.18)';
-              }}
-            >
-              ×
-            </button>
-
             <h2
               style={{
-                fontFamily: 'var(--font-display)',
-                fontSize: 28,
+                fontFamily: "'Reckless Italic', 'News Plantin', Georgia, serif",
+                fontSize: 32,
                 fontWeight: 400,
-                lineHeight: 1,
+                lineHeight: 1.05,
                 letterSpacing: '0.01em',
                 margin: 0,
                 marginBottom: 24,
-                textTransform: 'uppercase',
+                color: '#0f0f0f',
               }}
             >
               About
@@ -642,41 +656,83 @@ function AboutModal({ open, onClose }) {
 
             <Text
               variant="bodySmall"
-              style={{ display: 'block', lineHeight: 1.7, opacity: 0.85, fontSize: 14, marginBottom: 16 }}
+              mono={false}
+              style={{
+                display: 'block',
+                lineHeight: 1.7,
+                fontSize: 15,
+                marginBottom: 16,
+                fontFamily: "'Reckless Italic', 'News Plantin', Georgia, serif",
+                color: 'rgba(15,15,15,0.9)',
+              }}
             >
               What We Tell AI is a collection of anonymous notes people have written about their relationship with artificial intelligence.
             </Text>
 
             <Text
               variant="bodySmall"
-              style={{ display: 'block', lineHeight: 1.7, opacity: 0.75, fontSize: 14, marginBottom: 16 }}
+              mono={false}
+              style={{
+                display: 'block',
+                lineHeight: 1.7,
+                fontSize: 15,
+                marginBottom: 16,
+                fontFamily: "'Reckless Italic', 'News Plantin', Georgia, serif",
+                color: 'rgba(15,15,15,0.82)',
+              }}
             >
               This anthropological art project documents AI&rsquo;s growing presence in the most intimate details of our lives.
             </Text>
 
             <Text
               variant="bodySmall"
-              style={{ display: 'block', lineHeight: 1.7, opacity: 0.65, fontSize: 14, marginBottom: 18 }}
+              mono={false}
+              style={{
+                display: 'block',
+                lineHeight: 1.7,
+                fontSize: 15,
+                marginBottom: 18,
+                fontFamily: "'Reckless Italic', 'News Plantin', Georgia, serif",
+                color: 'rgba(15,15,15,0.75)',
+              }}
             >
               Each handwritten note is collected in public parks, on street corners, and even at AI conferences.
             </Text>
 
-            <Text variant="caption" mono style={{ display: 'block', opacity: 0.6, letterSpacing: '0.12em' }}>
+            <Text
+              variant="caption"
+              mono
+              style={{
+                display: 'block',
+                color: 'rgba(0,0,0,0.52)',
+                letterSpacing: '0.14em',
+              }}
+            >
               Collection is ongoing — get in touch!
             </Text>
+
+            <div
+              ref={kitMountRef}
+              style={{
+                marginTop: 22,
+                width: '100%',
+                minHeight: 1,
+              }}
+            />
 
             <div
               style={{
                 marginTop: 28,
                 paddingTop: 18,
-                borderTop: '1px solid rgba(255,255,255,0.08)',
+                borderTop: '1px solid rgba(0,0,0,0.1)',
                 display: 'flex',
                 flexDirection: 'column',
                 gap: 4,
                 fontFamily: 'var(--font-mono)',
                 fontSize: 10,
-                letterSpacing: '0.1em',
-                color: 'rgba(255,255,255,0.45)',
+                letterSpacing: '0.12em',
+                textTransform: 'uppercase',
+                color: 'rgba(0,0,0,0.45)',
               }}
             >
               <div>Project by Olivia</div>
@@ -1097,19 +1153,20 @@ function ThemeView({
           confessions={confessions}
           activeIndex={activeIndex}
           onActiveChange={setActiveIndex}
-          entranceDelay={1.5}
+          entranceDelay={2.35}
         />
       </div>
 
       {/* Outer div keeps the centering transform stable; inner motion.div
           owns the opacity fade so Motion doesn't fight the translateX.
           Negative bottom drops the dial below the viewport edge so its
-          half-disc reads as rising up from beneath the fold.
+          half-disc reads as rising up from beneath the fold (-24px ≈ 12px
+          lower than the previous -12px anchor).
           Within-category ticks are drawn on the dial canvas (active sector). */}
       <div
         style={{
           position: 'absolute',
-          bottom: -12,
+          bottom: -24,
           left: '50%',
           transform: 'translateX(-50%)',
           zIndex: 10,
@@ -1328,6 +1385,7 @@ function ArchivePage() {
       transition={{ duration: 0.6, ease }}
       style={{ height: '100vh', position: 'relative', overflow: 'hidden', background: '#111' }}
     >
+      <ArchiveNavGradientWash />
       <SiteTitle />
       {compactNav ? (
         <div
