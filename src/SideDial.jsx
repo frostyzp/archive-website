@@ -76,12 +76,19 @@ export function BottomCompassDial({
   activeEmotion,
   onEmotionChange,
   size = SIZE,
+  /** When set, thin radial spokes in the active dial sector (one per note in category). */
+  breadcrumb = null,
 }) {
   const canvasRef = useRef(null);
   const currentAngleRef = useRef(0);
   const rafRef = useRef(null);
   const snapAnimRef = useRef(null);
   const snapTimerRef = useRef(null);
+  const pipAnimRafRef = useRef(null);
+  const breadcrumbRef = useRef(breadcrumb);
+  /** Smoothed outer endpoint radius (px) per category tick along each radial. */
+  const pipRadialOuterRef = useRef([]);
+  breadcrumbRef.current = breadcrumb;
   // Per-emotion "active progress" (0 = inactive, 1 = fully active). Animated
   // toward the target whenever activeEmotion changes so the highlight
   // crossfades over LABEL_FADE_MS instead of snapping instantly.
@@ -148,11 +155,39 @@ export function BottomCompassDial({
     const active = activeEmotionRef.current;
     const localStep = (Math.PI * 2) / emos.length;
     const offset = -Math.PI / 2; // active label points UP
+    const innerStart = R * 0.06;
+    const dividerOuter = R * 0.48;
+    const DIAL_SPOKE_GREY = 'rgba(160,160,160,0.45)';
+
+    const bc = breadcrumbRef.current;
+    const pipLens = pipRadialOuterRef.current;
+    // Smoothed outer radius (px) along each pip's radial; inactive = short
+    // spoke, active = modestly longer spoke (still grey, not full reach to label).
+    const rStart = innerStart;
+    const rSpan = Math.max(8, labelR - innerStart);
+    const SHORT_R = rStart + rSpan * 0.18;
+    const LONG_R = rStart + rSpan * 0.44;
+    let pipNeedsFrame = false;
+    if (bc && bc.total > 1) {
+      const n = bc.total;
+      if (pipLens.length !== n) {
+        pipLens.length = n;
+        for (let i = 0; i < n; i++) pipLens[i] = SHORT_R;
+      }
+      for (let i = 0; i < n; i++) {
+        const target = i === bc.position ? LONG_R : SHORT_R;
+        const cur = pipLens[i];
+        const next = cur + (target - cur) * 0.2;
+        pipLens[i] = next;
+        if (Math.abs(target - next) > 0.45) pipNeedsFrame = true;
+      }
+    } else if (pipLens.length > 0) {
+      pipLens.length = 0;
+    }
 
     // Divider lines: start at a small inner radius (so the round caps
     // don't all stack on top of each other at exact center, which would
     // produce a visibly brighter blob) and extend to R * 0.54.
-    const innerStart = R * 0.06;
     emos.forEach((_, i) => {
       const dividerAngle = angle + i * localStep + offset + localStep / 2;
       ctx.beginPath();
@@ -161,17 +196,44 @@ export function BottomCompassDial({
         CY + Math.sin(dividerAngle) * innerStart,
       );
       ctx.lineTo(
-        CX + Math.cos(dividerAngle) * R * 0.54,
-        CY + Math.sin(dividerAngle) * R * 0.54,
+        CX + Math.cos(dividerAngle) * dividerOuter,
+        CY + Math.sin(dividerAngle) * dividerOuter,
       );
-      ctx.strokeStyle = 'rgba(160,160,160,0.45)';
-      ctx.lineWidth = 5;
+      ctx.strokeStyle = DIAL_SPOKE_GREY;
+      ctx.lineWidth = 4;
       // `round` line caps give the divider tips a soft semicircle finish
       // instead of a flat blunt edge, which matches the dial's organic
       // compass-needle aesthetic.
       ctx.lineCap = 'round';
       ctx.stroke();
     });
+
+    // Within-category ticks: thin radial spokes in the active sector (same
+    // origin as the dial dividers). Inactive = short grey spoke; active =
+    // slightly longer grey spoke (no white highlight).
+    if (bc && bc.total > 1) {
+      const activeIdx = emos.findIndex((e) => e.id === active);
+      if (activeIdx >= 0) {
+        const thetaL = angle + activeIdx * localStep + offset - localStep / 2;
+        const thetaSpan = localStep;
+        const LINE_W = Math.max(1, size * 0.0024);
+        for (let k = 0; k < bc.total; k++) {
+          const t = (k + 0.5) / bc.total;
+          const theta = thetaL + t * thetaSpan;
+          const rx = Math.cos(theta);
+          const ry = Math.sin(theta);
+          const r1 = pipLens[k] ?? SHORT_R;
+          const isOn = k === bc.position;
+          ctx.beginPath();
+          ctx.moveTo(CX + rx * rStart, CY + ry * rStart);
+          ctx.lineTo(CX + rx * r1, CY + ry * r1);
+          ctx.strokeStyle = isOn ? DIAL_SPOKE_GREY : 'rgba(118,118,118,0.4)';
+          ctx.lineWidth = isOn ? LINE_W * 1.15 : LINE_W;
+          ctx.lineCap = 'round';
+          ctx.stroke();
+        }
+      }
+    }
 
     emos.forEach((emo, i) => {
       const a = angle + i * localStep + offset;
@@ -187,6 +249,7 @@ export function BottomCompassDial({
       const g = Math.round(255 + (229 - 255) * p);
       const b = Math.round(255 + (229 - 255) * p);
       const alpha = 0.28 + (1 - 0.28) * p;
+      const inactiveAmt = 1 - p;
       ctx.save();
       ctx.translate(lx, ly);
       // Rotate so labels read horizontally when at the top of the dial; the
@@ -194,18 +257,39 @@ export function BottomCompassDial({
       // is the inverse of the offset above, so the active label has zero
       // rotation.)
       ctx.rotate(a + Math.PI / 2);
+      if (inactiveAmt > 0.001) {
+        // Simple Gaussian blur for inactive labels (no grain overlay — that
+        // composite was reading as a hard edge around the glyph bounds).
+        const blurPx = Math.min(2.1, inactiveAmt * 1.9);
+        ctx.filter = `blur(${blurPx.toFixed(2)}px)`;
+      } else {
+        ctx.filter = 'none';
+      }
       ctx.font = `${fontWeight} ${fontSize}px 'News Plantin', Georgia, serif`;
       ctx.fillStyle = `rgba(${r},${g},${b},${alpha})`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.fillText(emo.label, 0, 0);
+      ctx.filter = 'none';
+
       ctx.restore();
     });
+
+    if (pipNeedsFrame && pipAnimRafRef.current == null) {
+      pipAnimRafRef.current = requestAnimationFrame(() => {
+        pipAnimRafRef.current = null;
+        draw();
+      });
+    }
 
     // Center hub removed — divider lines' rounded caps converge at the
     // center on their own; an explicit hub circle felt redundant.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [size]);
+
+  useEffect(() => {
+    draw();
+  }, [breadcrumb, draw]);
 
   // When the active emotion changes, animate every label's fade progress
   // toward its target (1 for the new active, 0 for the rest) over LABEL_FADE_MS.
@@ -377,6 +461,10 @@ export function BottomCompassDial({
       if (snapTimerRef.current) clearTimeout(snapTimerRef.current);
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
       if (snapAnimRef.current) cancelAnimationFrame(snapAnimRef.current);
+      if (pipAnimRafRef.current) {
+        cancelAnimationFrame(pipAnimRafRef.current);
+        pipAnimRafRef.current = null;
+      }
     };
   }, [draw]);
 
@@ -442,76 +530,29 @@ export const BOTTOM_DIAL_SIZE = SIZE;
  */
 export const getBottomDialVisibleHeight = (size) => size / 2;
 
-/* ── Category Breadcrumb (top-pinned) ──────────── */
-
 /**
- * Pip row showing the active confession's position within its category.
- * One pip per note in the category; the active note's pip is bright, the
- * others are dimmed. Designed to be pinned at the top of the theme view
- * — separate from the cards so it stays put as cards scroll.
- *
- * Pass the FULL confessions list (so total per category can be computed)
- * and the currently-active confession. Returns null if the active
- * confession's category has only one note (no need for a breadcrumb).
+ * Slot of `activeConfession` within its category for dial tick marks.
+ * Returns null when the category has 0 or 1 note (no ticks).
  */
-export function CategoryBreadcrumb({ confessions, activeConfession }) {
-  // Memoize the per-confession {position, total} map so this isn't
-  // recomputed on every render driven by scroll.
-  const categoryInfo = useMemo(() => {
-    const totals = new Map();
-    confessions.forEach((c) => {
-      totals.set(c.category, (totals.get(c.category) || 0) + 1);
-    });
-    const seen = new Map();
-    const map = new Map();
-    confessions.forEach((c) => {
-      const pos = seen.get(c.category) || 0;
-      map.set(c.id, { position: pos, total: totals.get(c.category) || 1 });
-      seen.set(c.category, pos + 1);
-    });
-    return map;
-  }, [confessions]);
-
+export function getCategoryBreadcrumbInfo(confessions, activeConfession) {
   if (!activeConfession) return null;
-  const info = categoryInfo.get(activeConfession.id);
+  const totals = new Map();
+  confessions.forEach((c) => {
+    totals.set(c.category, (totals.get(c.category) || 0) + 1);
+  });
+  const seen = new Map();
+  const map = new Map();
+  confessions.forEach((c) => {
+    const pos = seen.get(c.category) || 0;
+    map.set(c.id, { position: pos, total: totals.get(c.category) || 1 });
+    seen.set(c.category, pos + 1);
+  });
+  const info = map.get(activeConfession.id);
   if (!info || info.total <= 1) return null;
-
-  return (
-    <div
-      style={breadcrumbStyles.row}
-      aria-label={`Note ${info.position + 1} of ${info.total} in ${activeConfession.category}`}
-    >
-      {Array.from({ length: info.total }).map((_, i) => (
-        <img
-          key={i}
-          src="/breadcrumb.png"
-          alt=""
-          draggable={false}
-          style={{
-            ...breadcrumbStyles.pip,
-            opacity: i === info.position ? 1 : 0.28,
-          }}
-        />
-      ))}
-    </div>
-  );
+  return { total: info.total, position: info.position };
 }
 
-const breadcrumbStyles = {
-  row: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    pointerEvents: 'none',
-  },
-  pip: {
-    display: 'block',
-    width: 14,
-    height: 'auto',
-    transition: 'opacity 240ms cubic-bezier(0.22, 1, 0.36, 1)',
-  },
-};
+/* ── Category Breadcrumb (dial canvas ticks) ───── */
 
 /* ── Horizontal Cards Stack ────────────────────── */
 
@@ -926,9 +967,8 @@ export function HorizontalConfessionStack({
         // them so the user has to scroll/click to bring a card into focus
         // before they can read its details.
         const showMeta = isActive && hoveredKey === cardKey;
-        // Breadcrumb pip row used to render here per-active-card; it now
-        // lives in <CategoryBreadcrumb> pinned at the top of the theme
-        // view so it stays put as cards scroll past.
+        // Breadcrumb ticks used to render here; they now live in
+        // BottomCompassDial as thin radial spokes in the active sector.
         // Stagger the entrance as a wave radiating outward from the active
         // card — that's where the user is focused on mount, so the focal
         // card appears first and its neighbours wash in around it. Outer

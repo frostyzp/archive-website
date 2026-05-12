@@ -290,15 +290,18 @@ function AboutPanel() {
       </div>
 
       <Text variant="bodySmall" style={{ lineHeight: 1.7, opacity: 0.85, fontSize: 13 }}>
-        AI Confessions is an ongoing archive of anonymous reflections from
-        people navigating life alongside artificial intelligence — the mundane,
-        the intimate, and the unspeakable.
+        What We Tell AI is a collection of anonymous notes people have written
+        about their relationship with artificial intelligence.
+      </Text>
+
+      <Text variant="bodySmall" style={{ lineHeight: 1.7, opacity: 0.75, fontSize: 13 }}>
+        This anthropological art project documents AI&rsquo;s growing presence in
+        the most intimate details of our lives.
       </Text>
 
       <Text variant="bodySmall" style={{ lineHeight: 1.7, opacity: 0.65, fontSize: 13 }}>
-        Notes are collected in person, on paper, in wooden boxes left in cafés,
-        classrooms, and gallery corners across the country. Each confession is
-        transcribed verbatim and preserved here without edit or attribution.
+        Each handwritten note is collected in public parks, on street corners,
+        and even at AI conferences.
       </Text>
 
       {/* Email signup */}
@@ -317,7 +320,7 @@ function AboutPanel() {
           mono
           style={{ fontSize: 10, opacity: 0.55, letterSpacing: '0.12em' }}
         >
-          Stay in the loop
+          Collection is ongoing — get in touch!
         </Text>
 
         {!submitted ? (

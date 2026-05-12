@@ -5,7 +5,7 @@ import { Sidebar, SIDEBAR_WIDTH, SIDEBAR_PEEK } from './Sidebar';
 import {
   BOTTOM_DIAL_SIZE,
   BottomCompassDial,
-  CategoryBreadcrumb,
+  getCategoryBreadcrumbInfo,
   HorizontalConfessionStack,
 } from './SideDial';
 import { CONFESSIONS as FALLBACK_CONFESSIONS } from './confessions';
@@ -252,6 +252,21 @@ function LandingPage({ onEnter }) {
               >
                 WHAT WE TELL AI
               </h1>
+              <p
+                style={{
+                  margin: '18px 0 0',
+                  maxWidth: 520,
+                  fontFamily: "'OT Brut', 'News Plantin', Georgia, serif",
+                  fontSize: 18,
+                  fontWeight: 400,
+                  lineHeight: 1.45,
+                  letterSpacing: '0.02em',
+                  color: 'rgba(229, 229, 229, 0.78)',
+                }}
+              >
+                Anonymous confessions about AI&rsquo;s presence in our intimate
+                lives
+              </p>
             </motion.div>
 
             <motion.button
@@ -353,34 +368,81 @@ function LandingPage({ onEnter }) {
   );
 }
 
-function ViewToggle({ view, onChange, sidebarInset = SIDEBAR_WIDTH }) {
+// Matches grid breakpoints in this file; also drives archive top chrome layout.
+const ARCHIVE_NAV_COMPACT_MQ = '(max-width: 760px)';
+
+function useArchiveNavCompact() {
+  const [compact, setCompact] = useState(() =>
+    typeof window !== 'undefined' && window.matchMedia(ARCHIVE_NAV_COMPACT_MQ).matches
+  );
+  useEffect(() => {
+    const mq = window.matchMedia(ARCHIVE_NAV_COMPACT_MQ);
+    const onChange = () => setCompact(mq.matches);
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
+  return compact;
+}
+
+function ViewToggle({
+  view,
+  onChange,
+  sidebarInset = SIDEBAR_WIDTH,
+  stacked = false,
+  /** In mobile top bar: GRID | THEME stay on one row, not fixed to viewport. */
+  embedded = false,
+}) {
+  const columnStack = stacked && !embedded;
   return (
     <motion.div
       initial={{ opacity: 0, y: -12 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.5, ease, delay: 0.2 }}
       style={{
-        position: 'fixed',
-        top: 24,
-        left: sidebarInset,
-        right: 0,
-        marginLeft: 'auto',
-        marginRight: 'auto',
+        ...(embedded || columnStack
+          ? {
+              position: 'relative',
+              left: 'auto',
+              right: 'auto',
+              marginLeft: 0,
+              marginRight: 0,
+            }
+          : {
+              position: 'fixed',
+              top: 24,
+              left: sidebarInset,
+              right: 0,
+              marginLeft: 'auto',
+              marginRight: 'auto',
+            }),
         width: 'fit-content',
         zIndex: 200,
         display: 'flex',
+        flexDirection: columnStack ? 'column' : 'row',
         alignItems: 'center',
-        gap: 12,
+        gap: columnStack ? 10 : 12,
         padding: '6px 12px',
         background: 'transparent',
         border: 'none',
         fontFamily: 'var(--font-mono)',
+        flexShrink: 0,
       }}
     >
       <ToggleButton active={view === 'grid'} onClick={() => onChange('grid')}>
         GRID
       </ToggleButton>
-      <div style={{ width: 1, height: 14, background: 'rgba(255,255,255,0.25)' }} />
+      {columnStack ? (
+        <div
+          style={{
+            width: 40,
+            height: 1,
+            background: 'rgba(255,255,255,0.25)',
+            flexShrink: 0,
+          }}
+        />
+      ) : (
+        <div style={{ width: 1, height: 14, background: 'rgba(255,255,255,0.25)' }} />
+      )}
       <ToggleButton active={view === 'theme'} onClick={() => onChange('theme')}>
         THEME
       </ToggleButton>
@@ -389,6 +451,9 @@ function ViewToggle({ view, onChange, sidebarInset = SIDEBAR_WIDTH }) {
 }
 
 function SiteTitle() {
+  const compactNav = useArchiveNavCompact();
+  if (compactNav) return null;
+
   return (
     <motion.div
       initial={{ opacity: 0, y: -12 }}
@@ -415,7 +480,7 @@ function SiteTitle() {
   );
 }
 
-function AboutHeader({ onClick, open }) {
+function AboutHeader({ onClick, open, stacked = false }) {
   return (
     <motion.button
       initial={{ opacity: 0, y: -12 }}
@@ -425,9 +490,9 @@ function AboutHeader({ onClick, open }) {
       aria-expanded={open}
       aria-label="Open about panel"
       style={{
-        position: 'fixed',
-        top: 24,
-        right: 24,
+        ...(stacked
+          ? { position: 'relative', top: 'auto', right: 'auto' }
+          : { position: 'fixed', top: 24, right: 24 }),
         zIndex: 200,
         background: 'transparent',
         border: 'none',
@@ -579,18 +644,25 @@ function AboutModal({ open, onClose }) {
               variant="bodySmall"
               style={{ display: 'block', lineHeight: 1.7, opacity: 0.85, fontSize: 14, marginBottom: 16 }}
             >
-              What We Tell AI is an anthropological art project documenting
-              how AI influences the most intimate details of our lives.
+              What We Tell AI is a collection of anonymous notes people have written about their relationship with artificial intelligence.
             </Text>
 
             <Text
               variant="bodySmall"
-              style={{ display: 'block', lineHeight: 1.7, opacity: 0.65, fontSize: 14 }}
+              style={{ display: 'block', lineHeight: 1.7, opacity: 0.75, fontSize: 14, marginBottom: 16 }}
             >
-              Notes are collected in person, on paper, in wooden boxes left in
-              cafés, classrooms, and gallery corners across the country. Each
-              confession is transcribed verbatim and preserved here without
-              edit or attribution.
+              This anthropological art project documents AI&rsquo;s growing presence in the most intimate details of our lives.
+            </Text>
+
+            <Text
+              variant="bodySmall"
+              style={{ display: 'block', lineHeight: 1.7, opacity: 0.65, fontSize: 14, marginBottom: 18 }}
+            >
+              Each handwritten note is collected in public parks, on street corners, and even at AI conferences.
+            </Text>
+
+            <Text variant="caption" mono style={{ display: 'block', opacity: 0.6, letterSpacing: '0.12em' }}>
+              Collection is ongoing — get in touch!
             </Text>
 
             <div
@@ -890,6 +962,11 @@ function ThemeView({
   dialSize = BOTTOM_DIAL_SIZE,
   dialLabelInset = Math.round(BOTTOM_DIAL_SIZE * 0.232 + 40),
 }) {
+  const dialBreadcrumb = useMemo(
+    () => getCategoryBreadcrumbInfo(confessions, activeConfession),
+    [confessions, activeConfession]
+  );
+
   return (
     <motion.div
       key="theme-view"
@@ -956,41 +1033,11 @@ function ThemeView({
         />
       </div>
 
-      {/* Breadcrumb pip row sits just above the active card (which is
-          vertically centered in the cards area). The cards container goes
-          from top:80 to bottom:dialLabelInset; the active card is 408px
-          tall and centered, so its top edge is at 50% - 204px. We offset
-          another 20px above that to give the pips clear breathing room.
-          z-index above the cards so it stays visible during scroll. */}
-      <motion.div
-        initial={{ opacity: 0, y: -6 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.4, ease, delay: 1.5 }}
-        style={{
-          position: 'absolute',
-          top: 80,
-          left: sidebarInset,
-          right: 0,
-          bottom: dialLabelInset,
-          display: 'flex',
-          justifyContent: 'center',
-          alignItems: 'center',
-          pointerEvents: 'none',
-          zIndex: 50,
-        }}
-      >
-        <div style={{ transform: 'translateY(calc(-204px - 20px))' }}>
-          <CategoryBreadcrumb
-            confessions={confessions}
-            activeConfession={activeConfession}
-          />
-        </div>
-      </motion.div>
-
       {/* Outer div keeps the centering transform stable; inner motion.div
           owns the opacity fade so Motion doesn't fight the translateX.
           Negative bottom drops the dial below the viewport edge so its
-          half-disc reads as rising up from beneath the fold. */}
+          half-disc reads as rising up from beneath the fold.
+          Within-category ticks are drawn on the dial canvas (active sector). */}
       <div
         style={{
           position: 'absolute',
@@ -1011,6 +1058,7 @@ function ThemeView({
             activeEmotion={activeEmotion}
             onEmotionChange={handleEmotionChange}
             size={dialSize}
+            breadcrumb={dialBreadcrumb}
           />
         </motion.div>
       </div>
@@ -1123,6 +1171,7 @@ function ArchivePage() {
   // Top-right "ABOUT" header → modal. Independent of the sidebar's About
   // panel so it works regardless of sidebar state.
   const [aboutOpen, setAboutOpen] = useState(false);
+  const compactNav = useArchiveNavCompact();
 
   // Dial size scales with the viewport so it has room to breathe on big
   // screens but doesn't dominate on small ones. The visible portion is half
@@ -1191,9 +1240,45 @@ function ArchivePage() {
       transition={{ duration: 0.6, ease }}
       style={{ height: '100vh', position: 'relative', overflow: 'hidden', background: '#111' }}
     >
-      <ViewToggle view={view} onChange={setView} sidebarInset={sidebarInset} />
       <SiteTitle />
-      <AboutHeader onClick={() => setAboutOpen(true)} open={aboutOpen} />
+      {compactNav ? (
+        <div
+          style={{
+            position: 'fixed',
+            top: 24,
+            left: 16,
+            right: 16,
+            zIndex: 200,
+            display: 'flex',
+            flexDirection: 'row',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 12,
+            pointerEvents: 'none',
+          }}
+        >
+          <div style={{ pointerEvents: 'auto', flexShrink: 0 }}>
+            <ViewToggle
+              view={view}
+              onChange={setView}
+              sidebarInset={sidebarInset}
+              embedded
+            />
+          </div>
+          <div style={{ pointerEvents: 'auto', flexShrink: 0 }}>
+            <AboutHeader
+              onClick={() => setAboutOpen(true)}
+              open={aboutOpen}
+              stacked
+            />
+          </div>
+        </div>
+      ) : (
+        <>
+          <ViewToggle view={view} onChange={setView} sidebarInset={sidebarInset} />
+          <AboutHeader onClick={() => setAboutOpen(true)} open={aboutOpen} />
+        </>
+      )}
       <AboutModal open={aboutOpen} onClose={() => setAboutOpen(false)} />
 
       <AnimatePresence mode="wait">
