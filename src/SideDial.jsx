@@ -650,6 +650,11 @@ export function HorizontalConfessionStack({
   const copyWidthRef = useRef(0);
   // Has the initial scroll into the middle copy happened yet?
   const hasInitialScrolledRef = useRef(false);
+  // Scroll-linked micro-rotation (deg) on card images; decays via rAF when idle.
+  const lastScrollLeftForRotateRef = useRef(null);
+  const scrollRotateDegRef = useRef(0);
+  const scrollTiltDecayRafRef = useRef(null);
+  const updateCardTiltsRef = useRef(() => {});
 
   // Keep ref aligned with props on every render so useLayoutEffect (mount)
   // and timeouts see the latest index — parent may align activeIndex to the
@@ -704,10 +709,10 @@ export function HorizontalConfessionStack({
   // Apply per-card arc-drop based on the card's distance from the viewport
   // center. Cards trace the TOP of a large semi-circle: the active
   // (centered) card sits at the apex; cards on the sides slide down along
-  // the upper arc as they move outward. Images don't tilt — only their
-  // vertical position changes. Done via direct DOM writes (not React
-  // state) so the transform tracks the user's scroll exactly without an
-  // extra render per frame.
+  // the upper arc as they move outward. A subtle scroll-linked `rotate()` is
+  // applied on the image wrapper (see updateCardTilts). Done via direct DOM
+  // writes (not React state) so the transform tracks the user's scroll exactly
+  // without an extra render per frame.
   const ARC_RADIUS = 2400;         // semi-circle radius in px — bigger = gentler arc
   // Hard cap on vertical drop. Set to 0 to keep cards on a flat horizontal
   // baseline as the user scrolls — no arc-drop. Bump back up (e.g. 50) to
@@ -722,6 +727,7 @@ export function HorizontalConfessionStack({
     const cards = el.querySelectorAll('[data-card]');
     if (cards.length === 0) return;
     const containerCenter = el.scrollLeft + el.offsetWidth / 2;
+    const rot = reduceMotion ? 0 : scrollRotateDegRef.current;
     cards.forEach((card) => {
       const cardCenter = card.offsetLeft + card.offsetWidth / 2;
       const distPx = cardCenter - containerCenter;
@@ -736,9 +742,28 @@ export function HorizontalConfessionStack({
 
       const tiltTarget = card.querySelector('[data-tilt-target]');
       if (tiltTarget) {
-        tiltTarget.style.transform = `translateY(${drop.toFixed(2)}px)`;
+        tiltTarget.style.transform = `translateY(${drop.toFixed(2)}px) rotate(${rot.toFixed(2)}deg)`;
       }
     });
+  };
+  updateCardTiltsRef.current = updateCardTilts;
+
+  /** After a scroll impulse, ease `scrollRotateDegRef` back to 0 so the strip settles straight. */
+  const startScrollTiltDecay = () => {
+    if (reduceMotion) return;
+    if (scrollTiltDecayRafRef.current != null) return;
+    const tick = () => {
+      if (Math.abs(scrollRotateDegRef.current) < 0.04) {
+        scrollRotateDegRef.current = 0;
+        updateCardTiltsRef.current();
+        scrollTiltDecayRafRef.current = null;
+        return;
+      }
+      scrollRotateDegRef.current *= 0.88;
+      updateCardTiltsRef.current();
+      scrollTiltDecayRafRef.current = requestAnimationFrame(tick);
+    };
+    scrollTiltDecayRafRef.current = requestAnimationFrame(tick);
   };
 
   // ── Initial scroll: drop into middle copy at activeIndex ──
@@ -866,6 +891,10 @@ export function HorizontalConfessionStack({
     return () => {
       if (progScrollSafetyTimerRef.current) clearTimeout(progScrollSafetyTimerRef.current);
       if (snapSettleTimerRef.current) clearTimeout(snapSettleTimerRef.current);
+      if (scrollTiltDecayRafRef.current != null) {
+        cancelAnimationFrame(scrollTiltDecayRafRef.current);
+        scrollTiltDecayRafRef.current = null;
+      }
     };
   }, []);
 
@@ -920,6 +949,21 @@ export function HorizontalConfessionStack({
     const el = scrollRef.current;
     if (!el) return;
 
+    const sl = el.scrollLeft;
+    const prevSl = lastScrollLeftForRotateRef.current;
+    if (!reduceMotion && prevSl !== null && !isProgScrollingRef.current) {
+      const delta = sl - prevSl;
+      if (Math.abs(delta) > 0.25) {
+        // scrollLeft increases → strip moves left → slight counter-rotation reads as "leaning into" the motion
+        scrollRotateDegRef.current = Math.max(
+          -4.2,
+          Math.min(4.2, scrollRotateDegRef.current * 0.93 - delta * 0.0095)
+        );
+        startScrollTiltDecay();
+      }
+    }
+    lastScrollLeftForRotateRef.current = sl;
+
     // Tilts follow scroll position regardless of source (user or
     // programmatic) — so smooth-snaps and dial-driven scrolls also see
     // the cards rotate as they move.
@@ -935,6 +979,7 @@ export function HorizontalConfessionStack({
       if (target != null && Math.abs(el.scrollLeft - target) < 4) {
         isProgScrollingRef.current = false;
         progScrollTargetRef.current = null;
+        lastScrollLeftForRotateRef.current = el.scrollLeft;
         if (progScrollSafetyTimerRef.current) {
           clearTimeout(progScrollSafetyTimerRef.current);
           progScrollSafetyTimerRef.current = null;
@@ -1147,10 +1192,12 @@ const st = {
     // the card wrapper's layout dimensions, so neighbouring cards aren't
     // pushed apart by metadata visibility. The 36px offset clears the
     // active card's 1.12-scaled visual extent (~6% past wrapper bottom).
+    // Slightly wider than the image so centered transcription has more
+    // line length before wrap.
     position: 'absolute',
     top: 'calc(100% + 36px)',
-    left: 0,
-    width: '100%',
+    left: -32,
+    width: 'calc(100% + 64px)',
     pointerEvents: 'none',
   },
   metaRow: {
@@ -1184,16 +1231,18 @@ const st = {
     lineHeight: 1.55,
     letterSpacing: '0.01em',
     color: 'rgba(229,229,229,0.85)',
+    textAlign: 'center',
     transition:
       'opacity 0.22s cubic-bezier(0.4, 0, 0.2, 1), transform 0.22s cubic-bezier(0.4, 0, 0.2, 1)',
-    // Cap so a long confession doesn't bleed into the dial. The sidebar
-    // still shows the full transcription for the active card.
-    maxHeight: '5.5em',
+    // Cap height so long notes do not cover the dial; sidebar still has full
+    // text. (~5.5em was ~3.5 lines and clipped mid-sentence — a bit taller
+    // keeps most confessions readable; mask only fades the very bottom.)
+    maxHeight: '8.5em',
     overflow: 'hidden',
     maskImage:
-      'linear-gradient(to bottom, #000 0, #000 70%, transparent 100%)',
+      'linear-gradient(to bottom, #000 0, #000 82%, transparent 100%)',
     WebkitMaskImage:
-      'linear-gradient(to bottom, #000 0, #000 70%, transparent 100%)',
+      'linear-gradient(to bottom, #000 0, #000 82%, transparent 100%)',
   },
   cardImg: {
     height: '100%',

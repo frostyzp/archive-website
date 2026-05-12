@@ -390,6 +390,18 @@ function useArchiveNavCompact() {
 // legible when grid content scrolls underneath.
 const ARCHIVE_NAV_GRADIENT_HEIGHT = 152;
 
+/** One vertical rhythm for fixed title / view toggle / ABOUT. */
+const ARCHIVE_NAV_CHROME_HEIGHT = 40;
+
+/** Same as dial card `metaTranscription` (SideDial.jsx). */
+const ARCHIVE_NAV_TEXT = {
+  fontFamily: 'var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace)',
+  fontSize: 11,
+  lineHeight: 1.55,
+  letterSpacing: '0.01em',
+  color: 'rgba(229,229,229,0.85)',
+};
+
 function ArchiveNavGradientWash() {
   return (
     <div
@@ -446,10 +458,11 @@ function ViewToggle({
         flexDirection: columnStack ? 'column' : 'row',
         alignItems: 'center',
         gap: columnStack ? 10 : 12,
-        padding: '6px 12px',
+        padding: '0 12px',
+        minHeight: ARCHIVE_NAV_CHROME_HEIGHT,
         background: 'transparent',
         border: 'none',
-        fontFamily: 'var(--font-mono)',
+        ...ARCHIVE_NAV_TEXT,
         flexShrink: 0,
       }}
     >
@@ -466,7 +479,7 @@ function ViewToggle({
           }}
         />
       ) : (
-        <div style={{ width: 1, height: 14, background: 'rgba(255,255,255,0.25)' }} />
+        <div style={{ width: 1, height: 17, background: 'rgba(255,255,255,0.25)' }} />
       )}
       <ToggleButton active={view === 'theme'} onClick={() => onChange('theme')}>
         DIAL
@@ -489,14 +502,16 @@ function SiteTitle() {
         top: 24,
         left: 24,
         zIndex: 200,
-        padding: '6px 12px',
-        color: '#fdfdfd',
+        height: ARCHIVE_NAV_CHROME_HEIGHT,
+        display: 'flex',
+        alignItems: 'center',
+        padding: '0 12px',
         fontFamily: "'Reckless Italic', 'News Plantin', Georgia, serif",
-        fontSize: 20,
+        fontSize: 18,
         fontWeight: 400,
+        lineHeight: 1.05,
         letterSpacing: '0.02em',
-        lineHeight: 1.1,
-        opacity: 0.9,
+        color: 'rgba(253,253,253,0.92)',
         textTransform: 'none',
         pointerEvents: 'none',
       }}
@@ -522,12 +537,11 @@ function AboutHeader({ onClick, open, stacked = false }) {
         zIndex: 200,
         background: 'transparent',
         border: 'none',
-        padding: '6px 12px',
-        color: '#fdfdfd',
-        fontFamily: 'var(--font-mono)',
-        fontSize: 11,
-        letterSpacing: '0.14em',
-        lineHeight: 1.06,
+        padding: '0 12px',
+        minHeight: ARCHIVE_NAV_CHROME_HEIGHT,
+        display: 'flex',
+        alignItems: 'center',
+        ...ARCHIVE_NAV_TEXT,
         cursor: 'pointer',
         opacity: 0.85,
         transition: 'opacity 0.2s',
@@ -545,10 +559,9 @@ const ABOUT_KIT_FORM_UID = '4e99802b9e';
 const ABOUT_KIT_SCRIPT_SRC = `https://synthetic-wisdom-studio.kit.com/${ABOUT_KIT_FORM_UID}/index.js`;
 
 /**
- * Centered about modal. Mirrors the Lightbox motion choreography (paired
- * backdrop blur + card scale, ESC to close, click-out to close, ~20% faster
- * exit, prefers-reduced-motion respected) so all overlays in the app feel
- * like they belong to the same family.
+ * Centered about modal. Backdrop + card fade in on open; on close (click-out
+ * / ESC) both exit with opacity only — no scale or drift so it reads as a
+ * simple dismiss. prefers-reduced-motion skips transforms on enter too.
  */
 function AboutModal({ open, onClose }) {
   const reduceMotion = useReducedMotion();
@@ -587,7 +600,7 @@ function AboutModal({ open, onClose }) {
     : {
         initial: { opacity: 0, backdropFilter: 'blur(0px)' },
         animate: { opacity: 1, backdropFilter: 'blur(12px)' },
-        exit: { opacity: 0, backdropFilter: 'blur(0px)' },
+        exit: { opacity: 0, backdropFilter: 'blur(12px)' },
       };
 
   const cardMotion = reduceMotion
@@ -595,7 +608,7 @@ function AboutModal({ open, onClose }) {
     : {
         initial: { opacity: 0, scale: 0.96, y: 8 },
         animate: { opacity: 1, scale: 1, y: 0 },
-        exit: { opacity: 0, scale: 0.97, y: 4 },
+        exit: { opacity: 0, scale: 1, y: 0 },
       };
 
   return (
@@ -604,7 +617,12 @@ function AboutModal({ open, onClose }) {
         <motion.div
           key="about-backdrop"
           {...backdropMotion}
-          transition={{ duration: 0.28, ease: easeOut, backdropFilter: { duration: 0.28, ease: easeOut } }}
+          transition={{
+            duration: 0.28,
+            ease: easeOut,
+            backdropFilter: { duration: 0.28, ease: easeOut },
+            exit: { duration: 0.22, ease: easeOut },
+          }}
           onClick={onClose}
           style={{
             position: 'fixed',
@@ -622,7 +640,11 @@ function AboutModal({ open, onClose }) {
           <motion.div
             key="about-card"
             {...cardMotion}
-            transition={{ duration: 0.32, ease: easeOut, exit: { duration: 0.2 } }}
+            transition={{
+              duration: 0.32,
+              ease: easeOut,
+              exit: { duration: 0.2, ease: easeOut },
+            }}
             onClick={(e) => e.stopPropagation()}
             style={{
               position: 'relative',
@@ -700,19 +722,44 @@ function AboutModal({ open, onClose }) {
             </Text>
 
             <Text
-              variant="caption"
-              mono
+              variant="bodySmall"
+              mono={false}
               style={{
                 display: 'block',
-                color: 'rgba(0,0,0,0.52)',
-                letterSpacing: '0.14em',
+                fontFamily: "'Reckless Italic', 'News Plantin', Georgia, serif",
+                fontSize: 15,
+                fontWeight: 400,
+                lineHeight: 1.55,
+                letterSpacing: '0.02em',
+                color: 'rgba(15,15,15,0.58)',
               }}
             >
               Collection is ongoing — get in touch!
             </Text>
 
+            <style>{`
+              .about-kit-mount .formkit-powered-by-convertkit-container {
+                display: none !important;
+              }
+              .about-kit-mount .formkit-submit {
+                background-color: #111 !important;
+                color: #fafafa !important;
+                border: 1px solid #111 !important;
+                border-radius: 4px !important;
+              }
+              .about-kit-mount .formkit-submit:hover,
+              .about-kit-mount .formkit-submit:focus {
+                background-color: #000 !important;
+                color: #fff !important;
+                border-color: #000 !important;
+              }
+              .about-kit-mount .formkit-submit span {
+                color: #fafafa !important;
+              }
+            `}</style>
             <div
               ref={kitMountRef}
+              className="about-kit-mount"
               style={{
                 marginTop: 22,
                 width: '100%',
@@ -753,13 +800,9 @@ function ToggleButton({ active, onClick, children }) {
         background: 'none',
         border: 'none',
         padding: '2px 4px',
-        color: '#fdfdfd',
+        ...ARCHIVE_NAV_TEXT,
         opacity: active ? 1 : 0.5,
         cursor: 'pointer',
-        fontFamily: 'inherit',
-        fontSize: 11,
-        letterSpacing: '0.14em',
-        lineHeight: 1.06,
         transition: 'opacity 0.2s ease',
       }}
       onMouseEnter={(e) => {
@@ -932,14 +975,7 @@ function Lightbox({ confession, onClose }) {
         exit: { opacity: 0, scale: 0.97 },
       };
 
-  const meta = confession?.metadata;
-  const tags = (meta?.tags ?? []).filter(Boolean);
-  const metaRows = [];
-  if (meta?.location) metaRows.push({ label: 'LOCATION', value: meta.location });
-  if (meta?.session) metaRows.push({ label: 'SESSION', value: meta.session });
-  if (meta?.collected) metaRows.push({ label: 'COLLECTED', value: meta.collected });
-  if (meta?.itemId) metaRows.push({ label: 'ITEM', value: meta.itemId });
-  const hasMetaBlock = metaRows.length > 0 || tags.length > 0;
+  const transcription = confession?.transcription?.trim();
 
   return (
     <AnimatePresence>
@@ -1002,70 +1038,31 @@ function Lightbox({ confession, onClose }) {
               }}
             />
 
-            <motion.div
-              initial={{ opacity: 0, y: 6 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.24, ease: easeOut, delay: 0.05 }}
-              style={{
-                width: '100%',
-                maxWidth: 'min(88vw, 560px)',
-                textAlign: 'center',
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: 'center',
-                gap: 14,
-              }}
-            >
-              <div
+            {transcription ? (
+              <motion.div
+                initial={{ opacity: 0, y: 6 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.24, ease: easeOut, delay: 0.05 }}
                 style={{
-                  fontFamily: 'var(--font-mono)',
-                  fontSize: 11,
-                  letterSpacing: '0.14em',
-                  color: 'rgba(255,255,255,0.72)',
+                  width: '100%',
+                  maxWidth: 'min(88vw, 560px)',
+                  textAlign: 'center',
                 }}
               >
-                {String(confession.id).padStart(3, '0')}
-                {confession.category ? ` · ${confession.category.toUpperCase()}` : ''}
-              </div>
-
-              {hasMetaBlock && (
-                <div
+                <Text
+                  variant="bodySmall"
+                  mono
                   style={{
-                    fontFamily: 'var(--font-mono)',
-                    fontSize: 10,
-                    letterSpacing: '0.08em',
-                    lineHeight: 1.75,
-                    color: 'rgba(255,255,255,0.5)',
-                    width: '100%',
+                    display: 'block',
+                    textAlign: 'center',
+                    ...ARCHIVE_NAV_TEXT,
                   }}
                 >
-                  {metaRows.map(({ label, value }) => (
-                    <div key={label}>{`${label} · ${value}`}</div>
-                  ))}
-                  {tags.length > 0 ? (
-                    <div style={{ marginTop: 4 }}>{`TAGS · ${tags.join(' · ')}`}</div>
-                  ) : null}
-                </div>
-              )}
-
-              {confession.transcription ? (
-                <div
-                  style={{
-                    width: '100%',
-                    padding: '12px 14px',
-                    boxSizing: 'border-box',
-                    background: 'rgba(255,255,255,0.05)',
-                    borderRadius: 4,
-                    border: '1px solid rgba(255,255,255,0.08)',
-                  }}
-                >
-                  <Text variant="bodySmall" style={{ lineHeight: 1.65, opacity: 0.88, textAlign: 'center' }}>
-                    {confession.transcription}
-                  </Text>
-                </div>
-              ) : null}
-            </motion.div>
+                  {transcription}
+                </Text>
+              </motion.div>
+            ) : null}
           </div>
         </motion.div>
       )}
@@ -1400,6 +1397,7 @@ function ArchivePage() {
             alignItems: 'center',
             justifyContent: 'space-between',
             gap: 12,
+            minHeight: ARCHIVE_NAV_CHROME_HEIGHT,
             pointerEvents: 'none',
           }}
         >
