@@ -8,7 +8,8 @@
  *
  * `<TunableGrainBackground>` is a DialKit-driven version with live controls
  * for every grain parameter — drop it into a relatively-positioned parent
- * and tune in the top-right panel.
+ * and tune in the top-right panel (`?dial=1`). Optional `opacityScale`
+ * multiplies layer opacities (e.g. softer grain on the landing only).
  */
 import { useDialKit } from 'dialkit';
 
@@ -122,7 +123,7 @@ export const HEAVY_PAPER = {
 
 const GRAIN_DEFAULTS = {
   coarse: {
-    opacity: 0.95,
+    opacity: 0.6,
     blend: 'overlay',
     tile: 240,
     duration: 2.8,
@@ -134,7 +135,7 @@ const GRAIN_DEFAULTS = {
   },
   fine: {
     enabled: true,
-    opacity: 0.19,
+    opacity: 0.12,
     blend: 'overlay',
     tile: 120,
     duration: 0.5,
@@ -144,10 +145,14 @@ const GRAIN_DEFAULTS = {
   },
 };
 
-export function TunableGrainBackground() {
+export function TunableGrainBackground({ opacityScale = 1 } = {}) {
+  const scale =
+    typeof opacityScale === 'number' && Number.isFinite(opacityScale)
+      ? Math.max(0, opacityScale)
+      : 1;
   const params = useDialKit('Grain', {
     coarse: {
-      opacity: [GRAIN_DEFAULTS.coarse.opacity, 0, 1],
+      opacity: [GRAIN_DEFAULTS.coarse.opacity, 0, 0.7],
       blend: {
         type: 'select',
         options: ['overlay', 'soft-light', 'hard-light', 'screen', 'multiply', 'normal'],
@@ -167,7 +172,7 @@ export function TunableGrainBackground() {
     },
     fineEnabled: GRAIN_DEFAULTS.fine.enabled,
     fine: {
-      opacity: [GRAIN_DEFAULTS.fine.opacity, 0, 1],
+      opacity: [GRAIN_DEFAULTS.fine.opacity, 0, 0.3],
       blend: {
         type: 'select',
         options: ['overlay', 'soft-light', 'hard-light', 'screen', 'multiply'],
@@ -189,7 +194,7 @@ export function TunableGrainBackground() {
         numOctaves: params.coarse.numOctaves,
         seed: params.coarse.seed,
       },
-      opacity: params.coarse.opacity,
+      opacity: Math.min(1, params.coarse.opacity * scale),
       blend: params.coarse.blend,
       tile: params.coarse.tile,
       duration: params.coarse.duration,
@@ -202,7 +207,7 @@ export function TunableGrainBackground() {
         baseFrequency: params.fine.baseFrequency,
         numOctaves: params.fine.numOctaves,
       },
-      opacity: params.fine.opacity,
+      opacity: Math.min(1, params.fine.opacity * scale),
       blend: params.fine.blend,
       tile: params.fine.tile,
       duration: params.fine.duration,

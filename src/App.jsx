@@ -10,89 +10,57 @@ import {
 } from './SideDial';
 import { CONFESSIONS as FALLBACK_CONFESSIONS } from './confessions';
 import { deriveEmotions, sortConfessionsByEmotions } from './themes';
-import { confessionNoteImageUrl } from './loadConfessions';
 import { useConfessions } from './useConfessions';
-import { GrainOverlay, HEAVY_PAPER, TunableGrainBackground } from './noise';
+import {
+  CARD_FILTER_ID,
+  CardNoiseFilterDefs,
+  TunableGrainBackground,
+  useInactiveCardParams,
+} from './noise';
 
 const ease = [0.22, 1, 0.36, 1];
 
-// First three confessions used as the peek-out notes at the bottom of the
-// landing page. Images live in `public/confession_notes_2` as WebP
-// (`/confession_notes_2/AC_xxx.webp`), same source as live sheet data.
-const LANDING_BOTTOM_NOTES = ['AC_094', 'AC_095', 'AC_096'];
+/** Unique image URLs for landing background slideshow (live sheet or fallback). */
+function useLandingBackgroundSrcs(liveConfessions) {
+  return useMemo(() => {
+    const pool = liveConfessions.length > 0 ? liveConfessions : FALLBACK_CONFESSIONS;
+    const seen = new Set();
+    const urls = [];
+    for (const c of pool) {
+      if (c.image && !seen.has(c.image)) {
+        seen.add(c.image);
+        urls.push(c.image);
+      }
+    }
+    return urls.length > 0 ? urls : ['/notes/AC_006.png'];
+  }, [liveConfessions]);
+}
 
-// Standard ease-out-quart curve used by the intro page note slide-up.
-// Feels deliberate without bouncing — a "snap-to-place" decel.
-const NOTE_ENTRANCE_EASE = [0.165, 0.84, 0.44, 1];
-
-// Per-note layout for the landing page — first the hero (peek-from-bottom)
-// position, then the reveal (centered spread) position. Each entry maps to
-// LANDING_BOTTOM_NOTES at the same index after we reorder rendering: we
-// render [left, right, center] so the center note paints on top.
-const LANDING_NOTE_CONFIGS = [
-  // Left note (back-left)
-  {
-    noteIdx: 1,
-    width: 'min(46vw, 460px)',
-    hero: { bottomOffset: -120, x: -240, rotate: -8 },
-    reveal: { x: -260, y: 12, rotate: -7, scale: 0.78 },
-    z: 0,
-  },
-  // Right note (back-right)
-  {
-    noteIdx: 2,
-    width: 'min(46vw, 460px)',
-    hero: { bottomOffset: -130, x: 240, rotate: 8 },
-    reveal: { x: 260, y: 16, rotate: 7, scale: 0.78 },
-    z: 0,
-  },
-  // Center note (hero focal piece)
-  {
-    noteIdx: 0,
-    width: 'min(48vw, 480px)',
-    hero: { bottomOffset: -90, x: 0, rotate: 0 },
-    reveal: { x: 0, y: 0, rotate: 0, scale: 0.88 },
-    z: 1,
-  },
-];
-
-function LandingPage({ onEnter }) {
+function LandingPage({ onEnter, backgroundImageSrcs }) {
+  const [slideIdx, setSlideIdx] = useState(0);
   const reduceMotion = useReducedMotion();
-  // Two phases share the same screen:
-  //   'hero'   → big title + ENTER button, notes peek from the bottom.
-  //   'reveal' → title fades out, notes animate UP into a centered spread,
-  //              caption + CONTINUE fade in below them.
-  const [phase, setPhase] = useState('hero');
+  const inactive = useInactiveCardParams();
+  const noiseEnabled = inactive.noise?.enabled ?? true;
+  const inactiveFilter = [
+    inactive.blur > 0 ? `blur(${inactive.blur}px)` : '',
+    inactive.grayscale > 0 ? `grayscale(${inactive.grayscale})` : '',
+    noiseEnabled ? `url(#${CARD_FILTER_ID})` : '',
+  ]
+    .filter(Boolean)
+    .join(' ');
 
-  // The "lift-up" distance for the reveal phase depends on viewport height,
-  // because the notes are anchored to the bottom in hero phase. We measure
-  // once on mount and on resize so the centered position stays correct
-  // across window sizes.
-  const [vh, setVh] = useState(() =>
-    typeof window !== 'undefined' ? window.innerHeight : 900
-  );
+  const nBg = backgroundImageSrcs.length;
+  /** Slightly dimmer than inactive carousel cards so the hero type stays dominant. */
+  const slideshowOpacity = inactive.opacity * 0.72;
+
   useEffect(() => {
-    const onResize = () => setVh(window.innerHeight);
-    window.addEventListener('resize', onResize);
-    return () => window.removeEventListener('resize', onResize);
-  }, []);
+    if (reduceMotion || nBg <= 1) return;
+    const id = window.setInterval(() => {
+      setSlideIdx((i) => (i + 1) % nBg);
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, [nBg, reduceMotion]);
 
-  // How far up to translate each note from its hero (bottom-anchored)
-  // position so they land near the true vertical middle of the viewport.
-  //
-  // Math: notes are anchored at `bottom: -120` (about) below the viewport
-  // bottom and scaled around `transformOrigin: center bottom`. To put the
-  // image's visible CENTER at vh/2, we need to lift further than vh/2
-  // because:
-  //   visible_center_y = wrapper_bottom_y + liftY - (image_height × scale)/2
-  //                    ≈ vh + 120 + liftY - 90  (for ~322px image @ 0.55)
-  //   ⇒ liftY ≈ -(vh/2 + 30)  to land at vh/2.
-  // The +60 buffer pushes them slightly above true center so the caption
-  // + CONTINUE button below them have visual breathing room.
-  const liftY = -(vh / 2 + 60);
-
-  // ease-out-expo for the lift: longer decel tail so the notes "float" into
-  // place rather than snapping. Paired with a slightly faster duration.
   const easeOut = [0.19, 1, 0.22, 1];
 
   return (
@@ -112,259 +80,146 @@ function LandingPage({ onEnter }) {
         padding: 40,
         textAlign: 'center',
         overflow: 'hidden',
-        background:
-          'radial-gradient(ellipse at center, #000000 0%, #000000 75%, #171717 100%)',
+        background: '#050505',
       }}
     >
+      {/* Centered confession stills — same blur / grayscale / noise as inactive carousel cards. */}
+      <div
+        aria-hidden="true"
+        style={{
+          position: 'absolute',
+          inset: 0,
+          zIndex: 0,
+          overflow: 'hidden',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          pointerEvents: 'none',
+        }}
+      >
+        <CardNoiseFilterDefs params={inactive} />
+        <img
+          key={slideIdx % nBg}
+          src={backgroundImageSrcs[slideIdx % nBg]}
+          alt=""
+          draggable={false}
+          style={{
+            maxWidth: 'min(92vw, 820px)',
+            maxHeight: '78vh',
+            width: 'auto',
+            height: 'auto',
+            objectFit: 'contain',
+            opacity: slideshowOpacity,
+            transform: `scale(${inactive.scale})`,
+            filter: inactiveFilter || 'none',
+          }}
+        />
+      </div>
+
+      {/* Readability wash over the slideshow. */}
+      <div
+        aria-hidden="true"
+        style={{
+          position: 'absolute',
+          inset: 0,
+          zIndex: 1,
+          pointerEvents: 'none',
+          background:
+            'radial-gradient(ellipse 85% 75% at 50% 42%, rgba(0,0,0,0.38) 0%, rgba(0,0,0,0.72) 55%, rgba(0,0,0,0.88) 100%)',
+        }}
+      />
+
       {/* Full-viewport grain backdrop. */}
       <div
         aria-hidden="true"
         style={{
           position: 'fixed',
           inset: 0,
-          zIndex: 0,
+          zIndex: 2,
           isolation: 'isolate',
           pointerEvents: 'none',
-          background:
-            'radial-gradient(ellipse at center, #000000 0%, #000000 75%, #171717 100%)',
+          background: 'transparent',
         }}
       >
-        <TunableGrainBackground />
+        <TunableGrainBackground opacityScale={0.5} />
       </div>
 
-      {/* Notes layer. Each note is wrapped in a static-positioning div
-          (anchored to the viewport bottom at its hero offset) so the inner
-          motion.img is free to own its `transform` for animation. The
-          motion.img animates between hero and reveal targets when `phase`
-          changes — Motion writes a single combined transform that
-          interpolates x, y, rotate, scale together. */}
-      <div
-        aria-hidden="true"
-        style={{
-          position: 'fixed',
-          inset: 0,
-          overflow: 'hidden',
-          pointerEvents: 'none',
-          zIndex: 0,
-        }}
-      >
-        {LANDING_NOTE_CONFIGS.map((n, i) => {
-          const heroTransform = `translateX(calc(-50% + ${n.hero.x}px))`;
-          const target =
-            phase === 'hero'
-              ? { x: 0, y: 0, rotate: n.hero.rotate, scale: 1 }
-              : {
-                  x: n.reveal.x - n.hero.x,
-                  y: liftY + n.reveal.y,
-                  rotate: n.reveal.rotate,
-                  scale: n.reveal.scale,
-                };
-          return (
-            <div
-              key={n.noteIdx}
-              style={{
-                position: 'absolute',
-                bottom: n.hero.bottomOffset,
-                left: '50%',
-                width: n.width,
-                transform: heroTransform,
-                transformOrigin: 'center bottom',
-                zIndex: n.z,
-              }}
-            >
-              {/* Entrance wrapper — slides each note up from below the
-                  viewport into its hero peek position with a stagger.
-                  Lives separately from the phase-change motion.img so the
-                  two transforms compose cleanly: outer = mount entry,
-                  inner = phase target (hero ↔ reveal). */}
-              <motion.div
-                initial={reduceMotion ? false : { y: 260, opacity: 0 }}
-                animate={{ y: 0, opacity: 1 }}
-                transition={{
-                  duration: reduceMotion ? 0 : 0.95,
-                  ease: easeOut,
-                  // Stagger across notes — render order is [left, right,
-                  // center], so the side notes anchor first then the
-                  // hero center note slides up last on top of them.
-                  delay: reduceMotion ? 0 : 0.45 + i * 0.13,
-                }}
-                style={{ willChange: 'transform' }}
-              >
-                <motion.img
-                  src={confessionNoteImageUrl(LANDING_BOTTOM_NOTES[n.noteIdx])}
-                  alt=""
-                  draggable={false}
-                  initial={false}
-                  animate={target}
-                  transition={{
-                    duration: reduceMotion ? 0 : 0.7,
-                    ease: easeOut,
-                    // Reveal stagger: back notes land first (i=0,1), center
-                    // (i=2) lands last so it reads as the focal piece.
-                    delay: phase === 'reveal' ? i * 0.07 : 0,
-                  }}
-                  style={{
-                    display: 'block',
-                    width: '100%',
-                    height: 'auto',
-                    transformOrigin: 'center bottom',
-                    willChange: 'transform',
-                  }}
-                />
-              </motion.div>
-            </div>
-          );
-        })}
-      </div>
-
-      {/* Hero phase content: title + ENTER button. Fades out when the user
-          clicks ENTER, freeing the screen for the notes to animate up. */}
+      {/* Hero: title + ENTER → archive (interim reveal step hidden for now). */}
       <AnimatePresence>
-        {phase === 'hero' && (
+        <motion.div
+          key="hero-content"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: 0.45, ease: easeOut }}
+          style={{
+            position: 'relative',
+            zIndex: 3,
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+          }}
+        >
           <motion.div
-            key="hero-content"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.45, ease: easeOut }}
-            style={{
-              position: 'relative',
-              zIndex: 2,
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'center',
-            }}
-          >
-            <motion.div
-              initial={{ opacity: 0, y: 30 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.8, ease, delay: 0.1 }}
-            >
-              <h1
-                style={{
-                  fontFamily: "'Reckless Italic', 'News Plantin', Georgia, serif",
-                  fontSize: '52px',
-                  fontWeight: 400,
-                  lineHeight: 1,
-                  letterSpacing: '0.01em',
-                  color: '#e5e5e5',
-                  margin: 0,
-                  textShadow:
-                    '0 0 28px rgba(255, 255, 255, 0.45), 0 0 56px rgba(255, 255, 255, 0.22), 0 0 96px rgba(255, 255, 255, 0.12)',
-                }}
-              >
-                What we tell AI
-              </h1>
-              <p
-                style={{
-                  margin: '18px 0 0',
-                  maxWidth: 520,
-                  fontFamily: "'Reckless Italic', 'News Plantin', Georgia, serif",
-                  fontSize: 18,
-                  fontWeight: 400,
-                  lineHeight: 1.45,
-                  letterSpacing: '0.02em',
-                  color: 'rgba(229, 229, 229, 0.78)',
-                }}
-              >
-                
-              </p>
-            </motion.div>
-
-            <motion.button
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.8, ease, delay: 0.5 }}
-              whileHover={{ scale: 1.02, opacity: 1 }}
-              whileTap={{ scale: 0.98 }}
-              onClick={() => setPhase('reveal')}
-              style={{
-                marginTop: 40,
-                padding: '12px 32px',
-                background: 'transparent',
-                border: 'none',
-                color: '#e5e5e5',
-                fontSize: 14,
-                fontWeight: 400,
-                cursor: 'pointer',
-                fontFamily: 'var(--font-mono, ui-monospace, monospace)',
-                letterSpacing: '0.18em',
-                opacity: 0.85,
-              }}
-            >
-              ENTER ARCHIVE
-            </motion.button>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      {/* Reveal phase content: caption + CONTINUE. Fades in below the
-          centered notes once the lift-up animation is well underway. */}
-      <AnimatePresence>
-        {phase === 'reveal' && (
-          <motion.div
-            key="reveal-content"
-            initial={{ opacity: 0, y: 12 }}
+            initial={{ opacity: 0, y: 30 }}
             animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0 }}
-            transition={{
-              duration: 0.5,
-              ease: easeOut,
-              // Wait for the notes to be most of the way up before the
-              // caption appears so it doesn't collide with the spread.
-              delay: 0.7,
-            }}
-            style={{
-              position: 'fixed',
-              left: 0,
-              right: 0,
-              bottom: 'calc(50vh - 200px)',
-              zIndex: 2,
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'center',
-              gap: 24,
-              padding: '0 40px',
-              textAlign: 'center',
-              pointerEvents: 'auto',
-            }}
+            transition={{ duration: 0.8, ease, delay: 0.1 }}
           >
+            <h1
+              style={{
+                fontFamily: "'Reckless Italic', 'News Plantin', Georgia, serif",
+                fontSize: '52px',
+                fontWeight: 400,
+                lineHeight: 1,
+                letterSpacing: '0.01em',
+                color: '#e5e5e5',
+                margin: 0,
+                textShadow:
+                  '0 0 28px rgba(255, 255, 255, 0.45), 0 0 56px rgba(255, 255, 255, 0.22), 0 0 96px rgba(255, 255, 255, 0.12)',
+              }}
+            >
+              What We Tell AI
+            </h1>
             <p
               style={{
-                margin: 0,
-                maxWidth: 520,
-                fontFamily: 'var(--font-mono, ui-monospace, monospace)',
-                fontSize: 13,
-                lineHeight: 1.7,
-                letterSpacing: '0.04em',
-                color: '#e5e5e5',
-                opacity: 0.85,
+                margin: '18px 0 0',
+                maxWidth: 560,
+                fontFamily: "'Reckless Italic', 'News Plantin', Georgia, serif",
+                fontSize: 22,
+                fontWeight: 400,
+                lineHeight: 1.45,
+                letterSpacing: '0.02em',
+                color: 'rgba(229, 229, 229, 0.78)',
               }}
             >
-              We asked strangers to confess about the way they&rsquo;ve
-              interacted with AI.
+              Anonymous confessions about AI&rsquo;s <br /> presence in our intimate lives
             </p>
-
-            <motion.button
-              whileHover={{ opacity: 1 }}
-              whileTap={{ scale: 0.98 }}
-              onClick={onEnter}
-              style={{
-                background: 'transparent',
-                border: 'none',
-                color: '#e5e5e5',
-                fontSize: 12,
-                cursor: 'pointer',
-                fontFamily: 'var(--font-mono, ui-monospace, monospace)',
-                letterSpacing: '0.18em',
-                opacity: 0.85,
-                padding: '8px 16px',
-              }}
-            >
-              VIEW CONFESSIONS
-            </motion.button>
           </motion.div>
-        )}
+
+          <motion.button
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.8, ease, delay: 0.5 }}
+            whileHover={{ scale: 1.02, opacity: 1 }}
+            whileTap={{ scale: 0.98 }}
+            onClick={onEnter}
+            style={{
+              marginTop: 28,
+              padding: '8px 20px',
+              background: 'transparent',
+              border: 'none',
+              color: '#e5e5e5',
+              fontSize: 11,
+              fontWeight: 400,
+              cursor: 'pointer',
+              fontFamily: 'var(--font-mono, ui-monospace, monospace)',
+              letterSpacing: '0.14em',
+              opacity: 0.85,
+            }}
+          >
+            ENTER
+          </motion.button>
+        </motion.div>
       </AnimatePresence>
     </motion.div>
   );
@@ -557,6 +412,8 @@ function AboutHeader({ onClick, open, stacked = false }) {
 /** Kit (ConvertKit) inline form — script replaces this node with the form UI. */
 const ABOUT_KIT_FORM_UID = '4e99802b9e';
 const ABOUT_KIT_SCRIPT_SRC = `https://synthetic-wisdom-studio.kit.com/${ABOUT_KIT_FORM_UID}/index.js`;
+/** Set true to show the subscribe / email block in the About modal again. */
+const ABOUT_KIT_ENABLED = false;
 
 /**
  * Centered about modal. Backdrop + card fade in on open; on close (click-out
@@ -568,7 +425,7 @@ function AboutModal({ open, onClose }) {
   const kitMountRef = useRef(null);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open || !ABOUT_KIT_ENABLED) return;
     const root = kitMountRef.current;
     if (!root) return;
 
@@ -599,8 +456,8 @@ function AboutModal({ open, onClose }) {
     ? { initial: { opacity: 0 }, animate: { opacity: 1 }, exit: { opacity: 0 } }
     : {
         initial: { opacity: 0, backdropFilter: 'blur(0px)' },
-        animate: { opacity: 1, backdropFilter: 'blur(12px)' },
-        exit: { opacity: 0, backdropFilter: 'blur(12px)' },
+        animate: { opacity: 1, backdropFilter: 'blur(22px)' },
+        exit: { opacity: 0, backdropFilter: 'blur(0px)' },
       };
 
   const cardMotion = reduceMotion
@@ -628,8 +485,10 @@ function AboutModal({ open, onClose }) {
             position: 'fixed',
             inset: 0,
             zIndex: 1000,
-            background: 'rgba(6, 6, 8, 0.78)',
-            WebkitBackdropFilter: 'blur(0px)',
+            // Frosted dim: let blur carry the separation; avoid near-opaque black.
+            background: reduceMotion
+              ? 'rgba(10, 10, 14, 0.72)'
+              : 'rgba(10, 10, 14, 0.38)',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
@@ -661,21 +520,6 @@ function AboutModal({ open, onClose }) {
               boxShadow: '0 20px 50px rgba(0,0,0,0.25)',
             }}
           >
-            <h2
-              style={{
-                fontFamily: "'Reckless Italic', 'News Plantin', Georgia, serif",
-                fontSize: 32,
-                fontWeight: 400,
-                lineHeight: 1.05,
-                letterSpacing: '0.01em',
-                margin: 0,
-                marginBottom: 24,
-                color: '#0f0f0f',
-              }}
-            >
-              About
-            </h2>
-
             <Text
               variant="bodySmall"
               mono={false}
@@ -698,27 +542,14 @@ function AboutModal({ open, onClose }) {
                 display: 'block',
                 lineHeight: 1.7,
                 fontSize: 15,
-                marginBottom: 16,
-                fontFamily: "'Reckless Italic', 'News Plantin', Georgia, serif",
-                color: 'rgba(15,15,15,0.82)',
-              }}
-            >
-              This anthropological art project documents AI&rsquo;s growing presence in the most intimate details of our lives.
-            </Text>
-
-            <Text
-              variant="bodySmall"
-              mono={false}
-              style={{
-                display: 'block',
-                lineHeight: 1.7,
-                fontSize: 15,
                 marginBottom: 18,
                 fontFamily: "'Reckless Italic', 'News Plantin', Georgia, serif",
-                color: 'rgba(15,15,15,0.75)',
+                color: 'rgba(15,15,15,0.8)',
               }}
             >
-              Each handwritten note is collected in public parks, on street corners, and even at AI conferences.
+              This anthropological art project documents AI&rsquo;s growing presence in the most intimate details of
+              our lives. Each handwritten note is collected in public parks, on street corners, and even at AI
+              conferences.
             </Text>
 
             <Text
@@ -734,38 +565,56 @@ function AboutModal({ open, onClose }) {
                 color: 'rgba(15,15,15,0.58)',
               }}
             >
-              Collection is ongoing — get in touch!
+              Collection is ongoing —{' '}
+              <a
+                href="https://linktr.ee/whatwetellai"
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{
+                  color: 'inherit',
+                  textDecoration: 'underline',
+                  textDecorationColor: 'rgba(15,15,15,0.35)',
+                  textUnderlineOffset: '3px',
+                }}
+              >
+                get in touch
+              </a>
+              !
             </Text>
 
-            <style>{`
-              .about-kit-mount .formkit-powered-by-convertkit-container {
-                display: none !important;
-              }
-              .about-kit-mount .formkit-submit {
-                background-color: #111 !important;
-                color: #fafafa !important;
-                border: 1px solid #111 !important;
-                border-radius: 4px !important;
-              }
-              .about-kit-mount .formkit-submit:hover,
-              .about-kit-mount .formkit-submit:focus {
-                background-color: #000 !important;
-                color: #fff !important;
-                border-color: #000 !important;
-              }
-              .about-kit-mount .formkit-submit span {
-                color: #fafafa !important;
-              }
-            `}</style>
-            <div
-              ref={kitMountRef}
-              className="about-kit-mount"
-              style={{
-                marginTop: 22,
-                width: '100%',
-                minHeight: 1,
-              }}
-            />
+            {ABOUT_KIT_ENABLED && (
+              <>
+                <style>{`
+                  .about-kit-mount .formkit-powered-by-convertkit-container {
+                    display: none !important;
+                  }
+                  .about-kit-mount .formkit-submit {
+                    background-color: #111 !important;
+                    color: #fafafa !important;
+                    border: 1px solid #111 !important;
+                    border-radius: 4px !important;
+                  }
+                  .about-kit-mount .formkit-submit:hover,
+                  .about-kit-mount .formkit-submit:focus {
+                    background-color: #000 !important;
+                    color: #fff !important;
+                    border-color: #000 !important;
+                  }
+                  .about-kit-mount .formkit-submit span {
+                    color: #fafafa !important;
+                  }
+                `}</style>
+                <div
+                  ref={kitMountRef}
+                  className="about-kit-mount"
+                  style={{
+                    marginTop: 22,
+                    width: '100%',
+                    minHeight: 1,
+                  }}
+                />
+              </>
+            )}
 
             <div
               style={{
@@ -838,12 +687,34 @@ function GridView({ confessions, sidebarInset = SIDEBAR_WIDTH }) {
         bottom: 0,
         left: sidebarInset,
         right: 0,
-        overflowY: 'auto',
-        overflowX: 'hidden',
-        padding: '88px 32px 48px',
+        overflow: 'hidden',
         zIndex: 1,
       }}
     >
+      {/* Same grain as landing / theme: `TunableGrainBackground` → DialKit "Grain". */}
+      <div
+        aria-hidden="true"
+        style={{
+          position: 'absolute',
+          inset: 0,
+          zIndex: 0,
+          isolation: 'isolate',
+          pointerEvents: 'none',
+          background: '#111',
+        }}
+      >
+        <TunableGrainBackground />
+      </div>
+      <div
+        style={{
+          position: 'relative',
+          zIndex: 1,
+          height: '100%',
+          overflowY: 'auto',
+          overflowX: 'hidden',
+          padding: '88px 32px 48px',
+        }}
+      >
       <style>{`
         .confession-grid {
           display: grid;
@@ -925,6 +796,7 @@ function GridView({ confessions, sidebarInset = SIDEBAR_WIDTH }) {
             </div>
           </motion.div>
         ))}
+      </div>
       </div>
 
       <Lightbox confession={selected} onClose={() => setSelected(null)} />
@@ -1097,11 +969,9 @@ function ThemeView({
       transition={{ duration: 0.4, ease }}
       style={{ position: 'absolute', inset: 0 }}
     >
-      {/* Background layer: gradient crossfade + grain, isolated so the
-          grain's mix-blend-mode actually blends with the gradient as
-          backdrop instead of falling through to transparency.
-          The solid #111 base is critical — without it the half-faded gradient
-          midpoint lets the `overlay` blend on the grain layer pulse white. */}
+      {/* Background layer: gradient crossfade + grain (same `TunableGrainBackground`
+          / DialKit "Grain" as landing + grid). Isolated so mix-blend-mode blends
+          with the gradient; solid #111 base avoids white pulse at gradient midpoint. */}
       <div
         style={{
           position: 'absolute',
@@ -1251,12 +1121,12 @@ function ArchiveLoading() {
   );
 }
 
-function ArchivePage() {
+function ArchivePage({ confessionQuery }) {
   // Live data from the published Google Sheet. Falls back to the bundled
   // sample data if the network call fails so the prototype still works
   // offline / behind a captive portal.
   const { confessions: liveConfessions, emotions: liveEmotions, loading, error } =
-    useConfessions();
+    confessionQuery;
 
   const usingFallback = !loading && (error || liveConfessions.length === 0);
   const fallbackEmotions = useMemo(
@@ -1453,13 +1323,18 @@ function ArchivePage() {
 
 export default function App() {
   const [page, setPage] = useState('landing');
+  const confessionQuery = useConfessions();
+  const landingBgSrcs = useLandingBackgroundSrcs(confessionQuery.confessions);
 
   return (
     <AnimatePresence mode="wait">
       {page === 'landing' && (
-        <LandingPage onEnter={() => setPage('archive')} />
+        <LandingPage
+          onEnter={() => setPage('archive')}
+          backgroundImageSrcs={landingBgSrcs}
+        />
       )}
-      {page === 'archive' && <ArchivePage />}
+      {page === 'archive' && <ArchivePage confessionQuery={confessionQuery} />}
     </AnimatePresence>
   );
 }
