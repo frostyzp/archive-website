@@ -466,13 +466,12 @@ function SiteTitle() {
         zIndex: 200,
         padding: '6px 12px',
         color: '#fdfdfd',
-        fontFamily: "'Reckless Italic', 'News Plantin', Georgia, serif",
-        fontSize: 15,
-        fontWeight: 400,
-        letterSpacing: '0.02em',
+        fontFamily: 'var(--font-mono)',
+        fontSize: 11,
+        letterSpacing: '0.14em',
         lineHeight: 1.06,
-        opacity: 0.9,
-        textTransform: 'none',
+        opacity: 0.85,
+        textTransform: 'uppercase',
         pointerEvents: 'none',
       }}
     >
@@ -877,6 +876,15 @@ function Lightbox({ confession, onClose }) {
         exit: { opacity: 0, scale: 0.97 },
       };
 
+  const meta = confession?.metadata;
+  const tags = (meta?.tags ?? []).filter(Boolean);
+  const metaRows = [];
+  if (meta?.location) metaRows.push({ label: 'LOCATION', value: meta.location });
+  if (meta?.session) metaRows.push({ label: 'SESSION', value: meta.session });
+  if (meta?.collected) metaRows.push({ label: 'COLLECTED', value: meta.collected });
+  if (meta?.itemId) metaRows.push({ label: 'ITEM', value: meta.itemId });
+  const hasMetaBlock = metaRows.length > 0 || tags.length > 0;
+
   return (
     <AnimatePresence>
       {open && (
@@ -901,8 +909,7 @@ function Lightbox({ confession, onClose }) {
             alignItems: 'center',
             justifyContent: 'center',
             cursor: 'zoom-out',
-            padding: '32px 20px 40px',
-            boxSizing: 'border-box',
+            padding: 24,
             overflowY: 'auto',
           }}
         >
@@ -912,9 +919,12 @@ function Lightbox({ confession, onClose }) {
               display: 'flex',
               flexDirection: 'column',
               alignItems: 'center',
-              gap: 18,
-              maxWidth: 'min(92vw, 680px)',
+              justifyContent: 'center',
+              gap: 20,
               width: '100%',
+              maxWidth: 'min(92vw, 720px)',
+              margin: 'auto',
+              cursor: 'default',
             }}
           >
             <motion.img
@@ -925,66 +935,78 @@ function Lightbox({ confession, onClose }) {
               {...imageMotion}
               transition={{ duration: 0.24, ease: easeOut, exit: { duration: 0.18 } }}
               style={{
-                maxWidth: 'min(72vw, 560px)',
-                maxHeight: '58vh',
+                maxWidth: 'min(80vw, 560px)',
+                maxHeight: 'min(46vh, 420px)',
                 width: 'auto',
                 height: 'auto',
                 objectFit: 'contain',
                 display: 'block',
                 boxShadow: 'none',
-                cursor: 'default',
                 willChange: 'transform, opacity',
               }}
             />
 
             <motion.div
-              initial={{ opacity: 0, y: 4 }}
+              initial={{ opacity: 0, y: 6 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0 }}
               transition={{ duration: 0.24, ease: easeOut, delay: 0.05 }}
               style={{
+                width: '100%',
+                maxWidth: 'min(88vw, 560px)',
+                textAlign: 'center',
                 display: 'flex',
                 flexDirection: 'column',
                 alignItems: 'center',
                 gap: 14,
-                width: '100%',
-                pointerEvents: 'none',
               }}
             >
               <div
                 style={{
                   fontFamily: 'var(--font-mono)',
-                  fontSize: 10,
-                  letterSpacing: '0.12em',
-                  color: 'rgba(255,255,255,0.62)',
-                  textAlign: 'center',
-                  lineHeight: 1.5,
+                  fontSize: 11,
+                  letterSpacing: '0.14em',
+                  color: 'rgba(255,255,255,0.72)',
                 }}
               >
-                {(() => {
-                  const itemId = confession.metadata?.itemId?.trim();
-                  const idPart = String(confession.id).padStart(3, '0');
-                  const cat = confession.category?.toUpperCase();
-                  const parts = [];
-                  if (itemId) parts.push(`ITEM ID ${itemId}`);
-                  parts.push(idPart);
-                  if (cat) parts.push(cat);
-                  return parts.join(' · ');
-                })()}
+                {String(confession.id).padStart(3, '0')}
+                {confession.category ? ` · ${confession.category.toUpperCase()}` : ''}
               </div>
-              {confession.transcription ? (
+
+              {hasMetaBlock && (
                 <div
                   style={{
                     fontFamily: 'var(--font-mono)',
-                    fontSize: 12,
-                    lineHeight: 1.55,
-                    letterSpacing: '0.02em',
-                    color: 'rgba(229,229,229,0.88)',
-                    textAlign: 'center',
-                    maxWidth: '100%',
+                    fontSize: 10,
+                    letterSpacing: '0.08em',
+                    lineHeight: 1.75,
+                    color: 'rgba(255,255,255,0.5)',
+                    width: '100%',
                   }}
                 >
-                  {confession.transcription}
+                  {metaRows.map(({ label, value }) => (
+                    <div key={label}>{`${label} · ${value}`}</div>
+                  ))}
+                  {tags.length > 0 ? (
+                    <div style={{ marginTop: 4 }}>{`TAGS · ${tags.join(' · ')}`}</div>
+                  ) : null}
+                </div>
+              )}
+
+              {confession.transcription ? (
+                <div
+                  style={{
+                    width: '100%',
+                    padding: '12px 14px',
+                    boxSizing: 'border-box',
+                    background: 'rgba(255,255,255,0.05)',
+                    borderRadius: 4,
+                    border: '1px solid rgba(255,255,255,0.08)',
+                  }}
+                >
+                  <Text variant="bodySmall" style={{ lineHeight: 1.65, opacity: 0.88, textAlign: 'center' }}>
+                    {confession.transcription}
+                  </Text>
                 </div>
               ) : null}
             </motion.div>
@@ -1227,9 +1249,9 @@ function ArchivePage() {
   // The dial canvas is `size × size/2` tall, but the active label only
   // sits `labelR` (≈ size * 0.232) above the bottom — everything above the
   // label is just transparent canvas. Reserve only enough space for the
-  // labels + a 40px breathing strip so the cards above can use the extra
+  // labels + a modest breathing strip so the cards above sit a bit closer
   // real estate and read as "centered" rather than crammed at the top.
-  const dialLabelInset = Math.round(dialSize * 0.232 + 40);
+  const dialLabelInset = Math.round(dialSize * 0.232 + 26);
   const [activeEmotion, setActiveEmotion] = useState(null);
   const [activeIndex, setActiveIndex] = useState(0);
 

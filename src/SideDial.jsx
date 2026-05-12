@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useCallback } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { motion, useReducedMotion } from 'motion/react';
 import {
   CARD_FILTER_ID,
@@ -243,17 +243,8 @@ export function BottomCompassDial({
       ctx.restore();
     });
 
-    // Hub cap: same grey as divider spokes; drawn last so it sits on top at
-    // the canvas bottom and masks the gap between converging line caps.
-    const hubCapR = Math.max(12, R * 0.056);
-    const hubAnchorY = CY - hubCapR + 2;
-    ctx.beginPath();
-    ctx.moveTo(CX - hubCapR, hubAnchorY);
-    ctx.arc(CX, hubAnchorY, hubCapR, Math.PI, 0, false);
-    ctx.closePath();
-    ctx.fillStyle = 'rgb(160, 160, 160)';
-    ctx.fill();
-
+    // Center hub removed — divider lines' rounded caps converge at the
+    // center on their own; an explicit hub circle felt redundant.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [size]);
 
@@ -610,6 +601,9 @@ export function HorizontalConfessionStack({
     .join(' ');
 
   const n = confessions.length;
+  // Which card the cursor is currently over (one card at a time). Drives the
+  // metadata overlay (globalId / tags / transcription) on hover.
+  const [hoveredKey, setHoveredKey] = useState(null);
 
   // Render the confessions array COPY_COUNT times back-to-back. Each render
   // item carries its `logicalIndex` (0..n-1) — copies of the same logical
@@ -977,9 +971,11 @@ export function HorizontalConfessionStack({
       {renderItems.map((item, renderIdx) => {
         const isActive = item.logicalIndex === activeIndex;
         const cardKey = `${item.copy}-${item.confession.id}`;
-        const itemIdDisplay =
-          (item.confession.metadata?.itemId && String(item.confession.metadata.itemId).trim()) ||
-          String(item.confession.id).padStart(3, '0');
+        // Metadata only surfaces for the active (centered/snapped) card.
+        // Inactive cards are intentionally muted — hover does nothing on
+        // them so the user has to scroll/click to bring a card into focus
+        // before they can read its details.
+        const showMeta = isActive && hoveredKey === cardKey;
         // Within-category `n/total` is drawn on the dial under the active label.
         // Stagger the entrance as a wave radiating outward from the active
         // card — that's where the user is focused on mount, so the focal
@@ -1007,18 +1003,16 @@ export function HorizontalConfessionStack({
                   }
             }
             onClick={() => setActiveFromClick(item.logicalIndex)}
+            onMouseEnter={() => setHoveredKey(cardKey)}
+            onMouseLeave={() =>
+              setHoveredKey((k) => (k === cardKey ? null : k))
+            }
             style={{
               ...st.cardWrapper,
               cursor: isActive ? 'default' : 'pointer',
               willChange: 'transform, opacity',
             }}
           >
-            {isActive && (
-              <div style={st.itemIdRow}>
-                <span style={st.itemIdLabel}>ITEM ID</span>
-                <span style={st.itemIdValue}>{itemIdDisplay}</span>
-              </div>
-            )}
             <div data-tilt-target style={st.cardImageBox}>
               <img
                 src={item.confession.image}
@@ -1033,11 +1027,23 @@ export function HorizontalConfessionStack({
               />
             </div>
 
-            {/* Transcription under the active card only; always visible when
-                centered (no hover). Sidebar still has full metadata. */}
+            {/* Hover-only metadata block — only the transcription is shown
+                under the active card. The globalId + tags pills row used to
+                sit above the transcription but is hidden now (the sidebar
+                metadata panel still surfaces id/tags for the active card).
+                Whole block is absolutely positioned so it doesn't grow the
+                card wrapper's layout footprint. */}
             <div style={st.metaBlock}>
-              {isActive && item.confession.transcription && (
-                <div style={st.metaTranscription}>{item.confession.transcription}</div>
+              {item.confession.transcription && (
+                <div
+                  style={{
+                    ...st.metaTranscription,
+                    opacity: showMeta ? 1 : 0,
+                    transform: showMeta ? 'translateY(0)' : 'translateY(-4px)',
+                  }}
+                >
+                  {item.confession.transcription}
+                </div>
               )}
             </div>
           </motion.div>
@@ -1073,9 +1079,6 @@ const st = {
   },
   cardWrapper: {
     flexShrink: 0,
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'center',
     // Card height = container height MINUS 220px headroom (110 each side)
     // so the active card's 1.12 scale transform (~6% past the wrapper,
     // ~24.5px at maxHeight 408) PLUS the side-card arc-drop (ARC_DROP_MAX
@@ -1089,35 +1092,9 @@ const st = {
     height: 'calc(100% - 220px)',
     maxHeight: 408,
   },
-  itemIdRow: {
-    flexShrink: 0,
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'center',
-    justifyContent: 'flex-end',
-    gap: 3,
-    marginBottom: 10,
-    pointerEvents: 'none',
-  },
-  itemIdLabel: {
-    fontFamily: 'var(--font-mono, ui-monospace, monospace)',
-    fontSize: 9,
-    letterSpacing: '0.16em',
-    color: 'rgba(255,255,255,0.42)',
-    textTransform: 'uppercase',
-  },
-  itemIdValue: {
-    fontFamily: 'var(--font-mono, ui-monospace, monospace)',
-    fontSize: 12,
-    fontWeight: 500,
-    letterSpacing: '0.1em',
-    color: 'rgba(255,255,255,0.78)',
-  },
   cardImageBox: {
     position: 'relative',
-    flex: 1,
-    minHeight: 0,
-    width: '100%',
+    height: '100%',
     // width: auto — settles to the image's intrinsic width after load
     display: 'block',
     // Rotation pivot at the card's center so cards "tilt away" symmetrically
@@ -1172,6 +1149,8 @@ const st = {
     lineHeight: 1.55,
     letterSpacing: '0.01em',
     color: 'rgba(229,229,229,0.85)',
+    transition:
+      'opacity 0.22s cubic-bezier(0.4, 0, 0.2, 1), transform 0.22s cubic-bezier(0.4, 0, 0.2, 1)',
     // Cap so a long confession doesn't bleed into the dial. The sidebar
     // still shows the full transcription for the active card.
     maxHeight: '5.5em',
