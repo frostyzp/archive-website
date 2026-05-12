@@ -5,9 +5,9 @@
  *   1. the dial categories (each unique theme becomes one dial label)
  *   2. the gradient that crossfades behind the active confession
  *
- * THEME_META locks ordering and visual treatment for known themes; any new
- * theme that appears in the sheet is appended at the end with a neutral
- * fallback gradient so the app keeps working without a code change.
+ * THEME_META locks ordering and visual treatment for known themes (object
+ * key order = dial order); any new theme that appears in the sheet is appended
+ * at the end with a neutral fallback gradient so the app keeps working without a code change.
  */
 
 // Each theme uses a radial glow centered at the bottom-middle of the
@@ -19,9 +19,9 @@ const radial = (color) =>
   `radial-gradient(ellipse 90% 80% at 50% 100%, ${color} 0%, #111 70%)`;
 
 export const THEME_META = {
-  Refusal:          { id: 'refusal',     gradient: radial('#1a1a1a') },
-  Harm:             { id: 'harm',        gradient: radial('#4a1a1a') },
   Therapist:        { id: 'therapist',   gradient: radial('#2a1a4a') },
+  Harm:             { id: 'harm',        gradient: radial('#4a1a1a') },
+  Refusal:          { id: 'refusal',     gradient: radial('#1a1a1a') },
   'In Love (w/AI)': { id: 'in-love',     gradient: radial('#4a1a2e') },
   Exes:             { id: 'exes',        gradient: radial('#3a1a4a') },
   Family:           { id: 'family',      gradient: radial('#1a3a3a') },

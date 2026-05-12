@@ -2,9 +2,9 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 
 const EMOTIONS = [
-  { id: 'refusal', label: 'Refusal', gradient: 'linear-gradient(to top, #1a1a1a, #111 70%)' },
-  { id: 'harm', label: 'Harm', gradient: 'linear-gradient(to top, #4a1a1a, #111 70%)' },
   { id: 'therapist', label: 'Therapist', gradient: 'linear-gradient(to top, #2a1a4a, #111 70%)' },
+  { id: 'harm', label: 'Harm', gradient: 'linear-gradient(to top, #4a1a1a, #111 70%)' },
+  { id: 'refusal', label: 'Refusal', gradient: 'linear-gradient(to top, #1a1a1a, #111 70%)' },
   { id: 'love', label: 'Love', gradient: 'linear-gradient(to top, #4a1a2e, #111 70%)' },
   { id: 'family', label: 'Family', gradient: 'linear-gradient(to top, #1a3a3a, #111 70%)' },
   { id: 'ghostwriter', label: 'Ghostwriter', gradient: 'linear-gradient(to top, #4a3a1a, #111 70%)' },

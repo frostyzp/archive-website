@@ -57,7 +57,7 @@ function LandingPage({ onEnter, backgroundImageSrcs }) {
     if (reduceMotion || nBg <= 1) return;
     const id = window.setInterval(() => {
       setSlideIdx((i) => (i + 1) % nBg);
-    }, 1000);
+    }, 2000);
     return () => window.clearInterval(id);
   }, [nBg, reduceMotion]);
 
@@ -98,22 +98,27 @@ function LandingPage({ onEnter, backgroundImageSrcs }) {
         }}
       >
         <CardNoiseFilterDefs params={inactive} />
-        <img
-          key={slideIdx % nBg}
-          src={backgroundImageSrcs[slideIdx % nBg]}
-          alt=""
-          draggable={false}
-          style={{
-            maxWidth: 'min(92vw, 820px)',
-            maxHeight: '78vh',
-            width: 'auto',
-            height: 'auto',
-            objectFit: 'contain',
-            opacity: slideshowOpacity,
-            transform: `scale(${inactive.scale})`,
-            filter: inactiveFilter || 'none',
-          }}
-        />
+        <AnimatePresence mode="wait">
+          <motion.img
+            key={backgroundImageSrcs[slideIdx % nBg]}
+            src={backgroundImageSrcs[slideIdx % nBg]}
+            alt=""
+            draggable={false}
+            initial={reduceMotion ? false : { opacity: 0 }}
+            animate={{ opacity: slideshowOpacity }}
+            exit={reduceMotion ? undefined : { opacity: 0 }}
+            transition={{ duration: reduceMotion ? 0 : 0.45, ease: easeOut }}
+            style={{
+              maxWidth: 'min(92vw, 820px)',
+              maxHeight: '78vh',
+              width: 'auto',
+              height: 'auto',
+              objectFit: 'contain',
+              transform: `scale(${inactive.scale})`,
+              filter: inactiveFilter || 'none',
+            }}
+          />
+        </AnimatePresence>
       </div>
 
       {/* Readability wash over the slideshow. */}
@@ -371,7 +376,7 @@ function SiteTitle() {
         pointerEvents: 'none',
       }}
     >
-      What we tell AI
+      What We Tell AI
     </motion.div>
   );
 }
@@ -615,25 +620,6 @@ function AboutModal({ open, onClose }) {
                 />
               </>
             )}
-
-            <div
-              style={{
-                marginTop: 28,
-                paddingTop: 18,
-                borderTop: '1px solid rgba(0,0,0,0.1)',
-                display: 'flex',
-                flexDirection: 'column',
-                gap: 4,
-                fontFamily: 'var(--font-mono)',
-                fontSize: 10,
-                letterSpacing: '0.12em',
-                textTransform: 'uppercase',
-                color: 'rgba(0,0,0,0.45)',
-              }}
-            >
-              <div>Project by Olivia</div>
-              <div>Website by Arin</div>
-            </div>
           </motion.div>
         </motion.div>
       )}
