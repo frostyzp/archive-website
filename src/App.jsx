@@ -10,14 +10,15 @@ import {
 } from './SideDial';
 import { CONFESSIONS as FALLBACK_CONFESSIONS } from './confessions';
 import { deriveEmotions, sortConfessionsByEmotions } from './themes';
+import { confessionNoteImageUrl } from './loadConfessions';
 import { useConfessions } from './useConfessions';
 import { GrainOverlay, HEAVY_PAPER, TunableGrainBackground } from './noise.jsx';
 
 const ease = [0.22, 1, 0.36, 1];
 
 // First three confessions used as the peek-out notes at the bottom of the
-// landing page. Pulled from the local /confession_notes folder served via
-// the symlink in /public.
+// landing page. Images live in `public/confession_notes_2` as WebP
+// (`/confession_notes_2/AC_xxx.webp`), same source as live sheet data.
 const LANDING_BOTTOM_NOTES = ['AC_094', 'AC_095', 'AC_096'];
 
 // Standard ease-out-quart curve used by the intro page note slide-up.
@@ -190,7 +191,7 @@ function LandingPage({ onEnter }) {
                 style={{ willChange: 'transform' }}
               >
                 <motion.img
-                  src={`/confession_notes/${LANDING_BOTTOM_NOTES[n.noteIdx]}.png`}
+                  src={confessionNoteImageUrl(LANDING_BOTTOM_NOTES[n.noteIdx])}
                   alt=""
                   draggable={false}
                   initial={false}
