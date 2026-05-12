@@ -12,7 +12,7 @@ import { CONFESSIONS as FALLBACK_CONFESSIONS } from './confessions';
 import { deriveEmotions, sortConfessionsByEmotions } from './themes';
 import { confessionNoteImageUrl } from './loadConfessions';
 import { useConfessions } from './useConfessions';
-import { GrainOverlay, HEAVY_PAPER, TunableGrainBackground } from './noise.jsx';
+import { GrainOverlay, HEAVY_PAPER, TunableGrainBackground } from './noise';
 
 const ease = [0.22, 1, 0.36, 1];
 
@@ -242,7 +242,7 @@ function LandingPage({ onEnter }) {
             >
               <h1
                 style={{
-                  fontFamily: "'OT Brut', 'News Plantin', Georgia, serif",
+                  fontFamily: "'Reckless Italic', 'News Plantin', Georgia, serif",
                   fontSize: '52px',
                   fontWeight: 400,
                   lineHeight: 1,
@@ -251,13 +251,13 @@ function LandingPage({ onEnter }) {
                   margin: 0,
                 }}
               >
-                WHAT WE TELL AI
+                What we tell AI
               </h1>
               <p
                 style={{
                   margin: '18px 0 0',
                   maxWidth: 520,
-                  fontFamily: "'OT Brut', 'News Plantin', Georgia, serif",
+                  fontFamily: "'Reckless Italic', 'News Plantin', Georgia, serif",
                   fontSize: 18,
                   fontWeight: 400,
                   lineHeight: 1.45,
@@ -265,8 +265,7 @@ function LandingPage({ onEnter }) {
                   color: 'rgba(229, 229, 229, 0.78)',
                 }}
               >
-                Anonymous confessions about AI&rsquo;s presence in our intimate
-                lives
+                
               </p>
             </motion.div>
 
@@ -291,7 +290,7 @@ function LandingPage({ onEnter }) {
                 opacity: 0.85,
               }}
             >
-              CONTINUE
+              ENTER ARCHIVE
             </motion.button>
           </motion.div>
         )}
@@ -390,7 +389,7 @@ function ViewToggle({
   onChange,
   sidebarInset = SIDEBAR_WIDTH,
   stacked = false,
-  /** In mobile top bar: GRID | THEME stay on one row, not fixed to viewport. */
+  /** In mobile top bar: GRID | DIAL stay on one row, not fixed to viewport. */
   embedded = false,
 }) {
   const columnStack = stacked && !embedded;
@@ -445,7 +444,7 @@ function ViewToggle({
         <div style={{ width: 1, height: 14, background: 'rgba(255,255,255,0.25)' }} />
       )}
       <ToggleButton active={view === 'theme'} onClick={() => onChange('theme')}>
-        THEME
+        DIAL
       </ToggleButton>
     </motion.div>
   );
@@ -467,12 +466,13 @@ function SiteTitle() {
         zIndex: 200,
         padding: '6px 12px',
         color: '#fdfdfd',
-        fontFamily: 'var(--font-mono)',
-        fontSize: 11,
-        letterSpacing: '0.14em',
+        fontFamily: "'Reckless Italic', 'News Plantin', Georgia, serif",
+        fontSize: 15,
+        fontWeight: 400,
+        letterSpacing: '0.02em',
         lineHeight: 1.06,
-        opacity: 0.85,
-        textTransform: 'uppercase',
+        opacity: 0.9,
+        textTransform: 'none',
         pointerEvents: 'none',
       }}
     >
@@ -901,49 +901,94 @@ function Lightbox({ confession, onClose }) {
             alignItems: 'center',
             justifyContent: 'center',
             cursor: 'zoom-out',
+            padding: '32px 20px 40px',
+            boxSizing: 'border-box',
+            overflowY: 'auto',
           }}
         >
-          <motion.img
-            key="lightbox-img"
-            src={confession.image}
-            alt={`Confession ${confession.id}`}
-            draggable={false}
-            {...imageMotion}
-            transition={{ duration: 0.24, ease: easeOut, exit: { duration: 0.18 } }}
+          <div
             onClick={(e) => e.stopPropagation()}
             style={{
-              maxWidth: 'min(90vw, 900px)',
-              maxHeight: '88vh',
-              width: 'auto',
-              height: 'auto',
-              objectFit: 'contain',
-              display: 'block',
-              boxShadow: 'none',
-              cursor: 'default',
-              willChange: 'transform, opacity',
-            }}
-          />
-
-          <motion.div
-            initial={{ opacity: 0, y: 4 }}
-            animate={{ opacity: 0.7, y: 0 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.24, ease: easeOut, delay: 0.05 }}
-            style={{
-              position: 'absolute',
-              bottom: 24,
-              left: '50%',
-              transform: 'translateX(-50%)',
-              fontFamily: 'var(--font-mono)',
-              fontSize: 11,
-              letterSpacing: '0.14em',
-              color: 'rgba(255,255,255,0.7)',
-              pointerEvents: 'none',
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              gap: 18,
+              maxWidth: 'min(92vw, 680px)',
+              width: '100%',
             }}
           >
-            {String(confession.id).padStart(3, '0')}
-            {confession.category ? ` · ${confession.category.toUpperCase()}` : ''}
-          </motion.div>
+            <motion.img
+              key="lightbox-img"
+              src={confession.image}
+              alt={`Confession ${confession.id}`}
+              draggable={false}
+              {...imageMotion}
+              transition={{ duration: 0.24, ease: easeOut, exit: { duration: 0.18 } }}
+              style={{
+                maxWidth: 'min(72vw, 560px)',
+                maxHeight: '58vh',
+                width: 'auto',
+                height: 'auto',
+                objectFit: 'contain',
+                display: 'block',
+                boxShadow: 'none',
+                cursor: 'default',
+                willChange: 'transform, opacity',
+              }}
+            />
+
+            <motion.div
+              initial={{ opacity: 0, y: 4 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.24, ease: easeOut, delay: 0.05 }}
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                gap: 14,
+                width: '100%',
+                pointerEvents: 'none',
+              }}
+            >
+              <div
+                style={{
+                  fontFamily: 'var(--font-mono)',
+                  fontSize: 10,
+                  letterSpacing: '0.12em',
+                  color: 'rgba(255,255,255,0.62)',
+                  textAlign: 'center',
+                  lineHeight: 1.5,
+                }}
+              >
+                {(() => {
+                  const itemId = confession.metadata?.itemId?.trim();
+                  const idPart = String(confession.id).padStart(3, '0');
+                  const cat = confession.category?.toUpperCase();
+                  const parts = [];
+                  if (itemId) parts.push(`ITEM ID ${itemId}`);
+                  parts.push(idPart);
+                  if (cat) parts.push(cat);
+                  return parts.join(' · ');
+                })()}
+              </div>
+              {confession.transcription ? (
+                <div
+                  style={{
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: 12,
+                    lineHeight: 1.55,
+                    letterSpacing: '0.02em',
+                    color: 'rgba(229,229,229,0.88)',
+                    textAlign: 'center',
+                    maxWidth: '100%',
+                  }}
+                >
+                  {confession.transcription}
+                </div>
+              ) : null}
+            </motion.div>
+          </div>
         </motion.div>
       )}
     </AnimatePresence>
@@ -1188,12 +1233,32 @@ function ArchivePage() {
   const [activeEmotion, setActiveEmotion] = useState(null);
   const [activeIndex, setActiveIndex] = useState(0);
 
-  // Once data loads, snap activeEmotion to the first available emotion.
+  // Default the dial to the first emotion and align the card stack to the
+  // first confession in that category. Otherwise activeIndex stays 0 while
+  // the dial shows e.g. "Refusal" — sort order can put another category at
+  // index 0, so every card looks inactive until the user scrolls.
   useEffect(() => {
-    if (!activeEmotion && emotions.length > 0) {
-      setActiveEmotion(emotions[0].id);
+    if (emotions.length === 0 || themedConfessions.length === 0) return;
+
+    const emoId = activeEmotion ?? emotions[0].id;
+    if (!activeEmotion) {
+      setActiveEmotion(emoId);
     }
-  }, [emotions, activeEmotion]);
+
+    const label = emotions.find((e) => e.id === emoId)?.label;
+    if (!label) return;
+
+    const idx = themedConfessions.findIndex((c) => c.category === label);
+    if (idx < 0) return;
+
+    const inBounds = activeIndex >= 0 && activeIndex < themedConfessions.length;
+    const cur = inBounds ? themedConfessions[activeIndex] : null;
+    const aligned = cur?.category === label;
+
+    if (!aligned) {
+      setActiveIndex(idx);
+    }
+  }, [emotions, themedConfessions, activeEmotion, activeIndex]);
 
   const activeEmotionData = emotions.find((e) => e.id === activeEmotion);
   // Active confession is indexed against themedConfessions because the

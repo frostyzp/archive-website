@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, useCallback } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useCallback } from 'react';
 import { motion, useReducedMotion } from 'motion/react';
 import {
   CARD_FILTER_ID,
@@ -76,7 +76,7 @@ export function BottomCompassDial({
   activeEmotion,
   onEmotionChange,
   size = SIZE,
-  /** When set, thin radial spokes in the active dial sector (one per note in category). */
+  /** When set, shows a small `n/total` under the active dial label (multi-note categories). */
   breadcrumb = null,
 }) {
   const canvasRef = useRef(null);
@@ -84,10 +84,7 @@ export function BottomCompassDial({
   const rafRef = useRef(null);
   const snapAnimRef = useRef(null);
   const snapTimerRef = useRef(null);
-  const pipAnimRafRef = useRef(null);
   const breadcrumbRef = useRef(breadcrumb);
-  /** Smoothed outer endpoint radius (px) per category tick along each radial. */
-  const pipRadialOuterRef = useRef([]);
   breadcrumbRef.current = breadcrumb;
   // Per-emotion "active progress" (0 = inactive, 1 = fully active). Animated
   // toward the target whenever activeEmotion changes so the highlight
@@ -156,84 +153,33 @@ export function BottomCompassDial({
     const localStep = (Math.PI * 2) / emos.length;
     const offset = -Math.PI / 2; // active label points UP
     const innerStart = R * 0.06;
-    const dividerOuter = R * 0.48;
-    const DIAL_SPOKE_GREY = 'rgba(160,160,160,0.45)';
 
     const bc = breadcrumbRef.current;
-    const pipLens = pipRadialOuterRef.current;
-    // Smoothed outer radius (px) along each pip's radial; inactive = short
-    // spoke, active = modestly longer spoke (still grey, not full reach to label).
-    const rStart = innerStart;
-    const rSpan = Math.max(8, labelR - innerStart);
-    const SHORT_R = rStart + rSpan * 0.18;
-    const LONG_R = rStart + rSpan * 0.44;
-    let pipNeedsFrame = false;
-    if (bc && bc.total > 1) {
-      const n = bc.total;
-      if (pipLens.length !== n) {
-        pipLens.length = n;
-        for (let i = 0; i < n; i++) pipLens[i] = SHORT_R;
-      }
-      for (let i = 0; i < n; i++) {
-        const target = i === bc.position ? LONG_R : SHORT_R;
-        const cur = pipLens[i];
-        const next = cur + (target - cur) * 0.2;
-        pipLens[i] = next;
-        if (Math.abs(target - next) > 0.45) pipNeedsFrame = true;
-      }
-    } else if (pipLens.length > 0) {
-      pipLens.length = 0;
-    }
 
-    // Divider lines: start at a small inner radius (so the round caps
-    // don't all stack on top of each other at exact center, which would
-    // produce a visibly brighter blob) and extend to R * 0.54.
+    // Divider lines: radial spokes from the hub, longer than before, with a
+    // linear gradient that fades out toward the outer tip.
+    const dividerTipR = R * 0.58;
     emos.forEach((_, i) => {
       const dividerAngle = angle + i * localStep + offset + localStep / 2;
+      const cos = Math.cos(dividerAngle);
+      const sin = Math.sin(dividerAngle);
+      const x0 = CX + cos * innerStart;
+      const y0 = CY + sin * innerStart;
+      const x1 = CX + cos * dividerTipR;
+      const y1 = CY + sin * dividerTipR;
+      const grad = ctx.createLinearGradient(x0, y0, x1, y1);
+      grad.addColorStop(0, 'rgba(160,160,160,0.52)');
+      grad.addColorStop(0.38, 'rgba(160,160,160,0.44)');
+      grad.addColorStop(0.72, 'rgba(160,160,160,0.18)');
+      grad.addColorStop(1, 'rgba(160,160,160,0)');
       ctx.beginPath();
-      ctx.moveTo(
-        CX + Math.cos(dividerAngle) * innerStart,
-        CY + Math.sin(dividerAngle) * innerStart,
-      );
-      ctx.lineTo(
-        CX + Math.cos(dividerAngle) * dividerOuter,
-        CY + Math.sin(dividerAngle) * dividerOuter,
-      );
-      ctx.strokeStyle = DIAL_SPOKE_GREY;
+      ctx.moveTo(x0, y0);
+      ctx.lineTo(x1, y1);
+      ctx.strokeStyle = grad;
       ctx.lineWidth = 4;
-      // `round` line caps give the divider tips a soft semicircle finish
-      // instead of a flat blunt edge, which matches the dial's organic
-      // compass-needle aesthetic.
       ctx.lineCap = 'round';
       ctx.stroke();
     });
-
-    // Within-category ticks: thin radial spokes in the active sector (same
-    // origin as the dial dividers). Inactive = short grey spoke; active =
-    // slightly longer grey spoke (no white highlight).
-    if (bc && bc.total > 1) {
-      const activeIdx = emos.findIndex((e) => e.id === active);
-      if (activeIdx >= 0) {
-        const thetaL = angle + activeIdx * localStep + offset - localStep / 2;
-        const thetaSpan = localStep;
-        const LINE_W = Math.max(1, size * 0.0024);
-        for (let k = 0; k < bc.total; k++) {
-          const t = (k + 0.5) / bc.total;
-          const theta = thetaL + t * thetaSpan;
-          const rx = Math.cos(theta);
-          const ry = Math.sin(theta);
-          const r1 = pipLens[k] ?? SHORT_R;
-          const isOn = k === bc.position;
-          ctx.beginPath();
-          ctx.moveTo(CX + rx * rStart, CY + ry * rStart);
-          ctx.lineTo(CX + rx * r1, CY + ry * r1);
-          ctx.strokeStyle = isOn ? DIAL_SPOKE_GREY : 'rgba(118,118,118,0.4)';
-          ctx.lineWidth = isOn ? LINE_W * 1.15 : LINE_W;
-          ctx.lineCap = 'round';
-          ctx.stroke();
-        }
-      }
-    }
 
     emos.forEach((emo, i) => {
       const a = angle + i * localStep + offset;
@@ -265,25 +211,49 @@ export function BottomCompassDial({
       } else {
         ctx.filter = 'none';
       }
-      ctx.font = `${fontWeight} ${fontSize}px 'News Plantin', Georgia, serif`;
+      ctx.font = `${fontWeight} ${fontSize}px 'Reckless Italic', 'News Plantin', Georgia, serif`;
       ctx.fillStyle = `rgba(${r},${g},${b},${alpha})`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.fillText(emo.label, 0, 0);
       ctx.filter = 'none';
 
+      const cat = bc?.category;
+      const labelMatch =
+        cat &&
+        emo.label &&
+        emo.label.toLowerCase() === String(cat).toLowerCase();
+      if (
+        bc &&
+        bc.total > 1 &&
+        emo.id === active &&
+        labelMatch &&
+        p > 0.9
+      ) {
+        const sub = `${bc.position + 1}/${bc.total}`;
+        const subPx = Math.max(7, Math.round(size * 0.014));
+        const subY = fontSize * 0.5 + 4;
+        ctx.font = `500 ${subPx}px ui-monospace, "SF Mono", "Menlo", monospace`;
+        ctx.fillStyle = `rgba(190,190,190,${0.38 + 0.4 * p})`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'top';
+        ctx.fillText(sub, 0, subY);
+      }
+
       ctx.restore();
     });
 
-    if (pipNeedsFrame && pipAnimRafRef.current == null) {
-      pipAnimRafRef.current = requestAnimationFrame(() => {
-        pipAnimRafRef.current = null;
-        draw();
-      });
-    }
+    // Hub cap: same grey as divider spokes; drawn last so it sits on top at
+    // the canvas bottom and masks the gap between converging line caps.
+    const hubCapR = Math.max(12, R * 0.056);
+    const hubAnchorY = CY - hubCapR + 2;
+    ctx.beginPath();
+    ctx.moveTo(CX - hubCapR, hubAnchorY);
+    ctx.arc(CX, hubAnchorY, hubCapR, Math.PI, 0, false);
+    ctx.closePath();
+    ctx.fillStyle = 'rgb(160, 160, 160)';
+    ctx.fill();
 
-    // Center hub removed — divider lines' rounded caps converge at the
-    // center on their own; an explicit hub circle felt redundant.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [size]);
 
@@ -461,10 +431,6 @@ export function BottomCompassDial({
       if (snapTimerRef.current) clearTimeout(snapTimerRef.current);
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
       if (snapAnimRef.current) cancelAnimationFrame(snapAnimRef.current);
-      if (pipAnimRafRef.current) {
-        cancelAnimationFrame(pipAnimRafRef.current);
-        pipAnimRafRef.current = null;
-      }
     };
   }, [draw]);
 
@@ -492,6 +458,51 @@ export function BottomCompassDial({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [size]);
 
+  const LABEL_CURSOR_HIT = Math.max(44, size * 0.1);
+
+  const handlePointerMove = useCallback(
+    (e) => {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const rect = canvas.getBoundingClientRect();
+      const scaleX = size / rect.width;
+      const scaleY = visibleHeight / rect.height;
+      const px = (e.clientX - rect.left) * scaleX;
+      const py = (e.clientY - rect.top) * scaleY;
+      const dx = px - CX;
+      const dy = py - CY;
+      const dist = Math.hypot(dx, dy);
+
+      if (dist > R) {
+        canvas.style.cursor = 'default';
+        return;
+      }
+      if (dist < R * 0.15) {
+        canvas.style.cursor = 'ns-resize';
+        return;
+      }
+
+      const emos = emotionsRef.current;
+      const ang = currentAngleRef.current;
+      const localStep = (Math.PI * 2) / Math.max(emos.length, 1);
+      const off = -Math.PI / 2;
+      let best = Infinity;
+      for (let i = 0; i < emos.length; i++) {
+        const a = ang + i * localStep + off;
+        const lx = CX + Math.cos(a) * labelR;
+        const ly = CY + Math.sin(a) * labelR;
+        best = Math.min(best, Math.hypot(px - lx, py - ly));
+      }
+      canvas.style.cursor = best <= LABEL_CURSOR_HIT ? 'pointer' : 'ns-resize';
+    },
+    [size, R, CX, CY, labelR, visibleHeight]
+  );
+
+  const handlePointerLeave = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (canvas) canvas.style.cursor = 'ns-resize';
+  }, []);
+
   // Self-clipping wrapper: the canvas is the full square but only the strip
   // around the labels is shown, with the canvas shifted upward so the
   // active label sits LABEL_TOP_PAD from the top edge.
@@ -507,10 +518,12 @@ export function BottomCompassDial({
       <canvas
         ref={canvasRef}
         onClick={handleClick}
+        onMouseMove={handlePointerMove}
+        onMouseLeave={handlePointerLeave}
         style={{
           width: size,
           height: visibleHeight,
-          cursor: 'pointer',
+          cursor: 'ns-resize',
           touchAction: 'none',
           position: 'absolute',
           left: 0,
@@ -531,8 +544,9 @@ export const BOTTOM_DIAL_SIZE = SIZE;
 export const getBottomDialVisibleHeight = (size) => size / 2;
 
 /**
- * Slot of `activeConfession` within its category for dial tick marks.
- * Returns null when the category has 0 or 1 note (no ticks).
+ * Slot of `activeConfession` within its category (for dial `n/total` label).
+ * Returns null when the category has 0 or 1 note. Includes `category` so
+ * the dial can match the active emotion label case-insensitively.
  */
 export function getCategoryBreadcrumbInfo(confessions, activeConfession) {
   if (!activeConfession) return null;
@@ -549,10 +563,14 @@ export function getCategoryBreadcrumbInfo(confessions, activeConfession) {
   });
   const info = map.get(activeConfession.id);
   if (!info || info.total <= 1) return null;
-  return { total: info.total, position: info.position };
+  return {
+    total: info.total,
+    position: info.position,
+    category: activeConfession.category,
+  };
 }
 
-/* ── Category Breadcrumb (dial canvas ticks) ───── */
+/* ── Category slot counter (dial label) ──────────── */
 
 /* ── Horizontal Cards Stack ────────────────────── */
 
@@ -592,9 +610,6 @@ export function HorizontalConfessionStack({
     .join(' ');
 
   const n = confessions.length;
-  // Which card the cursor is currently over (one card at a time). Drives the
-  // metadata overlay (globalId / tags / transcription) on hover.
-  const [hoveredKey, setHoveredKey] = useState(null);
 
   // Render the confessions array COPY_COUNT times back-to-back. Each render
   // item carries its `logicalIndex` (0..n-1) — copies of the same logical
@@ -962,13 +977,10 @@ export function HorizontalConfessionStack({
       {renderItems.map((item, renderIdx) => {
         const isActive = item.logicalIndex === activeIndex;
         const cardKey = `${item.copy}-${item.confession.id}`;
-        // Metadata only surfaces for the active (centered/snapped) card.
-        // Inactive cards are intentionally muted — hover does nothing on
-        // them so the user has to scroll/click to bring a card into focus
-        // before they can read its details.
-        const showMeta = isActive && hoveredKey === cardKey;
-        // Breadcrumb ticks used to render here; they now live in
-        // BottomCompassDial as thin radial spokes in the active sector.
+        const itemIdDisplay =
+          (item.confession.metadata?.itemId && String(item.confession.metadata.itemId).trim()) ||
+          String(item.confession.id).padStart(3, '0');
+        // Within-category `n/total` is drawn on the dial under the active label.
         // Stagger the entrance as a wave radiating outward from the active
         // card — that's where the user is focused on mount, so the focal
         // card appears first and its neighbours wash in around it. Outer
@@ -995,16 +1007,18 @@ export function HorizontalConfessionStack({
                   }
             }
             onClick={() => setActiveFromClick(item.logicalIndex)}
-            onMouseEnter={() => setHoveredKey(cardKey)}
-            onMouseLeave={() =>
-              setHoveredKey((k) => (k === cardKey ? null : k))
-            }
             style={{
               ...st.cardWrapper,
               cursor: isActive ? 'default' : 'pointer',
               willChange: 'transform, opacity',
             }}
           >
+            {isActive && (
+              <div style={st.itemIdRow}>
+                <span style={st.itemIdLabel}>ITEM ID</span>
+                <span style={st.itemIdValue}>{itemIdDisplay}</span>
+              </div>
+            )}
             <div data-tilt-target style={st.cardImageBox}>
               <img
                 src={item.confession.image}
@@ -1019,23 +1033,11 @@ export function HorizontalConfessionStack({
               />
             </div>
 
-            {/* Hover-only metadata block — only the transcription is shown
-                under the active card. The globalId + tags pills row used to
-                sit above the transcription but is hidden now (the sidebar
-                metadata panel still surfaces id/tags for the active card).
-                Whole block is absolutely positioned so it doesn't grow the
-                card wrapper's layout footprint. */}
+            {/* Transcription under the active card only; always visible when
+                centered (no hover). Sidebar still has full metadata. */}
             <div style={st.metaBlock}>
-              {item.confession.transcription && (
-                <div
-                  style={{
-                    ...st.metaTranscription,
-                    opacity: showMeta ? 1 : 0,
-                    transform: showMeta ? 'translateY(0)' : 'translateY(-4px)',
-                  }}
-                >
-                  {item.confession.transcription}
-                </div>
+              {isActive && item.confession.transcription && (
+                <div style={st.metaTranscription}>{item.confession.transcription}</div>
               )}
             </div>
           </motion.div>
@@ -1071,6 +1073,9 @@ const st = {
   },
   cardWrapper: {
     flexShrink: 0,
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
     // Card height = container height MINUS 220px headroom (110 each side)
     // so the active card's 1.12 scale transform (~6% past the wrapper,
     // ~24.5px at maxHeight 408) PLUS the side-card arc-drop (ARC_DROP_MAX
@@ -1084,9 +1089,35 @@ const st = {
     height: 'calc(100% - 220px)',
     maxHeight: 408,
   },
+  itemIdRow: {
+    flexShrink: 0,
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 3,
+    marginBottom: 10,
+    pointerEvents: 'none',
+  },
+  itemIdLabel: {
+    fontFamily: 'var(--font-mono, ui-monospace, monospace)',
+    fontSize: 9,
+    letterSpacing: '0.16em',
+    color: 'rgba(255,255,255,0.42)',
+    textTransform: 'uppercase',
+  },
+  itemIdValue: {
+    fontFamily: 'var(--font-mono, ui-monospace, monospace)',
+    fontSize: 12,
+    fontWeight: 500,
+    letterSpacing: '0.1em',
+    color: 'rgba(255,255,255,0.78)',
+  },
   cardImageBox: {
     position: 'relative',
-    height: '100%',
+    flex: 1,
+    minHeight: 0,
+    width: '100%',
     // width: auto — settles to the image's intrinsic width after load
     display: 'block',
     // Rotation pivot at the card's center so cards "tilt away" symmetrically
@@ -1141,8 +1172,6 @@ const st = {
     lineHeight: 1.55,
     letterSpacing: '0.01em',
     color: 'rgba(229,229,229,0.85)',
-    transition:
-      'opacity 0.22s cubic-bezier(0.4, 0, 0.2, 1), transform 0.22s cubic-bezier(0.4, 0, 0.2, 1)',
     // Cap so a long confession doesn't bleed into the dial. The sidebar
     // still shows the full transcription for the active card.
     maxHeight: '5.5em',
