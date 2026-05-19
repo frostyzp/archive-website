@@ -10,6 +10,7 @@ import {
 } from './SideDial';
 import { CONFESSIONS as FALLBACK_CONFESSIONS } from './confessions';
 import { deriveEmotions, sortConfessionsByEmotions } from './themes';
+import { confessionNoteImageUrl } from './loadConfessions';
 import { useConfessions } from './useConfessions';
 import {
   CARD_FILTER_ID,
@@ -19,6 +20,135 @@ import {
 } from './noise';
 
 const ease = [0.22, 1, 0.36, 1];
+
+/** Onboarding stills (`public/confession_notes_2` WebP). */
+const LANDING_REVEAL_IMAGE_IDS = ['AC_185', 'AC_171', 'AC_190'];
+
+const LANDING_REVEAL_WORDS =
+  'We asked strangers to share an anonymous confession about the way they\u2019ve interacted with AI.'.split(' ');
+
+const REVEAL_NOTE_ENTRANCE_S = 0.48;
+/** Hold card-noise filter after entrance, then crossfade to clean. */
+const REVEAL_NOTE_NOISE_HOLD_S = 1.5;
+const REVEAL_NOTE_NOISE_FADE_S = 0.85;
+/** Opacity while B&W + noise; clean layer fades up to full after filter drops. */
+const REVEAL_NOTE_DEGRADED_OPACITY = 0.3;
+const REVEAL_NOTE_CLEAN_OPACITY = 1;
+
+/** When the last onboarding note finishes its clean crossfade (filter fully off). */
+function revealNotesFilterDoneDelayS(reduceMotion) {
+  if (reduceMotion) return 0;
+  const afterWords = LANDING_REVEAL_WORDS.length * 0.055 + 0.32;
+  const lastNoteEntrance =
+    afterWords + (LANDING_REVEAL_IMAGE_IDS.length - 1) * 0.16;
+  return (
+    lastNoteEntrance +
+    REVEAL_NOTE_ENTRANCE_S +
+    REVEAL_NOTE_NOISE_HOLD_S +
+    REVEAL_NOTE_NOISE_FADE_S
+  );
+}
+
+/** Landing hero copy — staggered entrance; ENTER last. */
+const LANDING_HERO_TITLE_DELAY_S = 0.1;
+const LANDING_HERO_SUBTITLE_DELAY_S = 0.38;
+const LANDING_HERO_ENTER_DELAY_S = 0.8;
+const LANDING_HERO_FADE_S = 0.72;
+
+function buildRevealDegradedFilter(inactive, noiseEnabled) {
+  return [
+    inactive.grayscale > 0 ? `grayscale(${inactive.grayscale})` : 'grayscale(1)',
+    noiseEnabled ? `url(#${CARD_FILTER_ID})` : '',
+  ]
+    .filter(Boolean)
+    .join(' ');
+}
+
+/** Onboarding note — B&W + noise on appear, then crossfade to clean and hide degraded layer. */
+function LandingRevealNote({
+  id,
+  entranceDelay,
+  reduceMotion,
+  easeOut,
+  hoverTilt,
+  inactive,
+  noiseEnabled,
+}) {
+  const entranceDone = entranceDelay + (reduceMotion ? 0 : REVEAL_NOTE_ENTRANCE_S);
+  const cleanFadeDelay = entranceDone + (reduceMotion ? 0 : REVEAL_NOTE_NOISE_HOLD_S);
+  const degradedFilter = buildRevealDegradedFilter(inactive, noiseEnabled);
+  const [showClean, setShowClean] = useState(!!reduceMotion);
+
+  useEffect(() => {
+    if (reduceMotion) return;
+    const timer = window.setTimeout(() => setShowClean(true), cleanFadeDelay * 1000);
+    return () => window.clearTimeout(timer);
+  }, [cleanFadeDelay, reduceMotion]);
+
+  return (
+    <motion.div
+      style={{ cursor: reduceMotion ? 'default' : 'pointer' }}
+      whileHover={reduceMotion ? undefined : { rotate: hoverTilt, scale: 1.02 }}
+      transition={{ duration: 0.28, ease: easeOut }}
+    >
+      <div style={{ position: 'relative', width: 'min(32vw, 240px)' }}>
+        <motion.img
+          src={confessionNoteImageUrl(id)}
+          alt=""
+          aria-hidden
+          draggable={false}
+          initial={reduceMotion ? false : { opacity: 0, y: 8 }}
+          animate={{
+            opacity: reduceMotion ? 0 : showClean ? 0 : REVEAL_NOTE_DEGRADED_OPACITY,
+            y: 0,
+          }}
+          transition={{
+            opacity: {
+              duration: showClean ? REVEAL_NOTE_NOISE_FADE_S : REVEAL_NOTE_ENTRANCE_S,
+              delay: showClean ? 0 : entranceDelay,
+              ease: easeOut,
+            },
+            y: {
+              duration: REVEAL_NOTE_ENTRANCE_S,
+              delay: entranceDelay,
+              ease: easeOut,
+            },
+          }}
+          style={{
+            width: '100%',
+            height: 'auto',
+            objectFit: 'contain',
+            display: 'block',
+            filter: degradedFilter,
+            pointerEvents: 'none',
+          }}
+        />
+        <motion.img
+          src={confessionNoteImageUrl(id)}
+          alt=""
+          draggable={false}
+          initial={{ opacity: reduceMotion ? REVEAL_NOTE_CLEAN_OPACITY : 0 }}
+          animate={{
+            opacity: reduceMotion ? REVEAL_NOTE_CLEAN_OPACITY : showClean ? REVEAL_NOTE_CLEAN_OPACITY : 0,
+          }}
+          transition={{
+            duration: reduceMotion ? 0 : REVEAL_NOTE_NOISE_FADE_S,
+            ease: easeOut,
+          }}
+          style={{
+            position: 'absolute',
+            inset: 0,
+            width: '100%',
+            height: 'auto',
+            objectFit: 'contain',
+            display: 'block',
+            filter: 'none',
+          }}
+        />
+      </div>
+    </motion.div>
+  );
+}
 
 /** Unique image URLs for landing background slideshow (live sheet or fallback). */
 function useLandingBackgroundSrcs(liveConfessions) {
@@ -36,7 +166,50 @@ function useLandingBackgroundSrcs(liveConfessions) {
   }, [liveConfessions]);
 }
 
+/** One slide in the landing stack: fades in only after bitmap decode (no pop-in). */
+function LandingBackgroundSlide({
+  src,
+  slideshowOpacity,
+  reduceMotion,
+  inactiveFilter,
+  inactiveScale,
+  easeOut,
+}) {
+  const [decoded, setDecoded] = useState(false);
+
+  return (
+    <motion.img
+      src={src}
+      alt=""
+      draggable={false}
+      loading="eager"
+      initial={{ opacity: 0 }}
+      animate={{
+        opacity: reduceMotion ? slideshowOpacity : decoded ? slideshowOpacity : 0,
+      }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: reduceMotion ? 0 : 0.45, ease: easeOut }}
+      onLoad={() => setDecoded(true)}
+      onError={() => setDecoded(true)}
+      style={{
+        position: 'absolute',
+        inset: 0,
+        margin: 'auto',
+        maxWidth: '100%',
+        maxHeight: '100%',
+        width: 'auto',
+        height: 'auto',
+        objectFit: 'contain',
+        transform: `scale(${inactiveScale})`,
+        filter: inactiveFilter || 'none',
+      }}
+    />
+  );
+}
+
 function LandingPage({ onEnter, backgroundImageSrcs }) {
+  // 'hero' → title + ENTER; 'reveal' → staggered copy + stills + EXPLORE.
+  const [phase, setPhase] = useState('hero');
   const [slideIdx, setSlideIdx] = useState(0);
   const reduceMotion = useReducedMotion();
   const inactive = useInactiveCardParams();
@@ -83,9 +256,12 @@ function LandingPage({ onEnter, backgroundImageSrcs }) {
         background: '#050505',
       }}
     >
-      {/* Centered confession stills — same blur / grayscale / noise as inactive carousel cards. */}
-      <div
+      {/* Centered confession stills — hidden during onboarding reveal (no blur/grain behind notes). */}
+      <motion.div
         aria-hidden="true"
+        initial={false}
+        animate={{ opacity: phase === 'reveal' ? 0 : 1 }}
+        transition={{ duration: 0.35, ease: easeOut }}
         style={{
           position: 'absolute',
           inset: 0,
@@ -98,30 +274,30 @@ function LandingPage({ onEnter, backgroundImageSrcs }) {
         }}
       >
         <CardNoiseFilterDefs params={inactive} />
-        <AnimatePresence mode="wait">
-          <motion.img
-            key={backgroundImageSrcs[slideIdx % nBg]}
-            src={backgroundImageSrcs[slideIdx % nBg]}
-            alt=""
-            draggable={false}
-            initial={reduceMotion ? false : { opacity: 0 }}
-            animate={{ opacity: slideshowOpacity }}
-            exit={reduceMotion ? undefined : { opacity: 0 }}
-            transition={{ duration: reduceMotion ? 0 : 0.45, ease: easeOut }}
-            style={{
-              maxWidth: 'min(92vw, 820px)',
-              maxHeight: '78vh',
-              width: 'auto',
-              height: 'auto',
-              objectFit: 'contain',
-              transform: `scale(${inactive.scale})`,
-              filter: inactiveFilter || 'none',
-            }}
-          />
-        </AnimatePresence>
-      </div>
+        {/* Fixed slot so outgoing + incoming overlap; decode gate avoids sharp bitmap reveal. */}
+        <div
+          style={{
+            position: 'relative',
+            width: 'min(92vw, 820px)',
+            height: '78vh',
+            maxHeight: '78vh',
+          }}
+        >
+          <AnimatePresence>
+            <LandingBackgroundSlide
+              key={`${slideIdx % nBg}-${backgroundImageSrcs[slideIdx % nBg]}`}
+              src={backgroundImageSrcs[slideIdx % nBg]}
+              slideshowOpacity={slideshowOpacity}
+              reduceMotion={reduceMotion}
+              inactiveFilter={inactiveFilter}
+              inactiveScale={inactive.scale}
+              easeOut={easeOut}
+            />
+          </AnimatePresence>
+        </div>
+      </motion.div>
 
-      {/* Readability wash over the slideshow. */}
+      {/* Readability wash — hero + onboarding reveal. */}
       <div
         aria-hidden="true"
         style={{
@@ -134,7 +310,7 @@ function LandingPage({ onEnter, backgroundImageSrcs }) {
         }}
       />
 
-      {/* Full-viewport grain backdrop. */}
+      {/* Full-viewport grain — hero + onboarding reveal. */}
       <div
         aria-hidden="true"
         style={{
@@ -149,28 +325,29 @@ function LandingPage({ onEnter, backgroundImageSrcs }) {
         <TunableGrainBackground opacityScale={0.5} />
       </div>
 
-      {/* Hero: title + ENTER → archive (interim reveal step hidden for now). */}
+      {/* Hero: title + ENTER → onboarding reveal. */}
       <AnimatePresence>
-        <motion.div
-          key="hero-content"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          transition={{ duration: 0.45, ease: easeOut }}
-          style={{
-            position: 'relative',
-            zIndex: 3,
-            display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'center',
-          }}
-        >
+        {phase === 'hero' && (
           <motion.div
-            initial={{ opacity: 0, y: 30 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.8, ease, delay: 0.1 }}
+            key="hero-content"
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.45, ease: easeOut }}
+            style={{
+              position: 'relative',
+              zIndex: 3,
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+            }}
           >
-            <h1
+            <motion.h1
+              initial={reduceMotion ? false : { opacity: 0, y: 28 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{
+                duration: reduceMotion ? 0 : LANDING_HERO_FADE_S,
+                ease,
+                delay: reduceMotion ? 0 : LANDING_HERO_TITLE_DELAY_S,
+              }}
               style={{
                 fontFamily: "'Reckless Italic', 'News Plantin', Georgia, serif",
                 fontSize: '52px',
@@ -184,8 +361,15 @@ function LandingPage({ onEnter, backgroundImageSrcs }) {
               }}
             >
               What We Tell AI
-            </h1>
-            <p
+            </motion.h1>
+            <motion.p
+              initial={reduceMotion ? false : { opacity: 0, y: 22 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{
+                duration: reduceMotion ? 0 : LANDING_HERO_FADE_S,
+                ease,
+                delay: reduceMotion ? 0 : LANDING_HERO_SUBTITLE_DELAY_S,
+              }}
               style={{
                 margin: '18px 0 0',
                 maxWidth: 560,
@@ -198,33 +382,148 @@ function LandingPage({ onEnter, backgroundImageSrcs }) {
               }}
             >
               Anonymous confessions about AI&rsquo;s <br /> presence in our intimate lives
-            </p>
-          </motion.div>
+            </motion.p>
 
-          <motion.button
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.8, ease, delay: 0.5 }}
-            whileHover={{ scale: 1.02, opacity: 1 }}
-            whileTap={{ scale: 0.98 }}
-            onClick={onEnter}
+            <motion.button
+              initial={reduceMotion ? false : { opacity: 0, y: 18 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{
+                duration: reduceMotion ? 0 : LANDING_HERO_FADE_S,
+                ease,
+                delay: reduceMotion ? 0 : LANDING_HERO_ENTER_DELAY_S,
+              }}
+              whileHover={{ scale: 1.02, opacity: 1 }}
+              whileTap={{ scale: 0.98 }}
+              onClick={() => setPhase('reveal')}
+              style={{
+                marginTop: 28,
+                padding: '8px 20px',
+                background: 'transparent',
+                border: 'none',
+                color: '#e5e5e5',
+                fontSize: 11,
+                fontWeight: 400,
+                cursor: 'pointer',
+                fontFamily: 'var(--font-mono, ui-monospace, monospace)',
+                letterSpacing: '0.14em',
+                opacity: 0.85,
+              }}
+            >
+              ENTER
+            </motion.button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Onboarding: word-by-word line → three stills → EXPLORE. */}
+      <AnimatePresence>
+        {phase === 'reveal' && (
+          <motion.div
+            key="reveal-content"
+            initial={{ opacity: reduceMotion ? 1 : 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.35, ease: easeOut, delay: reduceMotion ? 0 : 0.12 }}
             style={{
-              marginTop: 28,
-              padding: '8px 20px',
-              background: 'transparent',
-              border: 'none',
-              color: '#e5e5e5',
-              fontSize: 11,
-              fontWeight: 400,
-              cursor: 'pointer',
-              fontFamily: 'var(--font-mono, ui-monospace, monospace)',
-              letterSpacing: '0.14em',
-              opacity: 0.85,
+              position: 'fixed',
+              inset: 0,
+              zIndex: 3,
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 28,
+              padding: '40px 24px',
+              textAlign: 'center',
+              pointerEvents: 'auto',
             }}
           >
-            ENTER
-          </motion.button>
-        </motion.div>
+            <CardNoiseFilterDefs params={inactive} />
+            <p
+              style={{
+                margin: 0,
+                maxWidth: 720,
+                fontFamily: "'Reckless Italic', 'News Plantin', Georgia, serif",
+                fontSize: 'clamp(16px, 2.4vw, 22px)',
+                fontWeight: 400,
+                lineHeight: 1.5,
+                letterSpacing: '0.02em',
+                color: 'rgba(229, 229, 229, 0.9)',
+              }}
+            >
+              {LANDING_REVEAL_WORDS.map((word, i) => (
+                <motion.span
+                  key={`${i}-${word}`}
+                  initial={reduceMotion ? false : { opacity: 0, y: 3 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{
+                    duration: reduceMotion ? 0 : 0.38,
+                    ease: easeOut,
+                    delay: reduceMotion ? 0 : 0.055 * i,
+                  }}
+                  style={{ display: 'inline' }}
+                >
+                  {word}
+                  {i < LANDING_REVEAL_WORDS.length - 1 ? ' ' : ''}
+                </motion.span>
+              ))}
+            </p>
+
+            <motion.div
+              style={{
+                display: 'flex',
+                flexDirection: 'row',
+                flexWrap: 'wrap',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 14,
+              }}
+            >
+              {LANDING_REVEAL_IMAGE_IDS.map((id, i) => {
+                const afterWords = reduceMotion ? 0 : LANDING_REVEAL_WORDS.length * 0.055 + 0.32;
+                const hoverTilt = i === 0 ? -4 : i === 2 ? 4 : 2.5;
+                return (
+                  <LandingRevealNote
+                    key={id}
+                    id={id}
+                    entranceDelay={reduceMotion ? 0 : afterWords + i * 0.16}
+                    reduceMotion={reduceMotion}
+                    easeOut={easeOut}
+                    hoverTilt={hoverTilt}
+                    inactive={inactive}
+                    noiseEnabled={noiseEnabled}
+                  />
+                );
+              })}
+            </motion.div>
+
+            <motion.button
+              initial={reduceMotion ? false : { opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{
+                duration: reduceMotion ? 0 : 0.42,
+                ease: easeOut,
+                delay: revealNotesFilterDoneDelayS(reduceMotion),
+              }}
+              whileHover={{ opacity: 1 }}
+              whileTap={{ scale: 0.98 }}
+              onClick={onEnter}
+              style={{
+                background: 'transparent',
+                border: 'none',
+                color: '#e5e5e5',
+                fontSize: 12,
+                cursor: 'pointer',
+                fontFamily: 'var(--font-mono, ui-monospace, monospace)',
+                letterSpacing: '0.18em',
+                opacity: 0.9,
+                padding: '10px 20px',
+              }}
+            >
+              CONTINUE
+            </motion.button>
+          </motion.div>
+        )}
       </AnimatePresence>
     </motion.div>
   );
@@ -252,6 +551,20 @@ const ARCHIVE_NAV_GRADIENT_HEIGHT = 152;
 
 /** One vertical rhythm for fixed title / view toggle / ABOUT. */
 const ARCHIVE_NAV_CHROME_HEIGHT = 40;
+
+/** Theme stack entrance — keep in sync with ThemeView `entranceDelay` + SideDial stagger cap. */
+const THEME_STACK_ENTRANCE_DELAY = 2.35;
+const THEME_STACK_CARD_DURATION = 0.22;
+/** Active card + ~2 neighbor rings visible (not the full stagger tail). */
+const THEME_NAV_VISIBLE_STAGGER = 0.24;
+const ARCHIVE_NAV_CHROME_DELAY_THEME =
+  THEME_STACK_ENTRANCE_DELAY + THEME_NAV_VISIBLE_STAGGER + THEME_STACK_CARD_DURATION;
+
+/** Grid tile motion duration (GridView). */
+const GRID_TILE_DURATION = 0.55;
+/** First handful of tiles — not the full wall stagger. */
+const GRID_NAV_VISIBLE_STAGGER = 0.32;
+const ARCHIVE_NAV_CHROME_DELAY_GRID = GRID_NAV_VISIBLE_STAGGER + GRID_TILE_DURATION;
 
 /** Same as dial card `metaTranscription` (SideDial.jsx). */
 const ARCHIVE_NAV_TEXT = {
@@ -288,13 +601,14 @@ function ViewToggle({
   stacked = false,
   /** In mobile top bar: GRID | DIAL stay on one row, not fixed to viewport. */
   embedded = false,
+  entranceDelay = 0.2,
 }) {
   const columnStack = stacked && !embedded;
   return (
     <motion.div
       initial={{ opacity: 0, y: -12 }}
       animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.5, ease, delay: 0.2 }}
+      transition={{ duration: 0.5, ease, delay: entranceDelay }}
       style={{
         ...(embedded || columnStack
           ? {
@@ -348,7 +662,7 @@ function ViewToggle({
   );
 }
 
-function SiteTitle() {
+function SiteTitle({ entranceDelay = 0.2 }) {
   const compactNav = useArchiveNavCompact();
   if (compactNav) return null;
 
@@ -356,7 +670,7 @@ function SiteTitle() {
     <motion.div
       initial={{ opacity: 0, y: -12 }}
       animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.5, ease, delay: 0.2 }}
+      transition={{ duration: 0.5, ease, delay: entranceDelay }}
       style={{
         position: 'fixed',
         top: 24,
@@ -381,12 +695,12 @@ function SiteTitle() {
   );
 }
 
-function AboutHeader({ onClick, open, stacked = false }) {
+function AboutHeader({ onClick, open, stacked = false, entranceDelay = 0.2 }) {
   return (
     <motion.button
       initial={{ opacity: 0, y: -12 }}
       animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.5, ease, delay: 0.2 }}
+      transition={{ duration: 0.5, ease, delay: entranceDelay }}
       onClick={onClick}
       aria-expanded={open}
       aria-label="Open about panel"
@@ -1006,7 +1320,7 @@ function ThemeView({
           confessions={confessions}
           activeIndex={activeIndex}
           onActiveChange={setActiveIndex}
-          entranceDelay={2.35}
+          entranceDelay={THEME_STACK_ENTRANCE_DELAY}
         />
       </div>
 
@@ -1150,6 +1464,12 @@ function ArchivePage({ confessionQuery }) {
   // panel so it works regardless of sidebar state.
   const [aboutOpen, setAboutOpen] = useState(false);
   const compactNav = useArchiveNavCompact();
+  const reduceMotion = useReducedMotion();
+  const navChromeEntranceDelay = reduceMotion
+    ? 0
+    : view === 'theme'
+      ? ARCHIVE_NAV_CHROME_DELAY_THEME
+      : ARCHIVE_NAV_CHROME_DELAY_GRID;
 
   // Dial size scales with the viewport so it has room to breathe on big
   // screens but doesn't dominate on small ones. The visible portion is half
@@ -1239,7 +1559,7 @@ function ArchivePage({ confessionQuery }) {
       style={{ height: '100vh', position: 'relative', overflow: 'hidden', background: '#111' }}
     >
       <ArchiveNavGradientWash />
-      <SiteTitle />
+      <SiteTitle entranceDelay={navChromeEntranceDelay} />
       {compactNav ? (
         <div
           style={{
@@ -1263,6 +1583,7 @@ function ArchivePage({ confessionQuery }) {
               onChange={setView}
               sidebarInset={sidebarInset}
               embedded
+              entranceDelay={navChromeEntranceDelay}
             />
           </div>
           <div style={{ pointerEvents: 'auto', flexShrink: 0 }}>
@@ -1270,13 +1591,23 @@ function ArchivePage({ confessionQuery }) {
               onClick={() => setAboutOpen(true)}
               open={aboutOpen}
               stacked
+              entranceDelay={navChromeEntranceDelay}
             />
           </div>
         </div>
       ) : (
         <>
-          <ViewToggle view={view} onChange={setView} sidebarInset={sidebarInset} />
-          <AboutHeader onClick={() => setAboutOpen(true)} open={aboutOpen} />
+          <ViewToggle
+            view={view}
+            onChange={setView}
+            sidebarInset={sidebarInset}
+            entranceDelay={navChromeEntranceDelay}
+          />
+          <AboutHeader
+            onClick={() => setAboutOpen(true)}
+            open={aboutOpen}
+            entranceDelay={navChromeEntranceDelay}
+          />
         </>
       )}
       <AboutModal open={aboutOpen} onClose={() => setAboutOpen(false)} />
