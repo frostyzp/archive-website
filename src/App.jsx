@@ -55,6 +55,123 @@ const LANDING_HERO_SUBTITLE_DELAY_S = 0.38;
 const LANDING_HERO_ENTER_DELAY_S = 0.8;
 const LANDING_HERO_FADE_S = 0.72;
 
+const LANDING_REVEAL_MOBILE_MQ = '(max-width: 760px)';
+
+/** Shared ENTER / CONTINUE control on the landing flow. */
+const LANDING_CTA_BUTTON_STYLE = {
+  padding: '8px 20px',
+  background: 'transparent',
+  border: 'none',
+  color: '#e5e5e5',
+  fontSize: 11,
+  fontWeight: 400,
+  cursor: 'pointer',
+  fontFamily: 'var(--font-mono, ui-monospace, monospace)',
+  letterSpacing: '0.14em',
+  opacity: 0.85,
+};
+
+function useLandingRevealMobile() {
+  const [mobile, setMobile] = useState(
+    () => typeof window !== 'undefined' && window.matchMedia(LANDING_REVEAL_MOBILE_MQ).matches
+  );
+  useEffect(() => {
+    const mq = window.matchMedia(LANDING_REVEAL_MOBILE_MQ);
+    const onChange = () => setMobile(mq.matches);
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
+  return mobile;
+}
+
+function LandingRevealNotes({
+  reduceMotion,
+  easeOut,
+  inactive,
+  noiseEnabled,
+}) {
+  const mobile = useLandingRevealMobile();
+  const afterWords = reduceMotion ? 0 : LANDING_REVEAL_WORDS.length * 0.055 + 0.32;
+
+  const notes = LANDING_REVEAL_IMAGE_IDS.map((id, i) => (
+    <LandingRevealNote
+      key={id}
+      id={id}
+      entranceDelay={reduceMotion ? 0 : afterWords + i * 0.16}
+      reduceMotion={reduceMotion}
+      easeOut={easeOut}
+      hoverTilt={i === 0 ? -4 : i === 2 ? 4 : 2.5}
+      inactive={inactive}
+      noiseEnabled={noiseEnabled}
+      fillSlide={mobile}
+    />
+  ));
+
+  if (mobile) {
+    return (
+      <>
+        <style>{`
+          .landing-reveal-carousel {
+            scrollbar-width: none;
+            -ms-overflow-style: none;
+          }
+          .landing-reveal-carousel::-webkit-scrollbar {
+            display: none;
+          }
+        `}</style>
+        <motion.div
+          className="landing-reveal-carousel"
+          style={{
+            width: '100vw',
+            maxWidth: '100vw',
+            marginLeft: 'calc(50% - 50vw)',
+            overflowX: 'auto',
+            overflowY: 'hidden',
+            scrollSnapType: 'x mandatory',
+            WebkitOverflowScrolling: 'touch',
+            display: 'flex',
+            flexDirection: 'row',
+            flexWrap: 'nowrap',
+            alignItems: 'center',
+            gap: 16,
+            padding: '0 max(20px, calc((100vw - min(72vw, 260px)) / 2))',
+            boxSizing: 'border-box',
+          }}
+        >
+          {LANDING_REVEAL_IMAGE_IDS.map((id, i) => (
+            <div
+              key={id}
+              style={{
+                flex: '0 0 auto',
+                width: 'min(72vw, 260px)',
+                scrollSnapAlign: 'center',
+                scrollSnapStop: 'always',
+              }}
+            >
+              {notes[i]}
+            </div>
+          ))}
+        </motion.div>
+      </>
+    );
+  }
+
+  return (
+    <motion.div
+      style={{
+        display: 'flex',
+        flexDirection: 'row',
+        flexWrap: 'wrap',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 14,
+      }}
+    >
+      {notes}
+    </motion.div>
+  );
+}
+
 function buildRevealDegradedFilter(inactive, noiseEnabled) {
   return [
     inactive.grayscale > 0 ? `grayscale(${inactive.grayscale})` : 'grayscale(1)',
@@ -73,6 +190,7 @@ function LandingRevealNote({
   hoverTilt,
   inactive,
   noiseEnabled,
+  fillSlide = false,
 }) {
   const entranceDone = entranceDelay + (reduceMotion ? 0 : REVEAL_NOTE_ENTRANCE_S);
   const cleanFadeDelay = entranceDone + (reduceMotion ? 0 : REVEAL_NOTE_NOISE_HOLD_S);
@@ -91,7 +209,12 @@ function LandingRevealNote({
       whileHover={reduceMotion ? undefined : { rotate: hoverTilt, scale: 1.02 }}
       transition={{ duration: 0.28, ease: easeOut }}
     >
-      <div style={{ position: 'relative', width: 'min(32vw, 240px)' }}>
+      <div
+        style={{
+          position: 'relative',
+          width: fillSlide ? '100%' : 'min(32vw, 240px)',
+        }}
+      >
         <motion.img
           src={confessionNoteImageUrl(id)}
           alt=""
@@ -395,19 +518,7 @@ function LandingPage({ onEnter, backgroundImageSrcs }) {
               whileHover={{ scale: 1.02, opacity: 1 }}
               whileTap={{ scale: 0.98 }}
               onClick={() => setPhase('reveal')}
-              style={{
-                marginTop: 28,
-                padding: '8px 20px',
-                background: 'transparent',
-                border: 'none',
-                color: '#e5e5e5',
-                fontSize: 11,
-                fontWeight: 400,
-                cursor: 'pointer',
-                fontFamily: 'var(--font-mono, ui-monospace, monospace)',
-                letterSpacing: '0.14em',
-                opacity: 0.85,
-              }}
+              style={{ marginTop: 28, ...LANDING_CTA_BUTTON_STYLE }}
             >
               ENTER
             </motion.button>
@@ -469,33 +580,12 @@ function LandingPage({ onEnter, backgroundImageSrcs }) {
               ))}
             </p>
 
-            <motion.div
-              style={{
-                display: 'flex',
-                flexDirection: 'row',
-                flexWrap: 'wrap',
-                alignItems: 'center',
-                justifyContent: 'center',
-                gap: 14,
-              }}
-            >
-              {LANDING_REVEAL_IMAGE_IDS.map((id, i) => {
-                const afterWords = reduceMotion ? 0 : LANDING_REVEAL_WORDS.length * 0.055 + 0.32;
-                const hoverTilt = i === 0 ? -4 : i === 2 ? 4 : 2.5;
-                return (
-                  <LandingRevealNote
-                    key={id}
-                    id={id}
-                    entranceDelay={reduceMotion ? 0 : afterWords + i * 0.16}
-                    reduceMotion={reduceMotion}
-                    easeOut={easeOut}
-                    hoverTilt={hoverTilt}
-                    inactive={inactive}
-                    noiseEnabled={noiseEnabled}
-                  />
-                );
-              })}
-            </motion.div>
+            <LandingRevealNotes
+              reduceMotion={reduceMotion}
+              easeOut={easeOut}
+              inactive={inactive}
+              noiseEnabled={noiseEnabled}
+            />
 
             <motion.button
               initial={reduceMotion ? false : { opacity: 0, y: 6 }}
@@ -505,20 +595,10 @@ function LandingPage({ onEnter, backgroundImageSrcs }) {
                 ease: easeOut,
                 delay: revealNotesFilterDoneDelayS(reduceMotion),
               }}
-              whileHover={{ opacity: 1 }}
+              whileHover={{ scale: 1.02, opacity: 1 }}
               whileTap={{ scale: 0.98 }}
               onClick={onEnter}
-              style={{
-                background: 'transparent',
-                border: 'none',
-                color: '#e5e5e5',
-                fontSize: 12,
-                cursor: 'pointer',
-                fontFamily: 'var(--font-mono, ui-monospace, monospace)',
-                letterSpacing: '0.18em',
-                opacity: 0.9,
-                padding: '10px 20px',
-              }}
+              style={LANDING_CTA_BUTTON_STYLE}
             >
               CONTINUE
             </motion.button>
