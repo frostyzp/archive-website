@@ -76,7 +76,7 @@ export function BottomCompassDial({
   activeEmotion,
   onEmotionChange,
   size = SIZE,
-  /** When set, shows a small `n/total` under the active dial label (multi-note categories). */
+  /** When set, shows a small `n/total notes` under the active dial label (multi-note categories). */
   breadcrumb = null,
 }) {
   const canvasRef = useRef(null);
@@ -230,7 +230,7 @@ export function BottomCompassDial({
         labelMatch &&
         p > 0.9
       ) {
-        const sub = `${bc.position + 1}/${bc.total}`;
+        const sub = `${bc.position + 1}/${bc.total} NOTES`;
         const subPx = Math.max(7, Math.round(size * 0.014));
         const subY = fontSize * 0.5 + 4;
         ctx.font = `500 ${subPx}px ui-monospace, "SF Mono", "Menlo", monospace`;
@@ -535,7 +535,7 @@ export const BOTTOM_DIAL_SIZE = SIZE;
 export const getBottomDialVisibleHeight = (size) => size / 2;
 
 /**
- * Slot of `activeConfession` within its category (for dial `n/total` label).
+ * Slot of `activeConfession` within its category (for dial `n/total notes` label).
  * Returns null when the category has 0 or 1 note. Includes `category` so
  * the dial can match the active emotion label case-insensitively.
  */
@@ -578,6 +578,11 @@ const EASE_OUT = [0.165, 0.84, 0.44, 1];
 // behavioral benefit.
 const COPY_COUNT = 3;
 const MIDDLE_COPY = Math.floor(COPY_COUNT / 2);
+const INACTIVE_CARD_TOOLTIP = 'SCROLL OR CLICK TO VIEW';
+const INACTIVE_TOOLTIP_GAP = 12;
+// Conservative width so we flip before the label clips off-screen.
+const INACTIVE_TOOLTIP_EST_WIDTH = 220;
+const TRANSCRIPT_FADE_S = 0.22;
 
 export function HorizontalConfessionStack({
   confessions,
@@ -603,10 +608,7 @@ export function HorizontalConfessionStack({
   const n = confessions.length;
   const nRef = useRef(n);
   nRef.current = n;
-  // Which card the cursor is currently over (one card at a time). Drives the
-  // metadata overlay (globalId / tags / transcription) on hover.
-  const [hoveredKey, setHoveredKey] = useState(null);
-
+  const [inactiveTipPos, setInactiveTipPos] = useState(null);
   // Render the confessions array COPY_COUNT times back-to-back. Each render
   // item carries its `logicalIndex` (0..n-1) — copies of the same logical
   // card share visual styling and active state.
@@ -1044,18 +1046,23 @@ export function HorizontalConfessionStack({
     }
   };
 
+  const inactiveTipFlipLeft =
+    inactiveTipPos != null &&
+    inactiveTipPos.x + INACTIVE_TOOLTIP_GAP + INACTIVE_TOOLTIP_EST_WIDTH >
+      (typeof window !== 'undefined' ? window.innerWidth : 0) - 8;
+
   return (
-    <div ref={scrollRef} onScroll={handleScroll} style={st.scrollContainer}>
+    <div
+      ref={scrollRef}
+      onScroll={handleScroll}
+      onMouseLeave={() => setInactiveTipPos(null)}
+      style={st.scrollContainer}
+    >
       <CardNoiseFilterDefs params={inactive} />
       {renderItems.map((item, renderIdx) => {
         const isActive = item.logicalIndex === activeIndex;
         const cardKey = `${item.copy}-${item.confession.id}`;
-        // Metadata only surfaces for the active (centered/snapped) card.
-        // Inactive cards are intentionally muted — hover does nothing on
-        // them so the user has to scroll/click to bring a card into focus
-        // before they can read its details.
-        const showMeta = isActive && hoveredKey === cardKey;
-        // Within-category `n/total` is drawn on the dial under the active label.
+        // Within-category `n/total notes` is drawn on the dial under the active label.
         // Stagger the entrance as a wave radiating outward from the active
         // card — that's where the user is focused on mount, so the focal
         // card appears first and its neighbours wash in around it. Outer
@@ -1083,10 +1090,13 @@ export function HorizontalConfessionStack({
                   }
             }
             onClick={() => setActiveFromClick(item.logicalIndex)}
-            onMouseEnter={() => setHoveredKey(cardKey)}
-            onMouseLeave={() =>
-              setHoveredKey((k) => (k === cardKey ? null : k))
-            }
+            onMouseEnter={(e) => {
+              if (!isActive) setInactiveTipPos({ x: e.clientX, y: e.clientY });
+            }}
+            onMouseMove={(e) => {
+              if (!isActive) setInactiveTipPos({ x: e.clientX, y: e.clientY });
+            }}
+            onMouseLeave={() => setInactiveTipPos(null)}
             style={{
               ...st.cardWrapper,
               cursor: isActive ? 'default' : 'pointer',
@@ -1107,39 +1117,54 @@ export function HorizontalConfessionStack({
               />
             </div>
 
-            {/* Hover-only metadata block — only the transcription is shown
-                under the active card. The globalId + tags pills row used to
-                sit above the transcription but is hidden now (the sidebar
-                metadata panel still surfaces id/tags for the active card).
-                Whole block is absolutely positioned so it doesn't grow the
-                card wrapper's layout footprint. */}
-            <div style={st.metaBlock}>
-              {item.confession.transcription && (
-                <div
-                  style={{
-                    ...st.metaTranscription,
-                    opacity: showMeta ? 1 : 0,
-                    transform: showMeta ? 'translateY(0)' : 'translateY(-4px)',
+            {isActive && item.copy === MIDDLE_COPY && item.confession.transcription ? (
+              <div style={st.metaBlock} aria-live="polite">
+                <motion.div
+                  key={item.confession.id}
+                  initial={reduceMotion ? false : { opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  transition={{
+                    duration: reduceMotion ? 0 : TRANSCRIPT_FADE_S,
+                    ease: EASE_OUT,
                   }}
+                  style={st.metaTranscription}
                 >
                   {item.confession.transcription}
-                </div>
-              )}
-            </div>
+                </motion.div>
+              </div>
+            ) : null}
           </motion.div>
         );
       })}
+      {inactiveTipPos ? (
+        <div
+          role="tooltip"
+          style={{
+            ...st.inactiveCardTooltip,
+            top: inactiveTipPos.y + INACTIVE_TOOLTIP_GAP,
+            ...(inactiveTipFlipLeft
+              ? {
+                  left: inactiveTipPos.x - INACTIVE_TOOLTIP_GAP,
+                  transform: 'translateX(-100%)',
+                }
+              : { left: inactiveTipPos.x + INACTIVE_TOOLTIP_GAP }),
+          }}
+        >
+          {INACTIVE_CARD_TOOLTIP}
+        </div>
+      ) : null}
     </div>
   );
 }
 
 const st = {
   scrollContainer: {
+    position: 'relative',
     display: 'flex',
     flexDirection: 'row',
     gap: 24,
     overflowX: 'auto',
-    overflowY: 'hidden',
+    overflowY: 'visible',
     scrollSnapType: 'none',
     // Disable browser-side scroll anchoring so async image loads (which
     // grow card widths) don't trigger phantom scroll events that drive
@@ -1152,29 +1177,46 @@ const st = {
     // (~520px / 2 = 260) — a touch generous so trim cards still center.
     paddingLeft: 'calc(50% - 260px)',
     paddingRight: 'calc(50% - 260px)',
+    // Transcript scrolls inside metaTranscription; modest pad for descenders.
+    paddingBottom: 32,
     alignItems: 'center',
+    justifyContent: 'flex-start',
     WebkitOverflowScrolling: 'touch',
     scrollbarWidth: 'none',
     msOverflowStyle: 'none',
   },
   cardWrapper: {
     flexShrink: 0,
-    // Card height = container height MINUS 220px headroom (110 each side)
-    // so the active card's 1.12 scale transform (~6% past the wrapper,
-    // ~24.5px at maxHeight 408) PLUS the side-card arc-drop (ARC_DROP_MAX
-    // 50px) PLUS the metadata block (sits at top: calc(100% + 36px) below
-    // the wrapper) all fit without being clipped by the scroll container's
-    // overflow-y: hidden. maxHeight reduced ~15% from the previous 480 →
-    // 408 so the wrapper itself is smaller and more headroom remains for
-    // the metadata stack underneath. Width follows the image's natural
-    // aspect ratio (img: height 100% / width auto).
     position: 'relative',
-    height: 'calc(100% - 220px)',
-    maxHeight: 408,
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    justifyContent: 'center',
+    alignSelf: 'center',
+    maxHeight: '100%',
+  },
+  inactiveCardTooltip: {
+    position: 'fixed',
+    zIndex: 200,
+    pointerEvents: 'none',
+    fontFamily: 'var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace)',
+    fontSize: 8,
+    fontWeight: 400,
+    lineHeight: 1.35,
+    letterSpacing: '0.1em',
+    color: 'rgba(253, 253, 253, 0.94)',
+    textAlign: 'left',
+    whiteSpace: 'nowrap',
+    padding: '5px 8px',
+    background: 'rgba(0, 0, 0, 0.82)',
+    border: '1px solid rgba(255, 255, 255, 0.14)',
+    borderRadius: 3,
   },
   cardImageBox: {
     position: 'relative',
-    height: '100%',
+    height: 'min(38vh, 408px)',
+    maxHeight: 408,
+    flexShrink: 0,
     // width: auto — settles to the image's intrinsic width after load
     display: 'block',
     // Rotation pivot at the card's center so cards "tilt away" symmetrically
@@ -1187,18 +1229,15 @@ const st = {
     willChange: 'transform',
   },
   metaBlock: {
-    // Absolutely-positioned wrapper for the metadata stack (id + tags row
-    // followed by transcription). Sits below the image without affecting
-    // the card wrapper's layout dimensions, so neighbouring cards aren't
-    // pushed apart by metadata visibility. The 36px offset clears the
-    // active card's 1.12-scaled visual extent (~6% past wrapper bottom).
-    // Slightly wider than the image so centered transcription has more
-    // line length before wrap.
-    position: 'absolute',
-    top: 'calc(100% + 36px)',
-    left: -32,
-    width: 'calc(100% + 64px)',
-    pointerEvents: 'none',
+    position: 'relative',
+    marginTop: 14,
+    width: 'max(100%, min(320px, 92vw))',
+    maxWidth: 520,
+    flexShrink: 0,
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    pointerEvents: 'auto',
   },
   metaRow: {
     // Single row above the transcription: globalId on the left, tags on
@@ -1232,17 +1271,13 @@ const st = {
     letterSpacing: '0.01em',
     color: 'rgba(229,229,229,0.85)',
     textAlign: 'center',
-    transition:
-      'opacity 0.22s cubic-bezier(0.4, 0, 0.2, 1), transform 0.22s cubic-bezier(0.4, 0, 0.2, 1)',
-    // Cap height so long notes do not cover the dial; sidebar still has full
-    // text. (~5.5em was ~3.5 lines and clipped mid-sentence — a bit taller
-    // keeps most confessions readable; mask only fades the very bottom.)
-    maxHeight: '8.5em',
-    overflow: 'hidden',
-    maskImage:
-      'linear-gradient(to bottom, #000 0, #000 82%, transparent 100%)',
-    WebkitMaskImage:
-      'linear-gradient(to bottom, #000 0, #000 82%, transparent 100%)',
+    width: '100%',
+    maxHeight: 'min(9em, 26vh)',
+    overflowY: 'auto',
+    overflowX: 'hidden',
+    WebkitOverflowScrolling: 'touch',
+    scrollbarWidth: 'thin',
+    scrollbarColor: 'rgba(255,255,255,0.22) transparent',
   },
   cardImg: {
     height: '100%',

@@ -24,15 +24,34 @@ const ease = [0.22, 1, 0.36, 1];
 /** Onboarding stills (`public/confession_notes_2` WebP). */
 const LANDING_REVEAL_IMAGE_IDS = ['AC_185', 'AC_171', 'AC_190'];
 
+const LANDING_REVEAL_TRANSCRIPT_STYLE = {
+  margin: '14px 0 0',
+  padding: '0 4px',
+  fontFamily: 'var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace)',
+  fontSize: 11,
+  lineHeight: 1.55,
+  letterSpacing: '0.01em',
+  color: 'rgba(229, 229, 229, 0.85)',
+  textAlign: 'center',
+  overflow: 'visible',
+};
+
+function getLandingRevealTranscriptionMap(confessions) {
+  const map = new Map();
+  for (const c of confessions) {
+    const id = c.globalId || (c.image && String(c.image).match(/AC_\d+/)?.[0]);
+    if (id) map.set(id, c.transcription?.trim() || '');
+  }
+  return map;
+}
+
 const LANDING_REVEAL_WORDS =
   'We asked strangers to share an anonymous confession about the way they\u2019ve interacted with AI.'.split(' ');
 
 const REVEAL_NOTE_ENTRANCE_S = 0.48;
-/** Hold card-noise filter after entrance, then crossfade to clean. */
-const REVEAL_NOTE_NOISE_HOLD_S = 1.5;
 const REVEAL_NOTE_NOISE_FADE_S = 0.85;
-/** Opacity while B&W + noise; clean layer fades up to full after filter drops. */
-const REVEAL_NOTE_DEGRADED_OPACITY = 0.3;
+/** Opacity while B&W + noise (visible during entrance fade-in). */
+const REVEAL_NOTE_DEGRADED_OPACITY = 1;
 const REVEAL_NOTE_CLEAN_OPACITY = 1;
 
 /** When the last onboarding note finishes its clean crossfade (filter fully off). */
@@ -41,12 +60,7 @@ function revealNotesFilterDoneDelayS(reduceMotion) {
   const afterWords = LANDING_REVEAL_WORDS.length * 0.055 + 0.32;
   const lastNoteEntrance =
     afterWords + (LANDING_REVEAL_IMAGE_IDS.length - 1) * 0.16;
-  return (
-    lastNoteEntrance +
-    REVEAL_NOTE_ENTRANCE_S +
-    REVEAL_NOTE_NOISE_HOLD_S +
-    REVEAL_NOTE_NOISE_FADE_S
-  );
+  return lastNoteEntrance + REVEAL_NOTE_ENTRANCE_S + REVEAL_NOTE_NOISE_FADE_S;
 }
 
 /** Landing hero copy — staggered entrance; ENTER last. */
@@ -89,14 +103,59 @@ function LandingRevealNotes({
   easeOut,
   inactive,
   noiseEnabled,
+  transcriptionById,
 }) {
   const mobile = useLandingRevealMobile();
+  const carouselRef = useRef(null);
+  const [activeSlide, setActiveSlide] = useState(0);
+  const [hoveredId, setHoveredId] = useState(null);
+  const [cleanIds, setCleanIds] = useState(() => new Set());
   const afterWords = reduceMotion ? 0 : LANDING_REVEAL_WORDS.length * 0.055 + 0.32;
+
+  const transcriptions = LANDING_REVEAL_IMAGE_IDS.map(
+    (id) => transcriptionById.get(id) || ''
+  );
+
+  useEffect(() => {
+    if (!mobile) return;
+    const el = carouselRef.current;
+    if (!el) return;
+
+    const updateActiveSlide = () => {
+      const center = el.scrollLeft + el.clientWidth / 2;
+      const slides = el.querySelectorAll('[data-reveal-slide]');
+      let best = 0;
+      let bestDist = Infinity;
+      slides.forEach((slide, i) => {
+        const slideCenter = slide.offsetLeft + slide.offsetWidth / 2;
+        const dist = Math.abs(slideCenter - center);
+        if (dist < bestDist) {
+          bestDist = dist;
+          best = i;
+        }
+      });
+      setActiveSlide(best);
+    };
+
+    updateActiveSlide();
+    el.addEventListener('scroll', updateActiveSlide, { passive: true });
+    window.addEventListener('resize', updateActiveSlide);
+    return () => {
+      el.removeEventListener('scroll', updateActiveSlide);
+      window.removeEventListener('resize', updateActiveSlide);
+    };
+  }, [mobile]);
 
   const notes = LANDING_REVEAL_IMAGE_IDS.map((id, i) => (
     <LandingRevealNote
       key={id}
       id={id}
+      transcription={transcriptions[i]}
+      showTranscript={
+        mobile
+          ? activeSlide === i
+          : hoveredId === id
+      }
       entranceDelay={reduceMotion ? 0 : afterWords + i * 0.16}
       reduceMotion={reduceMotion}
       easeOut={easeOut}
@@ -104,10 +163,27 @@ function LandingRevealNotes({
       inactive={inactive}
       noiseEnabled={noiseEnabled}
       fillSlide={mobile}
+      onHoverStart={() => {
+        if (!mobile) setHoveredId(id);
+      }}
+      onHoverEnd={() => {
+        if (!mobile) setHoveredId((cur) => (cur === id ? null : cur));
+      }}
+      onCleanReady={() => {
+        setCleanIds((prev) => {
+          if (prev.has(id)) return prev;
+          const next = new Set(prev);
+          next.add(id);
+          return next;
+        });
+      }}
     />
   ));
 
   if (mobile) {
+    const activeId = LANDING_REVEAL_IMAGE_IDS[activeSlide];
+    const activeTranscript =
+      cleanIds.has(activeId) ? transcriptions[activeSlide] : '';
     return (
       <>
         <style>{`
@@ -120,6 +196,7 @@ function LandingRevealNotes({
           }
         `}</style>
         <motion.div
+          ref={carouselRef}
           className="landing-reveal-carousel"
           style={{
             width: '100vw',
@@ -141,6 +218,7 @@ function LandingRevealNotes({
           {LANDING_REVEAL_IMAGE_IDS.map((id, i) => (
             <div
               key={id}
+              data-reveal-slide
               style={{
                 flex: '0 0 auto',
                 width: 'min(72vw, 260px)',
@@ -152,6 +230,25 @@ function LandingRevealNotes({
             </div>
           ))}
         </motion.div>
+        <AnimatePresence mode="wait">
+          {activeTranscript ? (
+            <motion.p
+              key={LANDING_REVEAL_IMAGE_IDS[activeSlide]}
+              initial={reduceMotion ? false : { opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 4 }}
+              transition={{ duration: 0.22, ease: easeOut }}
+              style={{
+                ...LANDING_REVEAL_TRANSCRIPT_STYLE,
+                maxWidth: 'min(88vw, 360px)',
+                marginTop: 20,
+                paddingBottom: 8,
+              }}
+            >
+              {activeTranscript}
+            </motion.p>
+          ) : null}
+        </AnimatePresence>
       </>
     );
   }
@@ -184,6 +281,11 @@ function buildRevealDegradedFilter(inactive, noiseEnabled) {
 /** Onboarding note — B&W + noise on appear, then crossfade to clean and hide degraded layer. */
 function LandingRevealNote({
   id,
+  transcription = '',
+  showTranscript = false,
+  onHoverStart,
+  onHoverEnd,
+  onCleanReady,
   entranceDelay,
   reduceMotion,
   easeOut,
@@ -192,20 +294,35 @@ function LandingRevealNote({
   noiseEnabled,
   fillSlide = false,
 }) {
-  const entranceDone = entranceDelay + (reduceMotion ? 0 : REVEAL_NOTE_ENTRANCE_S);
-  const cleanFadeDelay = entranceDone + (reduceMotion ? 0 : REVEAL_NOTE_NOISE_HOLD_S);
   const degradedFilter = buildRevealDegradedFilter(inactive, noiseEnabled);
   const [showClean, setShowClean] = useState(!!reduceMotion);
+  /** Crossfade to clean right after filtered entrance (no extra hold). */
+  const cleanFadeAtMs = reduceMotion
+    ? 0
+    : (entranceDelay + REVEAL_NOTE_ENTRANCE_S) * 1000;
 
   useEffect(() => {
     if (reduceMotion) return;
-    const timer = window.setTimeout(() => setShowClean(true), cleanFadeDelay * 1000);
+    const timer = window.setTimeout(() => setShowClean(true), cleanFadeAtMs);
     return () => window.clearTimeout(timer);
-  }, [cleanFadeDelay, reduceMotion]);
+  }, [cleanFadeAtMs, reduceMotion]);
+
+  useEffect(() => {
+    if (showClean) onCleanReady?.();
+  }, [showClean, onCleanReady]);
+
+  const revealTranscript = showClean && showTranscript && transcription;
 
   return (
     <motion.div
-      style={{ cursor: reduceMotion ? 'default' : 'pointer' }}
+      style={{
+        cursor: reduceMotion ? 'default' : 'pointer',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+      }}
+      onMouseEnter={onHoverStart}
+      onMouseLeave={onHoverEnd}
       whileHover={reduceMotion ? undefined : { rotate: hoverTilt, scale: 1.02 }}
       transition={{ duration: 0.28, ease: easeOut }}
     >
@@ -269,6 +386,25 @@ function LandingRevealNote({
           }}
         />
       </div>
+      {!fillSlide ? (
+        <AnimatePresence>
+          {revealTranscript ? (
+            <motion.p
+              key={`${id}-transcript`}
+              initial={reduceMotion ? false : { opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 4 }}
+              transition={{ duration: 0.22, ease: easeOut }}
+              style={{
+                ...LANDING_REVEAL_TRANSCRIPT_STYLE,
+                maxWidth: 'min(32vw, 280px)',
+              }}
+            >
+              {transcription}
+            </motion.p>
+          ) : null}
+        </AnimatePresence>
+      ) : null}
     </motion.div>
   );
 }
@@ -330,7 +466,11 @@ function LandingBackgroundSlide({
   );
 }
 
-function LandingPage({ onEnter, backgroundImageSrcs }) {
+function LandingPage({ onEnter, backgroundImageSrcs, confessionPool }) {
+  const revealTranscriptionById = useMemo(
+    () => getLandingRevealTranscriptionMap(confessionPool),
+    [confessionPool]
+  );
   // 'hero' → title + ENTER; 'reveal' → staggered copy + stills + EXPLORE.
   const [phase, setPhase] = useState('hero');
   const [slideIdx, setSlideIdx] = useState(0);
@@ -544,9 +684,11 @@ function LandingPage({ onEnter, backgroundImageSrcs }) {
               alignItems: 'center',
               justifyContent: 'center',
               gap: 28,
-              padding: '40px 24px',
+              padding: '40px 24px 48px',
               textAlign: 'center',
               pointerEvents: 'auto',
+              overflowY: 'auto',
+              boxSizing: 'border-box',
             }}
           >
             <CardNoiseFilterDefs params={inactive} />
@@ -585,6 +727,7 @@ function LandingPage({ onEnter, backgroundImageSrcs }) {
               easeOut={easeOut}
               inactive={inactive}
               noiseEnabled={noiseEnabled}
+              transcriptionById={revealTranscriptionById}
             />
 
             <motion.button
@@ -1394,6 +1537,7 @@ function ThemeView({
           right: 0,
           bottom: dialLabelInset,
           zIndex: 1,
+          overflow: 'visible',
         }}
       >
         <HorizontalConfessionStack
@@ -1729,6 +1873,11 @@ export default function App() {
         <LandingPage
           onEnter={() => setPage('archive')}
           backgroundImageSrcs={landingBgSrcs}
+          confessionPool={
+            confessionQuery.confessions.length > 0
+              ? confessionQuery.confessions
+              : FALLBACK_CONFESSIONS
+          }
         />
       )}
       {page === 'archive' && <ArchivePage confessionQuery={confessionQuery} />}
