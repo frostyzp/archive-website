@@ -588,6 +588,8 @@ export function HorizontalConfessionStack({
   confessions,
   activeIndex,
   onActiveChange,
+  /** Opens the grid-style lightbox (enlarged image + transcription below). */
+  onImageClick,
   // Seconds to wait before the wave-from-center stagger begins. Used by the
   // theme-page entrance choreography so the dial can fade in + spin first
   // and the cards cascade in once it's settled.
@@ -1074,6 +1076,8 @@ export function HorizontalConfessionStack({
           item.copy === MIDDLE_COPY
             ? Math.min(Math.abs(item.logicalIndex - activeIndex) * 0.12, 1.15)
             : 0;
+        const canEnlargeImage =
+          !!onImageClick && isActive && item.copy === MIDDLE_COPY;
         return (
           <motion.div
             key={cardKey}
@@ -1103,7 +1107,21 @@ export function HorizontalConfessionStack({
               willChange: 'transform, opacity',
             }}
           >
-            <div data-tilt-target style={st.cardImageBox}>
+            <div
+              data-tilt-target
+              style={{
+                ...st.cardImageBox,
+                ...(canEnlargeImage ? { cursor: 'zoom-in' } : null),
+              }}
+              onClick={
+                canEnlargeImage
+                  ? (e) => {
+                      e.stopPropagation();
+                      onImageClick(item.confession);
+                    }
+                  : undefined
+              }
+            >
               <img
                 src={item.confession.image}
                 alt={`Confession ${item.confession.id}`}

@@ -408,6 +408,7 @@ function AboutPanel() {
       >
         <div>Project by Olivia</div>
         <div>Website by Arin</div>
+        <div style={{ marginTop: 8 }}>© What We Tell AI 2026</div>
       </div>
     </motion.div>
   );
