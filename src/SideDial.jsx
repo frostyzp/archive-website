@@ -78,6 +78,9 @@ export function BottomCompassDial({
   size = SIZE,
   /** When set, shows a small `n/total notes` under the active dial label (multi-note categories). */
   breadcrumb = null,
+  /** Delay (ms) before the first-mount intro spin starts — lets a landing→archive
+   *  handoff fade its bridge note out first, then spin the dial in. */
+  introSpinDelayMs = INTRO_SPIN_START_DELAY,
 }) {
   const canvasRef = useRef(null);
   const currentAngleRef = useRef(0);
@@ -300,7 +303,15 @@ export function BottomCompassDial({
   // Animate the dial to whatever activeEmotion becomes — including external
   // changes driven by scroll position in the card stack. When the dial itself
   // triggered the change, animateTo is effectively a no-op (target ≈ current).
+  //
+  // The intro spin (below) owns first-paint positioning: it winds the dial up
+  // and eases it into the seeded category. This snap stays suppressed until the
+  // intro has fully settled — otherwise an early activeEmotion change (the
+  // card-stack alignment, or a React StrictMode dev double-mount) fires a 400ms
+  // snap that steals the wound-up rotation, so the spin never reads as a spin.
+  const introSettledRef = useRef(false);
   useEffect(() => {
+    if (!introSettledRef.current) return;
     const emos = emotionsRef.current;
     const idx = emos.findIndex((e) => e.id === activeEmotion);
     if (idx < 0) return;
@@ -369,32 +380,60 @@ export function BottomCompassDial({
   snapToIndexRef.current = snapToIndex;
   animateToRef.current = animateTo;
 
-  // Intro spin: pre-rotate the dial by INTRO_SPIN_TURNS full turns and ease
-  // it into the active emotion's resting orientation. Gated on activeEmotion
-  // being non-null because the parent sets it asynchronously after data
-  // loads — running this before then would spin an empty dial and the
-  // subsequent activeEmotion-snap effect would override it with a 400ms
-  // jump. After the first run, introDoneRef makes this a no-op so it never
-  // re-fires on later category changes.
-  const introDoneRef = useRef(false);
+  // Intro spin: wind the dial up by INTRO_SPIN_TURNS and ease it into the
+  // seeded category's resting orientation. Driven by a single rAF anchored to a
+  // persisted timestamp (rather than setTimeout + animateTo) so React
+  // StrictMode's dev double-mount can't break it: a remount keeps the same
+  // anchor/target and simply continues the spin where it left off, instead of
+  // early-returning and letting the snap steal the rotation. `introSpinDelayMs`
+  // holds the wound-up frame (dial still fading in) before the unwind begins;
+  // once it lands, `introSettledRef` hands control back to the snap effect.
+  const introAnchorRef = useRef(null);
+  const introTargetRef = useRef(0);
+  const introWoundRef = useRef(0);
   useEffect(() => {
-    if (introDoneRef.current) return;
+    if (introSettledRef.current) return;
     if (!activeEmotion) return;
     const emos = emotionsRef.current;
     const idx = emos.findIndex((e) => e.id === activeEmotion);
     if (idx < 0) return;
-    introDoneRef.current = true;
 
-    const localStep = (Math.PI * 2) / emos.length;
-    const target = -(idx * localStep);
-    currentAngleRef.current = target - Math.PI * 2 * INTRO_SPIN_TURNS;
-    draw();
+    if (introAnchorRef.current == null) {
+      const localStep = (Math.PI * 2) / emos.length;
+      const target = -(idx * localStep);
+      introTargetRef.current = target;
+      introWoundRef.current = target - Math.PI * 2 * INTRO_SPIN_TURNS;
+      currentAngleRef.current = introWoundRef.current;
+      introAnchorRef.current = performance.now();
+      draw();
+    }
 
-    const t = setTimeout(() => {
-      animateToRef.current(target, INTRO_SPIN_DURATION, INTRO_SPIN_EASE);
-    }, INTRO_SPIN_START_DELAY);
-    return () => clearTimeout(t);
-  }, [activeEmotion, draw]);
+    const anchor = introAnchorRef.current;
+    const target = introTargetRef.current;
+    const wound = introWoundRef.current;
+    let raf = 0;
+    const tick = (now) => {
+      const e = now - anchor;
+      if (e < introSpinDelayMs) {
+        currentAngleRef.current = wound;
+        draw();
+        raf = requestAnimationFrame(tick);
+        return;
+      }
+      const p = Math.min((e - introSpinDelayMs) / INTRO_SPIN_DURATION, 1);
+      currentAngleRef.current = wound + (target - wound) * INTRO_SPIN_EASE(p);
+      draw();
+      if (p < 1) {
+        raf = requestAnimationFrame(tick);
+      } else {
+        currentAngleRef.current = target;
+        draw();
+        introSettledRef.current = true;
+      }
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [activeEmotion, draw, introSpinDelayMs]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -725,6 +764,12 @@ export function HorizontalConfessionStack({
   // (each side ≥ 0.06 × maxCardHeight + ARC_DROP_MAX) so dropped cards
   // don't get clipped by the scroll container's overflow:hidden.
   const ARC_DROP_MAX = 0;
+  // 3D coverflow warp (cards turning to face a shared vanishing point) is
+  // temporarily disabled. To restore: re-add the WARP_* constants below and the
+  // rotateY/translateZ terms in the transform.
+  //   const WARP_MAX_ROTY = 32;     // deg a card reaches at the screen edge
+  //   const WARP_DEPTH = 96;        // px a card is pushed back at the screen edge
+  //   const WARP_RANGE_FRAC = 0.62; // viewport-width fraction the turn ramps over
   const updateCardTilts = () => {
     const el = scrollRef.current;
     if (!el) return;
@@ -744,9 +789,17 @@ export function HorizontalConfessionStack({
       const dropRaw = ARC_RADIUS - Math.sqrt(Math.max(0, r2 - distPx * distPx));
       const drop = Math.min(ARC_DROP_MAX, dropRaw);
 
+      // 3D coverflow warp (rotateY/translateZ) temporarily disabled:
+      //   const halfRange = Math.max(1, el.offsetWidth * WARP_RANGE_FRAC);
+      //   const tRaw = Math.max(-1, Math.min(1, distPx / halfRange));
+      //   const tEased = Math.sign(tRaw) * Math.pow(Math.abs(tRaw), 0.85);
+      //   const rotY = reduceMotion ? 0 : -tEased * WARP_MAX_ROTY;
+      //   const tz = reduceMotion ? 0 : -Math.abs(tEased) * WARP_DEPTH;
+
       const tiltTarget = card.querySelector('[data-tilt-target]');
       if (tiltTarget) {
-        tiltTarget.style.transform = `translateY(${drop.toFixed(2)}px) rotate(${rot.toFixed(2)}deg)`;
+        tiltTarget.style.transform =
+          `translateY(${drop.toFixed(2)}px) rotate(${rot.toFixed(2)}deg)`;
       }
     });
   };
@@ -1183,6 +1236,11 @@ const st = {
     gap: 24,
     overflowX: 'auto',
     overflowY: 'visible',
+    // Shared 3D viewing volume for the coverflow warp. The perspective +
+    // origin live on the (fixed) scroll container, so the vanishing point
+    // stays pinned to the viewport center while cards scroll past it.
+    perspective: '1100px',
+    perspectiveOrigin: '50% 50%',
     scrollSnapType: 'none',
     // Disable browser-side scroll anchoring so async image loads (which
     // grow card widths) don't trigger phantom scroll events that drive
@@ -1212,6 +1270,10 @@ const st = {
     justifyContent: 'center',
     alignSelf: 'center',
     maxHeight: '100%',
+    // Preserve the container's 3D context through the wrapper so the
+    // rotateY/translateZ on the inner tilt-target render against the shared
+    // perspective rather than flattening here.
+    transformStyle: 'preserve-3d',
   },
   inactiveCardTooltip: {
     position: 'fixed',
@@ -1234,6 +1296,10 @@ const st = {
     position: 'relative',
     height: 'min(38vh, 408px)',
     maxHeight: 408,
+    // Cap width to the viewport so a wide/landscape note never spills past the
+    // screen edges on mobile (the active card is also scaled up ~1.12×, so this
+    // leaves a little headroom for that). Falls back to a fixed cap on desktop.
+    maxWidth: 'min(80vw, 460px)',
     flexShrink: 0,
     // width: auto — settles to the image's intrinsic width after load
     display: 'block',
@@ -1249,7 +1315,9 @@ const st = {
   metaBlock: {
     position: 'relative',
     marginTop: 14,
-    width: 'max(100%, min(320px, 92vw))',
+    // At least as wide as the card (or 320px), but never wider than 90vw so the
+    // transcription always wraps with a margin before the screen edge.
+    width: 'min(max(100%, 320px), 90vw)',
     maxWidth: 520,
     flexShrink: 0,
     display: 'flex',
@@ -1300,6 +1368,10 @@ const st = {
   cardImg: {
     height: '100%',
     width: 'auto',
+    // Never exceed the (viewport-capped) box; contain keeps the aspect ratio
+    // and letterboxes vertically instead of overflowing horizontally.
+    maxWidth: '100%',
+    objectFit: 'contain',
     display: 'block',
     // Staggered active-state choreography:
     //   1. transform (scale) leads — image grows in first, snappy ease-out.

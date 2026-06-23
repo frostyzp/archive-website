@@ -10,9 +10,11 @@
   "dependencies": {
     "dialkit": "^1.2.0",
     "motion": "^12",
+    "opentype.js": "^2.0.0",
     "papaparse": "^5.5.3",
     "react": "^19",
-    "react-dom": "^19"
+    "react-dom": "^19",
+    "simplex-noise": "^4.0.3"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4",

@@ -1,7 +1,8 @@
 import { useState, useMemo, useEffect, useRef } from 'react';
 import { motion, AnimatePresence, useReducedMotion } from 'motion/react';
 import { Text } from './text';
-import { Sidebar, SIDEBAR_WIDTH, SIDEBAR_PEEK } from './Sidebar';
+import LandingReveal from './LandingReveal';
+import { Sidebar, SIDEBAR_WIDTH } from './Sidebar';
 import {
   BOTTOM_DIAL_SIZE,
   BottomCompassDial,
@@ -10,537 +11,12 @@ import {
 } from './SideDial';
 import { CONFESSIONS as FALLBACK_CONFESSIONS } from './confessions';
 import { deriveEmotions, sortConfessionsByEmotions } from './themes';
-import { confessionNoteImageUrl } from './loadConfessions';
 import { useConfessions } from './useConfessions';
-import {
-  CARD_FILTER_ID,
-  CardNoiseFilterDefs,
-  TunableGrainBackground,
-  useInactiveCardParams,
-} from './noise';
-
+import { TunableGrainBackground } from './noise';
 const ease = [0.22, 1, 0.36, 1];
 
 /** Onboarding stills (`public/confession_notes_2` WebP). */
 const LANDING_REVEAL_IMAGE_IDS = ['AC_185', 'AC_171', 'AC_190'];
-
-const LANDING_REVEAL_TRANSCRIPT_STYLE = {
-  margin: 0,
-  padding: '0 4px',
-  fontFamily: 'var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace)',
-  fontSize: 11,
-  lineHeight: 1.55,
-  letterSpacing: '0.01em',
-  color: 'rgba(229, 229, 229, 0.85)',
-  textAlign: 'center',
-  overflow: 'visible',
-};
-
-/** Fixed desktop note column — prevents row reflow when swapping center/sides. */
-const LANDING_REVEAL_NOTE_WIDTH = 'min(32vw, 240px)';
-const LANDING_REVEAL_NOTE_IMAGE_HEIGHT = 'min(36vh, 300px)';
-/** Reserve space for the longest onboarding transcript (~8 lines). */
-const LANDING_REVEAL_DESKTOP_TRANSCRIPT_MIN_H = 'calc(11px * 1.55 * 8)';
-
-function getLandingRevealTranscriptionMap(confessions) {
-  const map = new Map();
-  for (const c of confessions) {
-    const id = c.globalId || (c.image && String(c.image).match(/AC_\d+/)?.[0]);
-    if (id) map.set(id, c.transcription?.trim() || '');
-  }
-  return map;
-}
-
-const LANDING_REVEAL_WORDS =
-  'We asked strangers to share an anonymous confession about the way they\u2019ve interacted with AI.'.split(' ');
-
-const REVEAL_NOTE_ENTRANCE_S = 0.48;
-const REVEAL_NOTE_NOISE_FADE_S = 0.85;
-/** Opacity while B&W + noise (visible during entrance fade-in). */
-const REVEAL_NOTE_DEGRADED_OPACITY = 1;
-const REVEAL_NOTE_CLEAN_OPACITY = 1;
-
-/** When the last onboarding note finishes its clean crossfade (filter fully off). */
-function revealNotesFilterDoneDelayS(reduceMotion) {
-  if (reduceMotion) return 0;
-  const afterWords = LANDING_REVEAL_WORDS.length * 0.055 + 0.32;
-  const lastNoteEntrance =
-    afterWords + (LANDING_REVEAL_IMAGE_IDS.length - 1) * 0.16;
-  return lastNoteEntrance + REVEAL_NOTE_ENTRANCE_S + REVEAL_NOTE_NOISE_FADE_S;
-}
-
-/** Landing hero copy — staggered entrance; ENTER last. */
-const LANDING_HERO_TITLE_DELAY_S = 0.1;
-const LANDING_HERO_SUBTITLE_DELAY_S = 0.38;
-const LANDING_HERO_ENTER_DELAY_S = 0.8;
-const LANDING_HERO_FADE_S = 0.72;
-
-const LANDING_REVEAL_MOBILE_MQ = '(max-width: 760px)';
-
-/** Shared ENTER / CONTINUE control on the landing flow. */
-const LANDING_CTA_BUTTON_STYLE = {
-  padding: '8px 20px',
-  background: 'transparent',
-  border: 'none',
-  color: '#e5e5e5',
-  fontSize: 11,
-  fontWeight: 400,
-  cursor: 'pointer',
-  fontFamily: 'var(--font-mono, ui-monospace, monospace)',
-  letterSpacing: '0.14em',
-  opacity: 0.85,
-};
-
-function useLandingRevealMobile() {
-  const [mobile, setMobile] = useState(
-    () => typeof window !== 'undefined' && window.matchMedia(LANDING_REVEAL_MOBILE_MQ).matches
-  );
-  useEffect(() => {
-    const mq = window.matchMedia(LANDING_REVEAL_MOBILE_MQ);
-    const onChange = () => setMobile(mq.matches);
-    mq.addEventListener('change', onChange);
-    return () => mq.removeEventListener('change', onChange);
-  }, []);
-  return mobile;
-}
-
-function buildInactiveCardFilter(inactive, noiseEnabled) {
-  return [
-    inactive.blur > 0 ? `blur(${inactive.blur}px)` : '',
-    inactive.grayscale > 0 ? `grayscale(${inactive.grayscale})` : '',
-    noiseEnabled ? `url(#${CARD_FILTER_ID})` : '',
-  ]
-    .filter(Boolean)
-    .join(' ');
-}
-
-function LandingRevealNotes({
-  reduceMotion,
-  easeOut,
-  inactive,
-  noiseEnabled,
-  confessionById,
-}) {
-  const mobile = useLandingRevealMobile();
-  const carouselRef = useRef(null);
-  const [activeSlide, setActiveSlide] = useState(0);
-  const [slotIds, setSlotIds] = useState(() => [...LANDING_REVEAL_IMAGE_IDS]);
-  const [cleanIds, setCleanIds] = useState(() => new Set());
-  const afterWords = reduceMotion ? 0 : LANDING_REVEAL_WORDS.length * 0.055 + 0.32;
-  const inactiveFilter = buildInactiveCardFilter(inactive, noiseEnabled);
-
-  const transcriptions = LANDING_REVEAL_IMAGE_IDS.map(
-    (id) => confessionById.get(id) || ''
-  );
-
-  const swapWithCenter = (clickedIndex) => {
-    if (clickedIndex === 1) return;
-    setSlotIds((prev) => {
-      const next = [...prev];
-      [next[1], next[clickedIndex]] = [next[clickedIndex], next[1]];
-      return next;
-    });
-  };
-
-  const renderNote = (id, slotIndex, { isActive, onSelect, fillSlide, showTranscript }) => (
-    <LandingRevealNote
-      key={fillSlide ? id : `slot-${slotIndex}`}
-      id={id}
-      transcription={confessionById.get(id) || ''}
-      isActive={isActive}
-      showTranscript={showTranscript}
-      entranceDelay={reduceMotion ? 0 : afterWords + slotIndex * 0.16}
-      reduceMotion={reduceMotion}
-      easeOut={easeOut}
-      hoverTilt={slotIndex === 0 ? -4 : slotIndex === 2 ? 4 : 0}
-      inactive={inactive}
-      inactiveFilter={inactiveFilter}
-      noiseEnabled={noiseEnabled}
-      fillSlide={fillSlide}
-      onSelect={onSelect}
-      onCleanReady={() => {
-        setCleanIds((prev) => {
-          if (prev.has(id)) return prev;
-          const next = new Set(prev);
-          next.add(id);
-          return next;
-        });
-      }}
-    />
-  );
-
-  useEffect(() => {
-    if (!mobile) return;
-    const el = carouselRef.current;
-    if (!el) return;
-
-    const updateActiveSlide = () => {
-      const center = el.scrollLeft + el.clientWidth / 2;
-      const slides = el.querySelectorAll('[data-reveal-slide]');
-      let best = 0;
-      let bestDist = Infinity;
-      slides.forEach((slide, i) => {
-        const slideCenter = slide.offsetLeft + slide.offsetWidth / 2;
-        const dist = Math.abs(slideCenter - center);
-        if (dist < bestDist) {
-          bestDist = dist;
-          best = i;
-        }
-      });
-      setActiveSlide(best);
-    };
-
-    updateActiveSlide();
-    el.addEventListener('scroll', updateActiveSlide, { passive: true });
-    window.addEventListener('resize', updateActiveSlide);
-    return () => {
-      el.removeEventListener('scroll', updateActiveSlide);
-      window.removeEventListener('resize', updateActiveSlide);
-    };
-  }, [mobile]);
-
-  if (mobile) {
-    const notes = LANDING_REVEAL_IMAGE_IDS.map((id, i) =>
-      renderNote(id, i, {
-        isActive: activeSlide === i,
-        fillSlide: true,
-        showTranscript: activeSlide === i,
-      })
-    );
-    const activeId = LANDING_REVEAL_IMAGE_IDS[activeSlide];
-    const activeTranscript =
-      cleanIds.has(activeId) ? transcriptions[activeSlide] : '';
-    return (
-      <>
-        <style>{`
-          .landing-reveal-carousel {
-            scrollbar-width: none;
-            -ms-overflow-style: none;
-          }
-          .landing-reveal-carousel::-webkit-scrollbar {
-            display: none;
-          }
-        `}</style>
-        <motion.div
-          ref={carouselRef}
-          className="landing-reveal-carousel"
-          style={{
-            width: '100vw',
-            maxWidth: '100vw',
-            marginLeft: 'calc(50% - 50vw)',
-            overflowX: 'auto',
-            overflowY: 'hidden',
-            scrollSnapType: 'x mandatory',
-            WebkitOverflowScrolling: 'touch',
-            display: 'flex',
-            flexDirection: 'row',
-            flexWrap: 'nowrap',
-            alignItems: 'center',
-            gap: 16,
-            padding: '0 max(20px, calc((100vw - min(72vw, 260px)) / 2))',
-            boxSizing: 'border-box',
-          }}
-        >
-          {LANDING_REVEAL_IMAGE_IDS.map((id, i) => (
-            <div
-              key={id}
-              data-reveal-slide
-              style={{
-                flex: '0 0 auto',
-                width: 'min(72vw, 260px)',
-                scrollSnapAlign: 'center',
-                scrollSnapStop: 'always',
-              }}
-            >
-              {notes[i]}
-            </div>
-          ))}
-        </motion.div>
-        <AnimatePresence mode="wait">
-          {activeTranscript ? (
-            <motion.p
-              key={LANDING_REVEAL_IMAGE_IDS[activeSlide]}
-              initial={reduceMotion ? false : { opacity: 0, y: 6 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: 4 }}
-              transition={{ duration: 0.22, ease: easeOut }}
-              style={{
-                ...LANDING_REVEAL_TRANSCRIPT_STYLE,
-                maxWidth: 'min(88vw, 360px)',
-                marginTop: 20,
-                paddingBottom: 8,
-              }}
-            >
-              {activeTranscript}
-            </motion.p>
-          ) : null}
-        </AnimatePresence>
-      </>
-    );
-  }
-
-  const centerId = slotIds[1];
-  const centerTranscript = cleanIds.has(centerId) ? confessionById.get(centerId) || '' : '';
-
-  return (
-    <div
-      style={{
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        width: '100%',
-      }}
-    >
-      <div
-        style={{
-          display: 'flex',
-          flexDirection: 'row',
-          flexWrap: 'nowrap',
-          alignItems: 'flex-start',
-          justifyContent: 'center',
-          gap: 14,
-        }}
-      >
-        {slotIds.map((id, i) =>
-          renderNote(id, i, {
-            isActive: i === 1,
-            fillSlide: false,
-            showTranscript: false,
-            onSelect: i !== 1 ? () => swapWithCenter(i) : undefined,
-          })
-        )}
-      </div>
-      <div
-        aria-live="polite"
-        style={{
-          width: LANDING_REVEAL_NOTE_WIDTH,
-          maxWidth: 280,
-          minHeight: LANDING_REVEAL_DESKTOP_TRANSCRIPT_MIN_H,
-          marginTop: 14,
-          display: 'flex',
-          alignItems: 'flex-start',
-          justifyContent: 'center',
-          flexShrink: 0,
-        }}
-      >
-        <AnimatePresence mode="wait">
-          {centerTranscript ? (
-            <motion.p
-              key={centerId}
-              initial={reduceMotion ? false : { opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.2, ease: easeOut }}
-              style={{
-                ...LANDING_REVEAL_TRANSCRIPT_STYLE,
-                maxWidth: 'min(32vw, 280px)',
-              }}
-            >
-              {centerTranscript}
-            </motion.p>
-          ) : null}
-        </AnimatePresence>
-      </div>
-    </div>
-  );
-}
-
-function buildRevealDegradedFilter(inactive, noiseEnabled) {
-  return [
-    inactive.grayscale > 0 ? `grayscale(${inactive.grayscale})` : 'grayscale(1)',
-    noiseEnabled ? `url(#${CARD_FILTER_ID})` : '',
-  ]
-    .filter(Boolean)
-    .join(' ');
-}
-
-/** Onboarding note — B&W + noise on appear; center (active) crossfades to clean, sides keep inactive filter. */
-function LandingRevealNote({
-  id,
-  transcription = '',
-  isActive = true,
-  showTranscript = false,
-  onSelect,
-  onCleanReady,
-  entranceDelay,
-  reduceMotion,
-  easeOut,
-  hoverTilt,
-  inactive,
-  inactiveFilter = '',
-  noiseEnabled,
-  fillSlide = false,
-}) {
-  const degradedFilter = buildRevealDegradedFilter(inactive, noiseEnabled);
-  const [showClean, setShowClean] = useState(!!reduceMotion);
-  /** Crossfade to clean right after filtered entrance (no extra hold). */
-  const cleanFadeAtMs = reduceMotion
-    ? 0
-    : (entranceDelay + REVEAL_NOTE_ENTRANCE_S) * 1000;
-
-  useEffect(() => {
-    if (reduceMotion) return;
-    const timer = window.setTimeout(() => setShowClean(true), cleanFadeAtMs);
-    return () => window.clearTimeout(timer);
-  }, [cleanFadeAtMs, reduceMotion]);
-
-  useEffect(() => {
-    if (showClean) onCleanReady?.();
-  }, [showClean, onCleanReady]);
-
-  const settled = reduceMotion || showClean;
-  const displayClean = isActive && settled;
-  const baseFilter = settled && !isActive ? inactiveFilter : degradedFilter;
-  const baseOpacity = displayClean
-    ? 0
-    : settled && !isActive
-      ? inactive.opacity
-      : REVEAL_NOTE_DEGRADED_OPACITY;
-  const revealTranscript = displayClean && showTranscript && transcription;
-  const canSelect = !!onSelect && !reduceMotion;
-  const sideScale = settled && !isActive ? inactive.scale : 1;
-  const NoteWrapper = fillSlide ? motion.div : 'div';
-
-  return (
-    <NoteWrapper
-      onClick={canSelect ? onSelect : undefined}
-      style={{
-        cursor: canSelect ? 'pointer' : isActive ? 'default' : reduceMotion ? 'default' : 'pointer',
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        flex: fillSlide ? undefined : '0 0 auto',
-        width: fillSlide ? undefined : LANDING_REVEAL_NOTE_WIDTH,
-        maxWidth: fillSlide ? undefined : 240,
-      }}
-      {...(fillSlide
-        ? {
-            whileHover:
-              reduceMotion || isActive
-                ? undefined
-                : { rotate: hoverTilt, scale: Math.min(1.02, inactive.scale * 1.04) },
-            transition: { duration: 0.28, ease: easeOut },
-          }
-        : {})}
-    >
-      <div
-        style={{
-          width: '100%',
-          transform: fillSlide ? undefined : `scale(${sideScale})`,
-          transformOrigin: '50% 50%',
-          transition: fillSlide ? undefined : 'transform 0.28s cubic-bezier(0.165, 0.84, 0.44, 1)',
-        }}
-        {...(fillSlide
-          ? {}
-          : {
-              onMouseEnter: canSelect
-                ? (e) => {
-                    e.currentTarget.style.transform = `scale(${Math.min(
-                      1.02,
-                      inactive.scale * 1.04
-                    )}) rotate(${hoverTilt}deg)`;
-                  }
-                : undefined,
-              onMouseLeave: canSelect
-                ? (e) => {
-                    e.currentTarget.style.transform = `scale(${sideScale})`;
-                  }
-                : undefined,
-            })}
-      >
-      <div
-        style={{
-          position: 'relative',
-          width: '100%',
-          height: fillSlide ? undefined : LANDING_REVEAL_NOTE_IMAGE_HEIGHT,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          flexShrink: 0,
-        }}
-      >
-        <motion.img
-          src={confessionNoteImageUrl(id)}
-          alt=""
-          aria-hidden
-          draggable={false}
-          initial={reduceMotion ? false : { opacity: 0, y: 8 }}
-          animate={{
-            opacity: reduceMotion && !isActive ? inactive.opacity : baseOpacity,
-            y: 0,
-          }}
-          transition={{
-            opacity: {
-              duration: settled ? 0.32 : REVEAL_NOTE_ENTRANCE_S,
-              delay: settled ? 0 : entranceDelay,
-              ease: easeOut,
-            },
-            y: {
-              duration: REVEAL_NOTE_ENTRANCE_S,
-              delay: entranceDelay,
-              ease: easeOut,
-            },
-          }}
-          style={{
-            width: '100%',
-            maxHeight: fillSlide ? undefined : '100%',
-            height: 'auto',
-            objectFit: 'contain',
-            display: 'block',
-            filter: baseFilter,
-            pointerEvents: 'none',
-          }}
-        />
-        <motion.img
-          src={confessionNoteImageUrl(id)}
-          alt=""
-          draggable={false}
-          initial={{ opacity: reduceMotion && isActive ? REVEAL_NOTE_CLEAN_OPACITY : 0 }}
-          animate={{
-            opacity: displayClean ? REVEAL_NOTE_CLEAN_OPACITY : 0,
-          }}
-          transition={{
-            duration: reduceMotion ? 0 : REVEAL_NOTE_NOISE_FADE_S,
-            ease: easeOut,
-          }}
-          style={{
-            position: 'absolute',
-            inset: 0,
-            width: '100%',
-            maxHeight: fillSlide ? undefined : '100%',
-            height: 'auto',
-            margin: 'auto',
-            objectFit: 'contain',
-            display: 'block',
-            filter: 'none',
-            pointerEvents: 'none',
-          }}
-        />
-      </div>
-      </div>
-      {fillSlide ? (
-        <AnimatePresence>
-          {revealTranscript ? (
-            <motion.p
-              key={`${id}-transcript`}
-              initial={reduceMotion ? false : { opacity: 0, y: 6 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: 4 }}
-              transition={{ duration: 0.22, ease: easeOut }}
-              style={{
-                ...LANDING_REVEAL_TRANSCRIPT_STYLE,
-                marginTop: 14,
-                maxWidth: 'min(32vw, 280px)',
-              }}
-            >
-              {transcription}
-            </motion.p>
-          ) : null}
-        </AnimatePresence>
-      ) : null}
-    </NoteWrapper>
-  );
-}
 
 /** Unique image URLs for landing background slideshow (live sheet or fallback). */
 function useLandingBackgroundSrcs(liveConfessions) {
@@ -558,331 +34,72 @@ function useLandingBackgroundSrcs(liveConfessions) {
   }, [liveConfessions]);
 }
 
-/** One slide in the landing stack: fades in only after bitmap decode (no pop-in). */
-function LandingBackgroundSlide({
-  src,
-  slideshowOpacity,
-  reduceMotion,
-  inactiveFilter,
-  inactiveScale,
-  easeOut,
-}) {
-  const [decoded, setDecoded] = useState(false);
+/**
+ * The dial categories for the landing, mirroring exactly what the archive shows
+ * (live sheet themes, or the bundled fallback while offline / loading). Each
+ * category is paired with the first real confession in that bucket as a teaser.
+ */
+function useLandingCategories({ confessions: liveConfessions, emotions: liveEmotions, error }) {
+  return useMemo(() => {
+    // Use the bundled set until live data arrives so the dial is never empty.
+    const useFallback = error || liveConfessions.length === 0;
+    const emotions = useFallback ? deriveEmotions(FALLBACK_CONFESSIONS) : liveEmotions;
+    const pool = useFallback ? FALLBACK_CONFESSIONS : liveConfessions;
 
-  return (
-    <motion.img
-      src={src}
-      alt=""
-      draggable={false}
-      loading="eager"
-      initial={{ opacity: 0 }}
-      animate={{
-        opacity: reduceMotion ? slideshowOpacity : decoded ? slideshowOpacity : 0,
-      }}
-      exit={{ opacity: 0 }}
-      transition={{ duration: reduceMotion ? 0 : 0.45, ease: easeOut }}
-      onLoad={() => setDecoded(true)}
-      onError={() => setDecoded(true)}
-      style={{
-        position: 'absolute',
-        inset: 0,
-        margin: 'auto',
-        maxWidth: '100%',
-        maxHeight: '100%',
-        width: 'auto',
-        height: 'auto',
-        objectFit: 'contain',
-        transform: `scale(${inactiveScale})`,
-        filter: inactiveFilter || 'none',
-      }}
-    />
-  );
+    const firstByLabel = new Map();
+    for (const c of pool) {
+      const t = c.transcription?.trim();
+      if (c.category && t && !firstByLabel.has(c.category)) {
+        firstByLabel.set(c.category, c);
+      }
+    }
+
+    return emotions.map((e) => {
+      const c = firstByLabel.get(e.label);
+      return {
+        key: e.id,
+        label: e.label,
+        teaser: c?.transcription?.trim() || '',
+        image: c?.image || null,
+      };
+    });
+  }, [liveConfessions, liveEmotions, error]);
 }
 
-function LandingPage({ onEnter, backgroundImageSrcs, confessionPool }) {
-  const revealTranscriptionById = useMemo(
-    () => getLandingRevealTranscriptionMap(confessionPool),
-    [confessionPool]
-  );
-  // 'hero' → title + ENTER; 'reveal' → staggered copy + stills + EXPLORE.
-  const [phase, setPhase] = useState('hero');
-  const [slideIdx, setSlideIdx] = useState(0);
-  const reduceMotion = useReducedMotion();
-  const inactive = useInactiveCardParams();
-  const noiseEnabled = inactive.noise?.enabled ?? true;
-  const inactiveFilter = [
-    inactive.blur > 0 ? `blur(${inactive.blur}px)` : '',
-    inactive.grayscale > 0 ? `grayscale(${inactive.grayscale})` : '',
-    noiseEnabled ? `url(#${CARD_FILTER_ID})` : '',
-  ]
-    .filter(Boolean)
-    .join(' ');
+/**
+ * The onboarding carousel notes — pinned to three hand-picked confessions
+ * (LANDING_REVEAL_IMAGE_IDS), shown in that exact order. Each note carries the
+ * emotion id of its theme so the EXPLORE CTA label + archive dial still seed to
+ * the right category on entry. Falls back to the per-category notes if those
+ * specific IDs aren't present in the loaded corpus yet.
+ */
+function useLandingRevealNotes({ confessions: liveConfessions, emotions: liveEmotions, error }) {
+  const categories = useLandingCategories({ confessions: liveConfessions, emotions: liveEmotions, error });
+  return useMemo(() => {
+    const useFallback = error || liveConfessions.length === 0;
+    const emotions = useFallback ? deriveEmotions(FALLBACK_CONFESSIONS) : liveEmotions;
+    const pool = useFallback ? FALLBACK_CONFESSIONS : liveConfessions;
 
-  const nBg = backgroundImageSrcs.length;
-  /** Slightly dimmer than inactive carousel cards so the hero type stays dominant. */
-  const slideshowOpacity = inactive.opacity * 0.72;
+    const labelToEmotionId = new Map((emotions || []).map((e) => [e.label, e.id]));
+    const byGlobalId = new Map();
+    for (const c of pool) {
+      const gid = c.globalId || (c.image && String(c.image).match(/AC_\d+/)?.[0]);
+      if (gid && !byGlobalId.has(gid)) byGlobalId.set(gid, c);
+    }
 
-  useEffect(() => {
-    if (reduceMotion || nBg <= 1) return;
-    const id = window.setInterval(() => {
-      setSlideIdx((i) => (i + 1) % nBg);
-    }, 2000);
-    return () => window.clearInterval(id);
-  }, [nBg, reduceMotion]);
+    const notes = LANDING_REVEAL_IMAGE_IDS.map((gid) => byGlobalId.get(gid))
+      .filter(Boolean)
+      .map((c) => ({
+        key: labelToEmotionId.get(c.category) || c.category,
+        label: c.category,
+        teaser: c.transcription?.trim() || '',
+        image: c.image || null,
+        globalId: c.globalId,
+      }));
 
-  const easeOut = [0.19, 1, 0.22, 1];
-
-  return (
-    <motion.div
-      key="landing"
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0, y: -30 }}
-      transition={{ duration: 0.6, ease }}
-      style={{
-        position: 'relative',
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        justifyContent: 'center',
-        minHeight: '100vh',
-        padding: 40,
-        textAlign: 'center',
-        overflow: 'hidden',
-        background: '#050505',
-      }}
-    >
-      {/* Centered confession stills — hidden during onboarding reveal (no blur/grain behind notes). */}
-      <motion.div
-        aria-hidden="true"
-        initial={false}
-        animate={{ opacity: phase === 'reveal' ? 0 : 1 }}
-        transition={{ duration: 0.35, ease: easeOut }}
-        style={{
-          position: 'absolute',
-          inset: 0,
-          zIndex: 0,
-          overflow: 'hidden',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          pointerEvents: 'none',
-        }}
-      >
-        <CardNoiseFilterDefs params={inactive} />
-        {/* Fixed slot so outgoing + incoming overlap; decode gate avoids sharp bitmap reveal. */}
-        <div
-          style={{
-            position: 'relative',
-            width: 'min(92vw, 820px)',
-            height: '78vh',
-            maxHeight: '78vh',
-          }}
-        >
-          <AnimatePresence>
-            <LandingBackgroundSlide
-              key={`${slideIdx % nBg}-${backgroundImageSrcs[slideIdx % nBg]}`}
-              src={backgroundImageSrcs[slideIdx % nBg]}
-              slideshowOpacity={slideshowOpacity}
-              reduceMotion={reduceMotion}
-              inactiveFilter={inactiveFilter}
-              inactiveScale={inactive.scale}
-              easeOut={easeOut}
-            />
-          </AnimatePresence>
-        </div>
-      </motion.div>
-
-      {/* Readability wash — hero + onboarding reveal. */}
-      <div
-        aria-hidden="true"
-        style={{
-          position: 'absolute',
-          inset: 0,
-          zIndex: 1,
-          pointerEvents: 'none',
-          background:
-            'radial-gradient(ellipse 85% 75% at 50% 42%, rgba(0,0,0,0.38) 0%, rgba(0,0,0,0.72) 55%, rgba(0,0,0,0.88) 100%)',
-        }}
-      />
-
-      {/* Full-viewport grain — hero + onboarding reveal. */}
-      <div
-        aria-hidden="true"
-        style={{
-          position: 'fixed',
-          inset: 0,
-          zIndex: 2,
-          isolation: 'isolate',
-          pointerEvents: 'none',
-          background: 'transparent',
-        }}
-      >
-        <TunableGrainBackground opacityScale={0.5} />
-      </div>
-
-      {/* Hero: title + ENTER → onboarding reveal. */}
-      <AnimatePresence>
-        {phase === 'hero' && (
-          <motion.div
-            key="hero-content"
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.45, ease: easeOut }}
-            style={{
-              position: 'relative',
-              zIndex: 3,
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'center',
-            }}
-          >
-            <motion.h1
-              initial={reduceMotion ? false : { opacity: 0, y: 28 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{
-                duration: reduceMotion ? 0 : LANDING_HERO_FADE_S,
-                ease,
-                delay: reduceMotion ? 0 : LANDING_HERO_TITLE_DELAY_S,
-              }}
-              style={{
-                fontFamily: "'Reckless Italic', 'News Plantin', Georgia, serif",
-                fontSize: '52px',
-                fontWeight: 400,
-                lineHeight: 1,
-                letterSpacing: '0.01em',
-                color: '#e5e5e5',
-                margin: 0,
-                textShadow:
-                  '0 0 28px rgba(255, 255, 255, 0.45), 0 0 56px rgba(255, 255, 255, 0.22), 0 0 96px rgba(255, 255, 255, 0.12)',
-              }}
-            >
-              What We Tell AI
-            </motion.h1>
-            <motion.p
-              initial={reduceMotion ? false : { opacity: 0, y: 22 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{
-                duration: reduceMotion ? 0 : LANDING_HERO_FADE_S,
-                ease,
-                delay: reduceMotion ? 0 : LANDING_HERO_SUBTITLE_DELAY_S,
-              }}
-              style={{
-                margin: '18px 0 0',
-                maxWidth: 560,
-                fontFamily: "'Reckless Italic', 'News Plantin', Georgia, serif",
-                fontSize: 22,
-                fontWeight: 400,
-                lineHeight: 1.45,
-                letterSpacing: '0.02em',
-                color: 'rgba(229, 229, 229, 0.78)',
-              }}
-            >
-              Anonymous confessions about AI&rsquo;s <br /> presence in our intimate lives
-            </motion.p>
-
-            <motion.button
-              initial={reduceMotion ? false : { opacity: 0, y: 18 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{
-                duration: reduceMotion ? 0 : LANDING_HERO_FADE_S,
-                ease,
-                delay: reduceMotion ? 0 : LANDING_HERO_ENTER_DELAY_S,
-              }}
-              whileHover={{ scale: 1.02, opacity: 1 }}
-              whileTap={{ scale: 0.98 }}
-              onClick={() => setPhase('reveal')}
-              style={{ marginTop: 28, ...LANDING_CTA_BUTTON_STYLE }}
-            >
-              ENTER
-            </motion.button>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      {/* Onboarding: word-by-word line → three stills → EXPLORE. */}
-      <AnimatePresence>
-        {phase === 'reveal' && (
-          <motion.div
-            key="reveal-content"
-            initial={{ opacity: reduceMotion ? 1 : 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.35, ease: easeOut, delay: reduceMotion ? 0 : 0.12 }}
-            style={{
-              position: 'fixed',
-              inset: 0,
-              zIndex: 3,
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: 28,
-              padding: '40px 24px 48px',
-              textAlign: 'center',
-              pointerEvents: 'auto',
-              overflowY: 'auto',
-              boxSizing: 'border-box',
-            }}
-          >
-            <CardNoiseFilterDefs params={inactive} />
-            <p
-              style={{
-                margin: 0,
-                maxWidth: 720,
-                fontFamily: "'Reckless Italic', 'News Plantin', Georgia, serif",
-                fontSize: 'clamp(16px, 2.4vw, 22px)',
-                fontWeight: 400,
-                lineHeight: 1.5,
-                letterSpacing: '0.02em',
-                color: 'rgba(229, 229, 229, 0.9)',
-              }}
-            >
-              {LANDING_REVEAL_WORDS.map((word, i) => (
-                <motion.span
-                  key={`${i}-${word}`}
-                  initial={reduceMotion ? false : { opacity: 0, y: 3 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{
-                    duration: reduceMotion ? 0 : 0.38,
-                    ease: easeOut,
-                    delay: reduceMotion ? 0 : 0.055 * i,
-                  }}
-                  style={{ display: 'inline' }}
-                >
-                  {word}
-                  {i < LANDING_REVEAL_WORDS.length - 1 ? ' ' : ''}
-                </motion.span>
-              ))}
-            </p>
-
-            <LandingRevealNotes
-              reduceMotion={reduceMotion}
-              easeOut={easeOut}
-              inactive={inactive}
-              noiseEnabled={noiseEnabled}
-              confessionById={revealTranscriptionById}
-            />
-
-            <motion.button
-              initial={reduceMotion ? false : { opacity: 0, y: 6 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{
-                duration: reduceMotion ? 0 : 0.42,
-                ease: easeOut,
-                delay: revealNotesFilterDoneDelayS(reduceMotion),
-              }}
-              whileHover={{ scale: 1.02, opacity: 1 }}
-              whileTap={{ scale: 0.98 }}
-              onClick={onEnter}
-              style={LANDING_CTA_BUTTON_STYLE}
-            >
-              CONTINUE
-            </motion.button>
-          </motion.div>
-        )}
-      </AnimatePresence>
-    </motion.div>
-  );
+    // If the pinned confessions aren't loaded yet, keep the carousel populated.
+    return notes.length ? notes : categories;
+  }, [liveConfessions, liveEmotions, error, categories]);
 }
 
 // Matches grid breakpoints in this file; also drives archive top chrome layout.
@@ -907,6 +124,15 @@ const ARCHIVE_NAV_GRADIENT_HEIGHT = 152;
 
 /** One vertical rhythm for fixed title / view toggle / ABOUT. */
 const ARCHIVE_NAV_CHROME_HEIGHT = 40;
+
+/**
+ * Landing→archive handoff. The chosen note fades out FIRST, then the dial
+ * spins in to that category (sequential, not overlapping). The dial delay is a
+ * touch longer than the note fade so there's a clean beat where only the
+ * category's background shows before the spin begins.
+ */
+const HANDOFF_NOTE_FADE_S = 0.45;
+const HANDOFF_DIAL_DELAY_MS = 560;
 
 /** Theme stack entrance — keep in sync with ThemeView `entranceDelay` + SideDial stagger cap. */
 const THEME_STACK_ENTRANCE_DELAY = 2.35;
@@ -943,6 +169,9 @@ const ARCHIVE_BRAND_MARK_STYLE = {
 
 /** Bottom-left wordmark + © on archive views (dial + grid). */
 function ArchiveBrandMark({ sidebarInset = 0, entranceDelay = 0.35 }) {
+  // Hidden on compact/mobile to keep the dial unobstructed.
+  const compact = useArchiveNavCompact();
+  if (compact) return null;
   return (
     <motion.div
       initial={{ opacity: 0 }}
@@ -1665,12 +894,22 @@ function ThemeView({
   sidebarInset = SIDEBAR_WIDTH,
   dialSize = BOTTOM_DIAL_SIZE,
   dialLabelInset = Math.round(BOTTOM_DIAL_SIZE * 0.232 + 40),
+  // Landing→archive handoff: delay the dial's fade-in (s) and its intro spin
+  // (ms) so the bridge note fades out first, then the dial spins in.
+  dialEntranceDelay = 0.15,
+  dialSpinDelayMs = 0,
 }) {
   const [lightboxConfession, setLightboxConfession] = useState(null);
+  const compact = useArchiveNavCompact();
   const dialBreadcrumb = useMemo(
     () => getCategoryBreadcrumbInfo(confessions, activeConfession),
     [confessions, activeConfession]
   );
+  // On phones the half-disc sits flush to the bottom edge, which buries the
+  // labels off-screen. Lift it up a touch (and give the cards more bottom
+  // clearance) so the active label + its neighbours read clearly.
+  const dialBottomOffset = compact ? 8 : -24;
+  const cardBottomInset = compact ? dialLabelInset + dialBottomOffset + 72 : dialLabelInset;
 
   return (
     <motion.div
@@ -1724,7 +963,7 @@ function ThemeView({
           top: 80,
           left: sidebarInset,
           right: 0,
-          bottom: dialLabelInset,
+          bottom: cardBottomInset,
           zIndex: 1,
           overflow: 'visible',
         }}
@@ -1752,7 +991,7 @@ function ThemeView({
       <div
         style={{
           position: 'absolute',
-          bottom: -24,
+          bottom: dialBottomOffset,
           left: '50%',
           transform: 'translateX(-50%)',
           zIndex: 10,
@@ -1760,9 +999,9 @@ function ThemeView({
         }}
       >
         <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={{ duration: 0.55, ease, delay: 0.35 }}
+          initial={{ opacity: 0, y: 70 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.6, ease, delay: dialEntranceDelay }}
         >
           <BottomCompassDial
             emotions={emotions}
@@ -1770,6 +1009,7 @@ function ThemeView({
             onEmotionChange={handleEmotionChange}
             size={dialSize}
             breadcrumb={dialBreadcrumb}
+            introSpinDelayMs={dialSpinDelayMs}
           />
         </motion.div>
       </div>
@@ -1793,9 +1033,16 @@ function useResponsiveDialSize() {
   const compute = () => {
     if (typeof window === 'undefined') return 720;
     const w = window.innerWidth;
+    // On phones the 480px floor overflows the viewport and shoves the dial's
+    // labels off both edges / below the fold, so the dial reads as missing.
+    // Size to (just under) the viewport width instead so the whole label arc
+    // stays on-screen and tappable. Desktop keeps the roomy 70%-width clamp.
+    const widthCap =
+      w <= 760
+        ? Math.round(w * 0.96)
+        : Math.min(880, Math.max(480, Math.round(w * 0.7)));
     // Clamp height contribution too — on short viewports the half-circle
     // would otherwise eat too much vertical space.
-    const widthCap = Math.min(880, Math.max(480, Math.round(w * 0.7)));
     const heightCap = Math.round(window.innerHeight * 0.9); // half-circle = 0.45 of viewport
     return Math.min(widthCap, heightCap);
   };
@@ -1840,7 +1087,7 @@ function ArchiveLoading() {
   );
 }
 
-function ArchivePage({ confessionQuery }) {
+function ArchivePage({ confessionQuery, initialEmotion = null }) {
   // Live data from the published Google Sheet. Falls back to the bundled
   // sample data if the network call fails so the prototype still works
   // offline / behind a captive portal.
@@ -1901,18 +1148,31 @@ function ArchivePage({ confessionQuery }) {
   // labels + a modest breathing strip so the cards above sit a bit closer
   // real estate and read as "centered" rather than crammed at the top.
   const dialLabelInset = Math.round(dialSize * 0.232 + 26);
-  const [activeEmotion, setActiveEmotion] = useState(null);
+  // Seeded from the landing selection so the dial spins to the chosen
+  // category on entry; falls back to the first emotion when entered directly.
+  const [activeEmotion, setActiveEmotion] = useState(initialEmotion);
   const [activeIndex, setActiveIndex] = useState(0);
 
-  // Default the dial to the first emotion and align the card stack to the
-  // first confession in that category. Otherwise activeIndex stays 0 while
+  // Entered via the landing EXPLORE CTA (vs. a direct/deep load). Captured once
+  // so the dial entrance can wait for the bridge note to fade out first, then
+  // spin in to the chosen category.
+  const enteredFromLanding = useRef(initialEmotion != null).current;
+  const dialEntranceDelay = reduceMotion ? 0 : enteredFromLanding ? HANDOFF_DIAL_DELAY_MS / 1000 : 0.15;
+  const dialSpinDelayMs = reduceMotion ? 0 : enteredFromLanding ? HANDOFF_DIAL_DELAY_MS : 0;
+
+  // Default the dial to the seeded/first emotion and align the card stack to
+  // the first confession in that category. Otherwise activeIndex stays 0 while
   // the dial shows e.g. "Refusal" — sort order can put another category at
   // index 0, so every card looks inactive until the user scrolls.
   useEffect(() => {
     if (emotions.length === 0 || themedConfessions.length === 0) return;
 
-    const emoId = activeEmotion ?? emotions[0].id;
-    if (!activeEmotion) {
+    // Validate against the live emotion set: a stale/missing seed (e.g. landing
+    // used fallback data) falls back to the first emotion instead of leaving
+    // the dial pointing at nothing.
+    const seedValid = activeEmotion && emotions.some((e) => e.id === activeEmotion);
+    const emoId = seedValid ? activeEmotion : emotions[0].id;
+    if (emoId !== activeEmotion) {
       setActiveEmotion(emoId);
     }
 
@@ -2050,6 +1310,8 @@ function ArchivePage({ confessionQuery }) {
             sidebarInset={sidebarInset}
             dialSize={dialSize}
             dialLabelInset={dialLabelInset}
+            dialEntranceDelay={dialEntranceDelay}
+            dialSpinDelayMs={dialSpinDelayMs}
           />
         ) : (
           <GridView key="grid" confessions={confessions} sidebarInset={sidebarInset} />
@@ -2063,23 +1325,93 @@ function ArchivePage({ confessionQuery }) {
 
 export default function App() {
   const [page, setPage] = useState('landing');
+  // Category (emotion id) the visitor selected on the landing dial; seeds the
+  // archive dial so it spins to that category on entry.
+  const [entryEmotion, setEntryEmotion] = useState(null);
+  // The selected note's image, kept mounted across the landing→archive swap so
+  // it visually "stays on screen" while the rest of the archive (other notes +
+  // dial) fades in around it. Cleared once it has handed off to the live card.
+  const [bridgeNote, setBridgeNote] = useState(null);
+  // The featured note's exact on-screen rect at the moment of entry, so the
+  // bridge image can hold its precise size/position (no jump) while the archive
+  // dial rises underneath it.
+  const [bridgeRect, setBridgeRect] = useState(null);
+  const reduceMotion = useReducedMotion();
   const confessionQuery = useConfessions();
   const landingBgSrcs = useLandingBackgroundSrcs(confessionQuery.confessions);
+  const landingNotes = useLandingRevealNotes(confessionQuery);
 
   return (
-    <AnimatePresence mode="wait">
-      {page === 'landing' && (
-        <LandingPage
-          onEnter={() => setPage('archive')}
-          backgroundImageSrcs={landingBgSrcs}
-          confessionPool={
-            confessionQuery.confessions.length > 0
-              ? confessionQuery.confessions
-              : FALLBACK_CONFESSIONS
-          }
-        />
+    <>
+      <AnimatePresence mode="wait">
+        {page === 'landing' && (
+          <LandingReveal
+            onEnter={(emotionId, noteImage, noteRect) => {
+              setEntryEmotion(emotionId ?? null);
+              setBridgeNote(noteImage ?? null);
+              setBridgeRect(noteRect ?? null);
+              setPage('archive');
+            }}
+            backgroundImageSrcs={landingBgSrcs}
+            categories={landingNotes}
+          />
+        )}
+        {page === 'archive' && (
+          <ArchivePage confessionQuery={confessionQuery} initialEmotion={entryEmotion} />
+        )}
+      </AnimatePresence>
+
+      {/* Bridge note: the chosen confession holds its exact landing position +
+          size through the page swap (no jump, no double-fade), then crossfades
+          out once the archive's dial + cards have risen underneath it. */}
+      {bridgeNote && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            zIndex: 50,
+            display: bridgeRect ? 'block' : 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            pointerEvents: 'none',
+          }}
+        >
+          <motion.img
+            key={bridgeNote}
+            src={bridgeNote}
+            alt=""
+            draggable={false}
+            initial={{ opacity: 1 }}
+            animate={{ opacity: 0 }}
+            transition={{
+              duration: reduceMotion ? 0 : HANDOFF_NOTE_FADE_S,
+              ease: 'easeIn',
+            }}
+            onAnimationComplete={() => {
+              setBridgeNote(null);
+              setBridgeRect(null);
+            }}
+            style={
+              bridgeRect
+                ? {
+                    position: 'absolute',
+                    top: bridgeRect.top,
+                    left: bridgeRect.left,
+                    width: bridgeRect.width,
+                    height: 'auto',
+                    borderRadius: 2,
+                    filter: 'drop-shadow(0 14px 34px rgba(0, 0, 0, 0.55))',
+                  }
+                : {
+                    width: 'clamp(160px, 25vw, 220px)',
+                    height: 'auto',
+                    borderRadius: 2,
+                    filter: 'drop-shadow(0 14px 34px rgba(0, 0, 0, 0.55))',
+                  }
+            }
+          />
+        </div>
       )}
-      {page === 'archive' && <ArchivePage confessionQuery={confessionQuery} />}
-    </AnimatePresence>
+    </>
   );
 }

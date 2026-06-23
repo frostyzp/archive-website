@@ -145,7 +145,13 @@ const GRAIN_DEFAULTS = {
   },
 };
 
-export function TunableGrainBackground({ opacityScale = 1 } = {}) {
+/**
+ * Single source of truth for grain intensity across the whole site so the
+ * landing ("main menu") and the archive pages share the exact same texture.
+ */
+export const GRAIN_OPACITY_SCALE = 0.5;
+
+export function TunableGrainBackground({ opacityScale = GRAIN_OPACITY_SCALE } = {}) {
   const scale =
     typeof opacityScale === 'number' && Number.isFinite(opacityScale)
       ? Math.max(0, opacityScale)
@@ -238,11 +244,11 @@ export function TunableGrainBackground({ opacityScale = 1 } = {}) {
 export const CARD_FILTER_ID = 'card-noise';
 
 const CARD_FILTER_DEFAULTS = {
-  blur: 9,
+  blur: 4,
   grayscale: 1,
-  opacity: 0.35,
-  scale: 0.92,
-  displacement: 30,
+  opacity: 0.75,
+  scale: 0.89,
+  displacement: 28,
   baseFrequency: 1.1,
   numOctaves: 1.3,
   seed: 3,
