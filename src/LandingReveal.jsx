@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { motion, AnimatePresence, useReducedMotion, useScroll, useMotionValueEvent } from 'motion/react';
 import {
   TunableGrainBackground,
@@ -8,6 +8,7 @@ import {
   useInactiveCardParams,
 } from './noise';
 import FontDecayTitle from './FontDecayTitle';
+import { NOISE_GRADIENT } from './NoiseGradient';
 
 /* ─────────────────────────────────────────────────────────────────────
  * LANDING SCROLL STORYBOARD  (mobile-first; desktop scales up)
@@ -21,9 +22,9 @@ import FontDecayTitle from './FontDecayTitle';
  *   3–15%  body subtitle fades out
  *   0–20%  TITLE scales 1 → 0.5 and docks to the top edge
  *  10–26%  background photo slideshow dims away
- *  24–42%  "We asked strangers to share an anonymous confession
- *           about the way they've interacted with AI." fades in
- *  54–64%  …that intro line fades back out
+ *  24–42%  a grainy cube + "We asked strangers to share an anonymous
+ *           confession about the way they've interacted with AI." fade in
+ *  54–64%  …that cube + intro line fade back out
  *  60–82%  the note CAROUSEL + transcription + EXPLORE rise in together;
  *           swipe (mobile) / click (desktop) between every confession.
  *           Entering carries the SELECTED image + category into the
@@ -62,14 +63,84 @@ const track = (p, [a, b], from, to) => {
 };
 
 const ease = [0.22, 1, 0.36, 1];
-const SERIF = "'Reckless Italic', 'News Plantin', Georgia, serif";
+const SERIF = "'Faktory', Georgia, serif";
 const MONO = 'var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace)';
 
-/** On narrow screens the hero title stacks onto two centered lines. */
+/* ─────────────────────────────────────────────────────────
+ * AMBIENT FLOATING PROMPTS
+ *
+ * The quiet chorus of things people type into an AI. One pool of chatbot
+ * text-entry placeholders (below); a spawner (FloatingPrompts) drops one onto
+ * the hero every second at a slightly random spot, fades it in a word at a
+ * time, and lets it drift up — small and half-transparent — before it fades out.
+ * ───────────────────────────────────────────────────────── */
+const CHATBOT_PROMPTS = [
+  'What do you want to talk about today?',
+  'How are you feeling, really?',
+  'Tell me what\u2019s on your mind',
+  'I\u2019m here whenever you\u2019re ready',
+  'What\u2019s been weighing on you?',
+  'You can tell me anything',
+  'What are you afraid to say out loud?',
+  'Is something keeping you up at night?',
+  'What do you need right now?',
+  'Do you want to talk about it?',
+  'I won\u2019t tell anyone',
+  'What can\u2019t you tell the people you love?',
+  'Who do you wish you could talk to?',
+  'What would you say if no one was listening?',
+  'Are you okay?',
+  'What\u2019s the truth you\u2019ve never said?',
+];
+
+/** Ambient float timing / layout. */
+const FLOAT = {
+  spawnMs: 1000, //     spawn a new sentence every second
+  lifeS: 8.5, //        fade-in → drift up → fade-out, per sentence
+  maxLive: 10, //       safety cap on concurrent sentences
+  wordStaggerS: 0.16, // per-word fade-in delay
+  wordFadeS: 0.55, //   per-word fade-in duration
+};
+
+/* ─────────────────────────────────────────────────────────
+ * LAUNCH STORYBOARD — one-time entrance on first load
+ *
+ * The background confession note appears FIRST. The title then runs its
+ * word-by-word decay reveal alongside the subtitle, and the scroll arrow
+ * lands last. One stage integer drives it:
+ *   1 = letter in · 2 = title reveal + subtitle in · 3 = arrow in
+ *
+ *     0ms   page opens on the bare neutral near-black gradient
+ *  +250ms   background LETTER (confession note) fades in FIRST (1.4s)
+ * +1500ms   TITLE decays in word-by-word (stagger 130ms, 950ms/word) and the
+ *           SUBTEXT fades in alongside it (1.0s)
+ *  ── title lands (~+2840ms) ───────────────────────────────
+ *           scroll ARROW fades in last (0.9s)
+ * ───────────────────────────────────────────────────────── */
+
+/** Title word-by-word reveal — slowed from 90 / 620 per request. */
+const TITLE_REVEAL = {
+  staggerMs: 130, // delay between each word's fade
+  fadeMs: 950, //    per-word fade duration (the "fade in" being slowed)
+};
+
+/** Entrance stage timings (ms from first load). */
+const LAUNCH = {
+  letterMs: 250, //        stage 1 · background note appears first
+  titleMs: 1500, //        stage 2 · title reveal + subtitle, after the note lands
+  arrowFallbackMs: 4200, // stage 3 · arrow safety net — normally the title's
+  //                          onRevealComplete fires the arrow the moment it lands
+};
+
+/** Per-element fade-in durations (seconds). */
+const SUBTEXT = { fadeS: 1.0 }; // "Anonymous confessions…"
+const LETTER = { fadeS: 1.4 }; //  background confession note ("the letter")
+const ARROW = { fadeS: 0.9 }; //   scroll arrow cue
+
+/** On narrow screens the hero title stacks onto two centered lines, wrapped so
+ *  the DaVinci face never runs off the edge (Figma 96-60). */
 const MOBILE_MQ = '(max-width: 760px)';
 const MOBILE_TITLE_TEXT = 'What We\nTell AI';
-/** Per-line typeface: "What We" lighter redaction, "Tell AI" heavier. */
-const MOBILE_TITLE_FONTS = ['Redaction 35', 'Redaction 50'];
 
 /** Intro narration revealed mid-scroll. */
 const INTRO_LINE =
@@ -127,7 +198,7 @@ function LandingBackgroundSlide({ src, slideshowOpacity, reduceMotion, inactiveF
 }
 
 /** A single confession note (active = clean, sides = dimmed/degraded). */
-function NoteCard({ note, isActive, reduceMotion, inactiveFilter, inactiveParams, onSelect, fill }) {
+function NoteCard({ note, isActive, reduceMotion, inactiveFilter, inactiveParams, onSelect, fill, maxImageHeight }) {
   const sideOpacity = inactiveParams.opacity ?? 0.5;
   const sideScale = inactiveParams.scale ?? 0.9;
   return (
@@ -141,7 +212,7 @@ function NoteCard({ note, isActive, reduceMotion, inactiveFilter, inactiveParams
         alignItems: 'center',
         justifyContent: 'center',
         transform: `scale(${isActive ? 1 : sideScale})`,
-        transition: reduceMotion ? 'none' : 'transform 0.34s cubic-bezier(0.22,1,0.36,1)',
+        transition: reduceMotion ? 'none' : 'transform 0.34s cubic-bezier(0.33, 1, 0.68, 1)',
       }}
     >
       {note.image ? (
@@ -154,12 +225,12 @@ function NoteCard({ note, isActive, reduceMotion, inactiveFilter, inactiveParams
             display: 'block',
             width: '100%',
             height: 'auto',
+            maxHeight: maxImageHeight,
             objectFit: 'contain',
             borderRadius: 2,
             opacity: isActive ? 1 : sideOpacity,
             filter: isActive ? 'none' : inactiveFilter || 'none',
             transition: reduceMotion ? 'none' : 'opacity 0.34s ease, filter 0.34s ease',
-            boxShadow: isActive ? '0 18px 44px rgba(0,0,0,0.55)' : '0 10px 26px rgba(0,0,0,0.45)',
           }}
         />
       ) : (
@@ -168,6 +239,7 @@ function NoteCard({ note, isActive, reduceMotion, inactiveFilter, inactiveParams
           style={{
             width: '100%',
             aspectRatio: '3 / 4',
+            maxHeight: maxImageHeight,
             border: '1px dashed rgba(229,229,229,0.3)',
             borderRadius: 2,
             background: 'rgba(46,30,62,0.28)',
@@ -283,14 +355,20 @@ function LandingNotes({
         flexDirection: 'row',
         alignItems: 'center',
         justifyContent: 'center',
-        gap: 22,
-        flexWrap: 'wrap',
-        maxWidth: 'min(92vw, 900px)',
+        gap: 'clamp(16px, 2vw, 36px)',
+        flexWrap: 'nowrap',
+        width: '100%',
+        maxWidth: 'min(96vw, 1800px)',
+        margin: '0 auto',
         pointerEvents: interactive ? 'auto' : 'none',
       }}
     >
       {notes.map((note, i) => (
-        <div key={note.key} data-note-slide>
+        <div
+          key={note.key}
+          data-note-slide
+          style={{ flex: '1 1 0', minWidth: 0, display: 'flex', justifyContent: 'center' }}
+        >
           <NoteCard
             note={note}
             isActive={activeIdx === i}
@@ -298,8 +376,144 @@ function LandingNotes({
             inactiveFilter={inactiveFilter}
             inactiveParams={inactiveParams}
             onSelect={() => setActiveIdx(i)}
+            fill
+            maxImageHeight="58vh"
           />
         </div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * One ambient prompt: a small, faded sentence that fades in a word at a time,
+ * drifts upward, then fades out. Self-reports completion so the spawner can
+ * drop it from the live list. Memoized + stable props so a sibling spawning
+ * never restarts this one's in-flight fade/float.
+ */
+const FloatingPrompt = memo(function FloatingPrompt({ id, text, xPct, yPct, drift, reduceMotion, onDone }) {
+  const words = text.split(' ');
+  return (
+    <div
+      style={{
+        position: 'absolute',
+        left: `${xPct}%`,
+        top: `${yPct}%`,
+        transform: 'translateX(-50%)',
+        maxWidth: 'min(50vw, 280px)',
+        pointerEvents: 'none',
+      }}
+    >
+      <motion.div
+        initial={{ opacity: 0, y: 0 }}
+        animate={{ opacity: reduceMotion ? 0.32 : [0, 0.5, 0.5, 0], y: reduceMotion ? 0 : -drift }}
+        transition={{
+          duration: reduceMotion ? 0 : FLOAT.lifeS,
+          ease: 'linear',
+          opacity: { duration: FLOAT.lifeS, times: [0, 0.18, 0.7, 1], ease: 'easeInOut' },
+        }}
+        onAnimationComplete={reduceMotion ? undefined : () => onDone(id)}
+        style={{
+          fontFamily: SERIF,
+          fontStyle: 'italic',
+          fontSize: 'clamp(11px, 1.35vw, 14px)',
+          lineHeight: 1.45,
+          letterSpacing: '0.02em',
+          color: 'rgba(229, 229, 229, 0.72)',
+          textAlign: 'center',
+          willChange: 'transform, opacity',
+        }}
+      >
+        {words.map((w, i) => (
+          <motion.span
+            key={i}
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{
+              delay: reduceMotion ? 0 : i * FLOAT.wordStaggerS,
+              duration: reduceMotion ? 0 : FLOAT.wordFadeS,
+              ease,
+            }}
+            style={{ display: 'inline-block', marginRight: '0.3em' }}
+          >
+            {w}
+          </motion.span>
+        ))}
+      </motion.div>
+    </div>
+  );
+});
+
+/**
+ * Ambient chorus of AI-chatbot prompts drifting up behind the hero. Every
+ * second (while `active`) a random prompt spawns at a slightly random spot and
+ * lives out FloatingPrompt's fade-in → rise → fade-out, then removes itself.
+ * `fade` (the scroll-linked backdrop opacity) dims the whole layer as the user
+ * scrolls into the narrative. prefers-reduced-motion shows a still, faint set.
+ */
+function FloatingPrompts({ active, reduceMotion, fade = 1 }) {
+  const [spawns, setSpawns] = useState([]);
+  const idRef = useRef(0);
+
+  // Pick a prompt that isn't already on screen (so duplicates don't cluster);
+  // fall back to the full pool if everything is currently live.
+  const makeSpawn = useCallback((taken = []) => {
+    const pool = CHATBOT_PROMPTS.filter((t) => !taken.includes(t));
+    const from = pool.length ? pool : CHATBOT_PROMPTS;
+    return {
+      id: idRef.current++,
+      text: from[Math.floor(Math.random() * from.length)],
+      xPct: 14 + Math.random() * 72, //  14%–86% across
+      yPct: 42 + Math.random() * 46, //  42%–88% down (rises from the lower hero)
+      drift: 80 + Math.random() * 90, // 80–170px upward drift
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!active) return undefined;
+
+    if (reduceMotion) {
+      // Static, faint set — no spawning, no motion.
+      setSpawns(
+        [0, 3, 6, 9, 12].map((offset, i) => ({
+          id: `static-${i}`,
+          text: CHATBOT_PROMPTS[offset % CHATBOT_PROMPTS.length],
+          xPct: 20 + i * 15,
+          yPct: 46 + (i % 3) * 14,
+          drift: 0,
+        }))
+      );
+      return undefined;
+    }
+
+    setSpawns([makeSpawn()]); // one immediately
+    const iv = window.setInterval(() => {
+      setSpawns((cur) => {
+        const next = [...cur, makeSpawn(cur.map((s) => s.text))];
+        return next.length > FLOAT.maxLive ? next.slice(next.length - FLOAT.maxLive) : next;
+      });
+    }, FLOAT.spawnMs);
+    return () => window.clearInterval(iv);
+  }, [active, reduceMotion, makeSpawn]);
+
+  const remove = useCallback((id) => setSpawns((cur) => cur.filter((s) => s.id !== id)), []);
+
+  if (!active && spawns.length === 0) return null;
+
+  return (
+    <div
+      aria-hidden="true"
+      style={{
+        position: 'absolute',
+        inset: 0,
+        overflow: 'hidden',
+        pointerEvents: 'none',
+        zIndex: 2,
+        opacity: fade,
+      }}
+    >
+      {spawns.map((s) => (
+        <FloatingPrompt key={s.id} {...s} reduceMotion={reduceMotion} onDone={remove} />
       ))}
     </div>
   );
@@ -366,15 +580,29 @@ export default function LandingReveal({ onEnter, backgroundImageSrcs = [], categ
   const [p, setP] = useState(0);
   useMotionValueEvent(scrollYProgress, 'change', (v) => setP(v));
 
-  // The hero subtitle holds back until the title's word-by-word reveal lands —
-  // FontDecayTitle calls onRevealComplete when it finishes. A fallback timer
-  // guarantees the subtitle still appears if that signal never arrives.
-  const [titleRevealed, setTitleRevealed] = useState(false);
+  // ── Launch sequence ───────────────────────────────────────────────
+  // One stage integer drives the whole entrance (no scattered flags):
+  //   1 = background letter in (FIRST) · 2 = title reveal + subtitle in ·
+  //   3 = scroll arrow in
+  // Stages 1–2 run on mount timers; the title (gated to start at stage 2 via
+  // `revealGate`) fires onRevealComplete when its word-by-word reveal lands,
+  // which advances to the arrow. A fallback timer covers a missed signal.
+  // prefers-reduced-motion shows everything at once.
+  const [launchStage, setLaunchStage] = useState(reduceMotion ? 3 : 0);
+  const bumpStage = useCallback((to) => setLaunchStage((s) => (s < to ? to : s)), []);
+  const revealArrow = useCallback(() => bumpStage(3), [bumpStage]);
   useEffect(() => {
-    if (titleRevealed) return;
-    const t = window.setTimeout(() => setTitleRevealed(true), 2600);
-    return () => window.clearTimeout(t);
-  }, [titleRevealed]);
+    if (reduceMotion) {
+      setLaunchStage(3);
+      return undefined;
+    }
+    const timers = [
+      setTimeout(() => bumpStage(1), LAUNCH.letterMs),
+      setTimeout(() => bumpStage(2), LAUNCH.titleMs),
+      setTimeout(() => bumpStage(3), LAUNCH.arrowFallbackMs),
+    ];
+    return () => timers.forEach(clearTimeout);
+  }, [reduceMotion, bumpStage]);
 
   const dockScale = isMobile ? TITLE.dockScaleMobile : TITLE.dockScaleDesktop;
   const titleScale = track(p, BEATS.titleDock, TITLE.heroScale, dockScale);
@@ -420,11 +648,21 @@ export default function LandingReveal({ onEnter, backgroundImageSrcs = [], categ
       style={{
         position: 'relative',
         height: `${SCROLL_LENGTH_VH}vh`,
-        background: '#060509',
+        background: '#010000',
       }}
     >
-      {/* Sticky stage — everything animates within this pinned 100vh frame. */}
-      <div style={{ position: 'sticky', top: 0, height: '100vh', overflow: 'hidden' }}>
+      {/* Sticky stage — everything animates within this pinned 100vh frame.
+          Neutral near-black backdrop with a faint charcoal lift behind the hero
+          title, fading to black at the edges (Figma 172-37). */}
+      <div
+        style={{
+          position: 'sticky',
+          top: 0,
+          height: '100vh',
+          overflow: 'hidden',
+          background: NOISE_GRADIENT,
+        }}
+      >
         {/* Flashing confession photos behind the hero (dim away on scroll). */}
         {nBg > 0 && (
           <div
@@ -442,7 +680,12 @@ export default function LandingReveal({ onEnter, backgroundImageSrcs = [], categ
             }}
           >
             <CardNoiseFilterDefs params={inactive} />
-            <div style={{ position: 'relative', width: 'min(92vw, 760px)', height: '70vh', maxHeight: '70vh' }}>
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: launchStage >= 1 ? 1 : 0 }}
+              transition={{ duration: reduceMotion ? 0 : LETTER.fadeS, ease }}
+              style={{ position: 'relative', width: 'min(92vw, 760px)', height: '70vh', maxHeight: '70vh' }}
+            >
               <AnimatePresence>
                 <LandingBackgroundSlide
                   key={`${slideIdx % nBg}-${backgroundImageSrcs[slideIdx % nBg]}`}
@@ -453,7 +696,7 @@ export default function LandingReveal({ onEnter, backgroundImageSrcs = [], categ
                   inactiveScale={inactive.scale}
                 />
               </AnimatePresence>
-            </div>
+            </motion.div>
           </div>
         )}
 
@@ -466,7 +709,7 @@ export default function LandingReveal({ onEnter, backgroundImageSrcs = [], categ
             zIndex: 1,
             pointerEvents: 'none',
             background:
-              'radial-gradient(ellipse 85% 75% at 50% 42%, rgba(6,5,9,0.34) 0%, rgba(6,5,9,0.66) 55%, rgba(6,5,9,0.86) 100%)',
+              'radial-gradient(ellipse 85% 75% at 50% 42%, rgba(0,0,0,0.20) 0%, rgba(0,0,0,0.48) 55%, rgba(0,0,0,0.78) 100%)',
           }}
         />
 
@@ -474,6 +717,10 @@ export default function LandingReveal({ onEnter, backgroundImageSrcs = [], categ
         <div aria-hidden="true" style={{ position: 'absolute', inset: 0, isolation: 'isolate', pointerEvents: 'none' }}>
           <TunableGrainBackground opacityScale={GRAIN_OPACITY_SCALE} />
         </div>
+
+        {/* Ambient chatbot prompts drifting up behind the hero — only during the
+            hero, dimming with the backdrop as you scroll into the narrative. */}
+        <FloatingPrompts active={launchStage >= 1 && p < 0.32} reduceMotion={reduceMotion} fade={bgOpacity} />
 
         {/* Hero title — docks to the top as you scroll. */}
         <div
@@ -492,13 +739,14 @@ export default function LandingReveal({ onEnter, backgroundImageSrcs = [], categ
         >
           <FontDecayTitle
             text={isMobile ? MOBILE_TITLE_TEXT : 'What We Tell AI'}
-            maxWidthPx={isMobile ? 360 : 620}
+            maxWidthPx={isMobile ? 360 : 2000}
+            glow={false}
             centerLines={isMobile}
-            lineFonts={isMobile ? MOBILE_TITLE_FONTS : undefined}
             lineGap={1.12}
-            revealStaggerMs={reduceMotion ? 0 : 90}
-            revealDurationMs={620}
-            onRevealComplete={() => setTitleRevealed(true)}
+            revealStaggerMs={reduceMotion ? 0 : TITLE_REVEAL.staggerMs}
+            revealDurationMs={TITLE_REVEAL.fadeMs}
+            revealGate={launchStage >= 2}
+            onRevealComplete={revealArrow}
           />
         </div>
 
@@ -508,8 +756,8 @@ export default function LandingReveal({ onEnter, backgroundImageSrcs = [], categ
             which never overlap in time). */}
         <motion.div
           initial={{ opacity: 0 }}
-          animate={{ opacity: titleRevealed ? 1 : 0 }}
-          transition={{ duration: reduceMotion ? 0 : 0.7, ease }}
+          animate={{ opacity: launchStage >= 2 ? 1 : 0 }}
+          transition={{ duration: reduceMotion ? 0 : SUBTEXT.fadeS, ease }}
           style={{ position: 'absolute', inset: 0, zIndex: 5, pointerEvents: 'none' }}
         >
           <p
@@ -542,33 +790,61 @@ export default function LandingReveal({ onEnter, backgroundImageSrcs = [], categ
           </p>
         </motion.div>
 
-        {/* Intro narration — fades in then out mid-scroll. */}
-        <p
+        {/* Intro narration — a grainy cube fades in above the line, then the
+            whole group fades back out mid-scroll. Both share the introOpacity /
+            introY beat (BEATS.introIn → introOut) so they read as one unit. */}
+        <div
           style={{
             position: 'absolute',
-            top: '34%',
+            top: '42%',
             left: 0,
             right: 0,
             margin: '0 auto',
             maxWidth: 640,
             padding: '0 28px',
-            fontFamily: SERIF,
-            fontStyle: 'italic',
-            fontSize: 'clamp(18px, 2.6vw, 24px)',
-            fontWeight: 400,
-            lineHeight: 1.5,
-            letterSpacing: '0.02em',
-            color: 'rgba(229, 229, 229, 0.92)',
-            textAlign: 'center',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            gap: 'clamp(20px, 4.5vh, 44px)',
             zIndex: 4,
             opacity: introOpacity,
             visibility: introOpacity <= 0.01 ? 'hidden' : 'visible',
-            transform: `translateY(${introY}px)`,
+            transform: `translate(0, calc(-50% + ${introY}px))`,
             pointerEvents: 'none',
           }}
         >
-          {INTRO_LINE}
-        </p>
+          {/* The cube's black backdrop is pre-baked to transparent (alpha =
+              luminance) so it composites cleanly over the hero gradient — a CSS
+              `screen` blend would be isolated by this wrapper's opacity/z-index
+              stacking context and leave a hard black rectangle. */}
+          <img
+            src="/intro-cube-glow.png"
+            alt=""
+            aria-hidden="true"
+            draggable={false}
+            style={{
+              display: 'block',
+              width: 'clamp(160px, 24vw, 260px)',
+              height: 'auto',
+              aspectRatio: '1024 / 948',
+            }}
+          />
+          <p
+            style={{
+              margin: 0,
+              fontFamily: SERIF,
+              fontStyle: 'italic',
+              fontSize: 'clamp(18px, 2.6vw, 24px)',
+              fontWeight: 400,
+              lineHeight: 1.5,
+              letterSpacing: '0.02em',
+              color: 'rgba(229, 229, 229, 0.92)',
+              textAlign: 'center',
+            }}
+          >
+            {INTRO_LINE}
+          </p>
+        </div>
 
         {/* Note carousel + transcription + EXPLORE — rise in together near the
             end of the scroll. Swipe/click between every confession. */}
@@ -662,9 +938,14 @@ export default function LandingReveal({ onEnter, backgroundImageSrcs = [], categ
           </button>
         </div>
 
-        {/* Scroll cue — bounces in the hero, fades once you start. */}
-        <div
+        {/* Scroll cue — fades in last (stage 3), bounces, then fades out as you
+            scroll. Entrance opacity (motion.div) multiplies the scroll-linked
+            fade-out (inner span's cueOpacity); the two never overlap in time. */}
+        <motion.div
           aria-hidden="true"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: launchStage >= 3 ? 1 : 0 }}
+          transition={{ duration: reduceMotion ? 0 : ARROW.fadeS, ease }}
           style={{
             position: 'absolute',
             bottom: 'clamp(36px, 9vh, 84px)',
@@ -676,19 +957,25 @@ export default function LandingReveal({ onEnter, backgroundImageSrcs = [], categ
             lineHeight: 1,
             color: 'rgba(229, 229, 229, 0.7)',
             zIndex: 6,
-            opacity: cueOpacity,
-            visibility: cueOpacity <= 0.01 ? 'hidden' : 'visible',
             pointerEvents: 'none',
           }}
         >
-          <motion.span
-            animate={reduceMotion ? undefined : { y: [0, 8, 0] }}
-            transition={{ duration: 1.6, repeat: Infinity, ease: 'easeInOut' }}
-            style={{ display: 'inline-block' }}
+          <span
+            style={{
+              display: 'inline-block',
+              opacity: cueOpacity,
+              visibility: cueOpacity <= 0.01 ? 'hidden' : 'visible',
+            }}
           >
-            &darr;
-          </motion.span>
-        </div>
+            <motion.span
+              animate={reduceMotion ? undefined : { y: [0, 8, 0] }}
+              transition={{ duration: 1.6, repeat: Infinity, ease: 'easeInOut' }}
+              style={{ display: 'inline-block' }}
+            >
+              &darr;
+            </motion.span>
+          </span>
+        </motion.div>
       </div>
     </motion.div>
   );

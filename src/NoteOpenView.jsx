@@ -1,0 +1,948 @@
+import {
+  useState,
+  useEffect,
+  useMemo,
+  useCallback,
+  useRef,
+} from 'react';
+import {
+  motion,
+  AnimatePresence,
+  useReducedMotion,
+  useAnimate,
+} from 'motion/react';
+import { TunableGrainBackground } from './noise';
+import { NOISE_GRADIENT } from './NoiseGradient';
+import { NoiseDisplaceFilter } from './NoiseDisplaceFilter';
+import { HorizontalConfessionStack, VerticalConfessionStack } from './SideDial';
+import { themeStats, sortConfessionsByEmotions } from './themes';
+
+/* ─────────────────────────────────────────────────────────
+ * NOTE-OPEN VIEW
+ *
+ * Full-screen takeover entered by clicking an UNFILTERED grid note.
+ * See docs/note-open-view-handoff.md for the full spec.
+ *
+ * The note display is the dial page's HorizontalConfessionStack — the same
+ * side-scrolling coverflow carousel (centre note emphasised; neighbours tilt
+ * away, degraded to grain + B&W; NoteMeta date/location + transcript on the
+ * active card). Dark edge gradients fade the far left/right into black as the
+ * notes slide, exactly like the dial page.
+ *
+ * What makes it distinct from the dial page: a near-black gradient backdrop, a
+ * left-edge rotary theme dial (a vertical category wheel that pivots off-screen
+ * left — active upright and centred with a NN/MM counter, neighbours
+ * tilting/receding), and the top-right chrome with ✕ EXIT. Scrolling
+ * the stack spins the wheel to the current note's category; clicking a neighbour
+ * category spins the wheel and jumps the stack to that category's first note.
+ * ───────────────────────────────────────────────────────── */
+
+const EASE_OUT = [0.165, 0.84, 0.44, 1];
+const GRADIENT_EASE = [0.22, 1, 0.36, 1];
+
+// Shared-element entrance: the clicked grid image flies + scales from its tile
+// into the stack's centered active card, then crossfades to the real card.
+const MORPH_S = 0.52; // s — bridge image travel/scale
+const BRIDGE_FADE_S = 0.3; // s — stack (neighbours + dial + chrome) fades up
+// The category context (desktop left wheel / mobile top-left caption) washes in
+// a beat AFTER the note and its date/location have landed (cf. META_TIMING in
+// SideDial: metaRow 0.4s), so the eye reads the note first and the surrounding
+// category settles in second rather than popping in with everything else.
+const CATEGORY_REVEAL_DELAY_S = 0.55;
+// The dark backdrop no longer slams opaque on frame 0. During a morph it stays
+// transparent for a beat — the clicked note lifts off (crisp bridge) while the
+// rest of the index dissolves underneath (see GRID EXIT in App.jsx) — then the
+// backdrop veils in over the emptied grid. Timed to trail the grid's dissolve.
+const BACKDROP_VEIL_DELAY_S = 0.14; // s — let the index start dissolving first
+const BACKDROP_VEIL_S = 0.42; //       s — then the backdrop fades to opaque
+// s — the bridge's final dissolve into its now-opaque twin card. Runs AFTER the
+// stack is fully opaque, so it never darkens the composite (see hand-off below).
+const BRIDGE_DISSOLVE_S = 0.2;
+// How long the target card's centre must hold still before we lock the FLIP
+// target. Must outlast the stack's post-mount scroll-snap correction so the
+// bridge lands where the card actually rests (no hand-off jump).
+const MORPH_SETTLE_MS = 180;
+// The grid tile is a square with the note image `objectFit:contain` inside
+// this much padding (see GridView) — so the visible pixels sit in a letterboxed
+// box this far in from the tile rect. Used to start the morph bridge on the
+// real image. EXPORTED as the single source of truth: GridView imports this for
+// its tile padding, so shrinking the gap between grid images here keeps the
+// note lift-off pixel-aligned automatically.
+export const TILE_PADDING = 26;
+
+// The morph bridge wears the SAME paper-warp + grain the grid tiles use, so the
+// lifted image is pixel-identical to the note the visitor just clicked (rather
+// than a clean copy that "pops" on lift-off). Its own filter id so it can't
+// collide with GridView's copy of the same filter.
+const BRIDGE_FILTER_ID = 'note-open-bridge-noise';
+const BRIDGE_FILTER = `url(#${BRIDGE_FILTER_ID})`;
+
+// Below this width the horizontal coverflow has no room for left/right
+// neighbours, so the stack rotates to a vertical carousel (see mobile branch).
+// Matches App.jsx's ARCHIVE_NAV_COMPACT_MQ so chrome + layout switch together.
+const MOBILE_MQ = '(max-width: 760px)';
+
+/** True on phone-width viewports; live-updates on resize/rotate. */
+function useIsMobile() {
+  const [mobile, setMobile] = useState(
+    () => typeof window !== 'undefined' && window.matchMedia(MOBILE_MQ).matches
+  );
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    const mq = window.matchMedia(MOBILE_MQ);
+    const onChange = () => setMobile(mq.matches);
+    onChange();
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
+  return mobile;
+}
+
+/** Letterbox `aspect` (w/h) inside `box`, centered — the on-screen pixel box of
+ *  an `object-fit:contain` image. Returns viewport-space {left,top,width,height}. */
+function containBox(box, aspect) {
+  let w, h;
+  if (box.width / box.height > aspect) {
+    h = box.height;
+    w = h * aspect;
+  } else {
+    w = box.width;
+    h = w / aspect;
+  }
+  return {
+    left: box.left + (box.width - w) / 2,
+    top: box.top + (box.height - h) / 2,
+    width: w,
+    height: h,
+  };
+}
+
+/* ── Left rotary dial ──────────────────────────── */
+
+/**
+ * Left-pivoting rotary "wheel" of category labels (per the Figma). The active
+ * category sits upright at the vertical centre; neighbours curve up/down and
+ * recede toward an off-screen pivot on the LEFT, dimming with distance. A note-
+ * position counter (NN/MM) rides just above the active wordmark. Clicking a
+ * neighbour spins the wheel to that category.
+ *
+ * The wheel is a *linear* (non-wrapping) list in dial order — it mirrors the
+ * stack, which clusters notes by category in the same order, so scrolling walks
+ * the wheel one notch at a time. Each label springs to a new arc slot when the
+ * active category changes, which reads as the wheel rotating.
+ */
+const WHEEL = {
+  baseX: 128, //     px — active wordmark's horizontal centre (from column left)
+  radius: 620, //    px — arc radius; larger = gentler curve (less left drift)
+  stepDeg: 17, //    deg between adjacent categories along the arc
+  visible: 2, //     neighbours kept visible (opacity > 0) on each side
+  labelFont: 22, //  px — wordmark size (sized so long labels clear the note)
+  gapEm: 0.16, //    em — space between underlined letters
+  opacity: [1, 0.4, 0.18], // by |offset| from active: [active, ±1, ±2]
+};
+
+// Arc transform for a label `k` steps from the active one (k<0 above, k>0
+// below). x is always ≤ 0 so labels drift left toward the pivot as they recede.
+function wheelSlot(k) {
+  const rad = (k * WHEEL.stepDeg * Math.PI) / 180;
+  return {
+    x: WHEEL.radius * (Math.cos(rad) - 1),
+    y: WHEEL.radius * Math.sin(rad),
+    rotate: k * WHEEL.stepDeg,
+    opacity: WHEEL.opacity[Math.abs(k)] ?? 0,
+  };
+}
+
+/** A category label as spaced letters ("B R A I N R O T"), matching the Figma
+ *  wordmark. One <span> per glyph so glyph gaps are even and real spaces widen. */
+function CategoryWord({ text }) {
+  return (
+    <span style={st.word}>
+      {text.split('').map((ch, i) =>
+        ch === ' ' ? (
+          <span key={i} style={st.wordSpace} />
+        ) : (
+          <span key={i} style={st.wordChar}>
+            {ch}
+          </span>
+        )
+      )}
+    </span>
+  );
+}
+
+function LeftThemeDial({ emotions, activeId, onChange, reduceMotion, delay }) {
+  const idx = Math.max(0, emotions.findIndex((e) => e.id === activeId));
+  const active = emotions[idx];
+  if (!active) return null;
+
+  // Each label springs to its new slot when `idx` changes → the wheel rotates.
+  const spin = reduceMotion
+    ? { duration: 0 }
+    : { type: 'spring', visualDuration: 0.6, bounce: 0.12 };
+
+  return (
+    <motion.div
+      initial={reduceMotion ? { opacity: 1 } : { opacity: 0, x: -16 }}
+      animate={{ opacity: 1, x: 0 }}
+      transition={{ duration: 0.5, ease: EASE_OUT, delay }}
+      style={st.dialColumn}
+    >
+      {/* Rotary wheel: every category positioned on the arc by its distance from
+          the active one. `initial={false}` so labels mount at their slot and
+          only animate on subsequent category changes. */}
+      {emotions.map((emo, i) => {
+        const k = i - idx;
+        const slot = wheelSlot(k);
+        const isActive = k === 0;
+        const clickable = !isActive && Math.abs(k) <= WHEEL.visible;
+        return (
+          <motion.div
+            key={emo.id}
+            initial={false}
+            animate={{ x: slot.x, y: slot.y, rotate: slot.rotate, opacity: slot.opacity }}
+            transition={spin}
+            style={{ ...st.slot, zIndex: isActive ? 3 : 1 }}
+          >
+            {clickable ? (
+              <button
+                type="button"
+                onClick={() => onChange(emo.id)}
+                aria-label={`Show ${emo.label}`}
+                style={st.slotButton}
+              >
+                <CategoryWord text={emo.label} />
+              </button>
+            ) : (
+              <span style={st.slotStatic}>
+                <CategoryWord text={emo.label} />
+              </span>
+            )}
+          </motion.div>
+        );
+      })}
+      {/* The note's position within its category is shown once, below the note
+          in the stack (see HorizontalConfessionStack). No counter rides above
+          the wordmark here — it was a duplicate of that one. */}
+    </motion.div>
+  );
+}
+
+/* ── Mobile theme caption ──────────────────────── */
+
+/**
+ * Mobile replacement for the left rotary dial (which has no room beside the
+ * full-width note on a phone). Category name sits top-left; the note counter
+ * (NN/MM) sits bottom-centre. Both crossfade as the centred note's category /
+ * position change while the user swipes the vertical carousel.
+ */
+function MobileThemeCaption({ label, position, total, reduceMotion }) {
+  const fade = {
+    initial: reduceMotion ? { opacity: 1 } : { opacity: 0 },
+    animate: { opacity: 1 },
+    exit: { opacity: 0 },
+    transition: { duration: reduceMotion ? 0 : 0.4, ease: GRADIENT_EASE },
+  };
+  return (
+    <>
+      <motion.div
+        initial={reduceMotion ? { opacity: 1 } : { opacity: 0, y: -6 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.5, ease: EASE_OUT, delay: reduceMotion ? 0 : CATEGORY_REVEAL_DELAY_S }}
+        style={st.mCaption}
+      >
+        <AnimatePresence mode="wait">
+          <motion.div key={label} {...fade}>
+            <div style={st.mCategory}>{label}</div>
+          </motion.div>
+        </AnimatePresence>
+      </motion.div>
+
+      <div style={st.mCounterWrap}>
+        <AnimatePresence mode="wait">
+          <motion.div key={`${label}-${position}`} {...fade} style={st.mCounter}>
+            {String(position).padStart(2, '0')}/{String(total).padStart(2, '0')}
+          </motion.div>
+        </AnimatePresence>
+      </div>
+    </>
+  );
+}
+
+/* ── Note-open view ────────────────────────────── */
+
+export default function NoteOpenView({
+  confession,
+  confessions,
+  emotions,
+  originRect,
+  onExit,
+  onAbout,
+}) {
+  const reduceMotion = useReducedMotion();
+  const isMobile = useIsMobile();
+
+  // The stack browses all *themed* notes, clustered in dial order — the same
+  // data the dial page's stack sees. Scrolling moves through them continuously;
+  // the left dial reflects (and jumps to) categories.
+  const themed = useMemo(
+    () => sortConfessionsByEmotions(confessions.filter((c) => c.category), emotions),
+    [confessions, emotions]
+  );
+
+  // Index of the clicked note within the stack (this view remounts per open,
+  // keyed by note id). -1 if the note has no theme (so it isn't in the stack).
+  const seedIndex = useMemo(
+    () => themed.findIndex((c) => c.id === confession?.id),
+    [themed, confession]
+  );
+  const [activeIndex, setActiveIndex] = useState(seedIndex >= 0 ? seedIndex : 0);
+
+  const activeNote = themed[activeIndex] || themed[0] || confession;
+  const activeLabel = activeNote?.category || emotions[0]?.label || '';
+  const activeEmotion = useMemo(
+    () => emotions.find((e) => e.label === activeLabel) || null,
+    [emotions, activeLabel]
+  );
+  const activeId = activeEmotion?.id ?? null;
+  const total = themeStats(confessions, activeLabel).count;
+
+  // Active note's position within its own category (0-based). `themed` clusters
+  // categories in dial order, so the run of same-category notes is contiguous;
+  // the left dial's counter shows `indexInCategory + 1 / total` above the wordmark.
+  const indexInCategory = useMemo(() => {
+    const within = themed.filter((c) => c.category === activeLabel);
+    const i = within.findIndex((c) => c.id === activeNote?.id);
+    return i < 0 ? 0 : i;
+  }, [themed, activeLabel, activeNote]);
+
+  // ── Shared-element entrance ──────────────────────────────
+  // The clicked grid image itself flies + scales from its tile into the stack's
+  // centered active card, then crossfades to the real card. Gated on having an
+  // origin rect + the note actually living in the stack (so the bridge lands on
+  // the same note the stack centers on). Skipped on mobile: the vertical
+  // carousel's cards aren't `[data-card]`, and a phone entrance reads better as
+  // a straight reveal than a cross-axis flight.
+  const wantMorph =
+    !reduceMotion && !isMobile && !!originRect && !!confession?.image && seedIndex >= 0;
+  const [phase, setPhase] = useState(wantMorph ? 'morph' : 'done'); // 'morph' | 'done'
+  const [showBridge, setShowBridge] = useState(wantMorph);
+  const overlayRef = useRef(null);
+  const [bridgeScope, bridgeAnimate] = useAnimate();
+  const revealed = phase === 'done';
+
+  useEffect(() => {
+    if (phase !== 'morph') return undefined;
+    let cancelled = false;
+    let raf = 0;
+    let attempts = 0;
+    let shown = false; // has the bridge been parked over the clicked tile yet?
+    let prevCenter = null; // last target-card center, to detect it settling
+    let stableSince = null; // timestamp the centre last started holding still
+
+    // On-screen box of the stack's centered active-card image: the card image
+    // whose center is closest to the viewport center once the stack's initial
+    // (instant) scroll has landed. Measured live so it survives the coverflow
+    // scale + any layout settle.
+    const measureTarget = () => {
+      const root = overlayRef.current;
+      if (!root) return null;
+      const cx = window.innerWidth / 2;
+      let best = null;
+      let bestDist = Infinity;
+      // Track the card the stack marks active (`data-active` = the note being
+      // opened) so the bridge follows the *correct* note instead of whichever
+      // neighbour is momentarily nearest centre while the stack is still
+      // scrolling into place. Fall back to any card until the marker mounts.
+      let cards = root.querySelectorAll('[data-card][data-active] img');
+      if (cards.length === 0) cards = root.querySelectorAll('[data-card] img');
+      cards.forEach((img) => {
+        const r = img.getBoundingClientRect();
+        if (r.width < 4 || r.height < 4) return;
+        const d = Math.abs(r.left + r.width / 2 - cx);
+        if (d < bestDist) {
+          bestDist = d;
+          best = r;
+        }
+      });
+      // Bail if nothing is near center yet (initial scroll hasn't landed).
+      if (!best || bestDist > window.innerWidth * 0.35) return null;
+      return best;
+    };
+
+    // Start box = the clicked grid image's visible pixels: the tile rect, inset
+    // by its padding, letterboxed to the image's aspect ratio. Needs the image
+    // decoded (naturalWidth) — it's the same file the grid just showed, so it's
+    // warm in cache and ready within a frame or two.
+    const computeFrom = () => {
+      const el = bridgeScope.current;
+      if (!el || !el.naturalWidth) return null;
+      const aspect = el.naturalWidth / el.naturalHeight;
+      return containBox(
+        {
+          left: originRect.left + TILE_PADDING,
+          top: originRect.top + TILE_PADDING,
+          width: Math.max(1, originRect.width - TILE_PADDING * 2),
+          height: Math.max(1, originRect.height - TILE_PADDING * 2),
+        },
+        aspect
+      );
+    };
+
+    const run = () => {
+      if (cancelled) return;
+      attempts += 1;
+      const el = bridgeScope.current;
+      const from = computeFrom();
+
+      // Park the bridge exactly over the clicked tile's pixels the instant the
+      // image is ready — even before the stack's target card can be measured.
+      // The backdrop is already opaque (grid hidden), so this reads as the note
+      // lifting off the grid with no black gap or first-frame pop.
+      if (el && from && !shown) {
+        el.style.left = `${from.left}px`;
+        el.style.top = `${from.top}px`;
+        el.style.width = `${from.width}px`;
+        el.style.height = `${from.height}px`;
+        el.style.transform = 'none';
+        el.style.transformOrigin = '0 0';
+        el.style.opacity = '1';
+        shown = true;
+      }
+
+      const target = measureTarget();
+      if (!el || !from || !target) {
+        if (attempts > 120) {
+          // ~2s of retries failed → skip the morph, just reveal the stack.
+          setPhase('done');
+          setShowBridge(false);
+          return;
+        }
+        raf = requestAnimationFrame(run);
+        return;
+      }
+
+      // Wait for the stack's active card to actually COME TO REST before
+      // locking the FLIP target. The stack keeps moving for a beat after mount:
+      // its instant initial scroll lands, then a scroll-snap nudges it the last
+      // few px, then the coverflow ~1.12 scale + image-load widths settle.
+      // Locking on the first "near centre" frame sends the bridge to a stale
+      // box, so it visibly jumps onto the real card at hand-off (the note reads
+      // as animating "up" twice). Instead we require the active card's centre to
+      // hold still for MORPH_SETTLE_MS — long enough to outlast the snap — so
+      // the bridge lands exactly where the card comes to rest. The bridge stays
+      // parked over the tile until then, reading as a beat of focus.
+      const center = {
+        x: target.left + target.width / 2,
+        y: target.top + target.height / 2,
+      };
+      const held =
+        prevCenter &&
+        Math.abs(center.x - prevCenter.x) < 1.5 &&
+        Math.abs(center.y - prevCenter.y) < 1.5;
+      prevCenter = center;
+      if (held) {
+        if (stableSince == null) stableSince = performance.now();
+      } else {
+        stableSince = null;
+      }
+      const settled =
+        stableSince != null && performance.now() - stableSince >= MORPH_SETTLE_MS;
+      if (!settled && attempts < 150) {
+        raf = requestAnimationFrame(run);
+        return;
+      }
+
+      // FLIP: pin to the centered-card box, then start it back at the parked
+      // origin box via transform (identical on-screen position — no jump), and
+      // animate home. Top-left transform-origin so translate + scale map
+      // corner → corner.
+      el.style.left = `${target.left}px`;
+      el.style.top = `${target.top}px`;
+      el.style.width = `${target.width}px`;
+      el.style.height = `${target.height}px`;
+      el.style.transformOrigin = '0 0';
+      el.style.opacity = '1';
+
+      bridgeAnimate(
+        el,
+        {
+          x: [from.left - target.left, 0],
+          y: [from.top - target.top, 0],
+          scaleX: [from.width / target.width, 1],
+          scaleY: [from.height / target.height, 1],
+        },
+        { duration: MORPH_S, ease: EASE_OUT }
+      ).then(() => {
+        if (cancelled) return;
+        // Reveal the real stack (+ dial + chrome) BEHIND the still-opaque bridge.
+        // The bridge's dissolve into the now-revealing card is handled by a
+        // separate effect (keyed on phase==='done') so that THIS effect's
+        // cleanup — which fires the instant `setPhase` re-renders — can't cancel
+        // the hand-off mid-flight.
+        setPhase('done');
+      });
+    };
+
+    raf = requestAnimationFrame(run);
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(raf);
+    };
+  }, [phase, originRect, bridgeScope, bridgeAnimate]);
+
+  // Bridge hand-off. Once the fly has landed and the stack begins revealing
+  // (phase → 'done'), we must dissolve the bridge into the real card WITHOUT a
+  // crossfade: the bridge is pixel-identical to, and pinned exactly over, the
+  // centred card, and crossfading two identical images over a black backdrop
+  // collapses the composite to ~0.44–0.75 mid-transition — the visible dark
+  // "flash" as the note lands. Instead we hold the bridge fully opaque while the
+  // stack fades up (neighbours + dial + chrome) behind it, then — once the twin
+  // card underneath is fully opaque — dissolve the bridge into it. With an opaque
+  // identical card behind, the bridge's fade keeps the composite at 1.0 the whole
+  // way, so the note simply settles. This lives in its own effect (not the morph
+  // rAF loop) because `setPhase('done')` re-renders and tears the morph effect
+  // down; a timer scheduled there would be cleared before it could fire.
+  useEffect(() => {
+    if (phase !== 'done' || !showBridge) return undefined;
+    const el = bridgeScope.current;
+    if (!el) {
+      setShowBridge(false);
+      return undefined;
+    }
+    let cancelled = false;
+    const hold = setTimeout(() => {
+      if (cancelled) return;
+      bridgeAnimate(el, { opacity: 0 }, { duration: BRIDGE_DISSOLVE_S, ease: 'linear' }).then(
+        () => {
+          if (!cancelled) setShowBridge(false);
+        }
+      );
+    }, BRIDGE_FADE_S * 1000);
+    return () => {
+      cancelled = true;
+      clearTimeout(hold);
+    };
+  }, [phase, showBridge, bridgeScope, bridgeAnimate]);
+
+  // Dial click → jump to the first note of that category (stack smooth-scrolls).
+  const handleCategoryChange = useCallback(
+    (emotionId) => {
+      const emo = emotions.find((e) => e.id === emotionId);
+      if (!emo) return;
+      const i = themed.findIndex((c) => c.category === emo.label);
+      if (i >= 0) setActiveIndex(i);
+    },
+    [emotions, themed]
+  );
+
+  const step = useCallback(
+    (dir) =>
+      setActiveIndex((i) => (themed.length ? (i + dir + themed.length) % themed.length : 0)),
+    [themed.length]
+  );
+
+  // Click empty space to go back: any click that doesn't land on a note card
+  // or an interactive control (dial label, nav link, EXIT) dismisses the view.
+  // The stack's card taps still navigate and the chrome buttons keep their own
+  // handlers — both carry a matching selector so they're excluded here. Gated
+  // on `revealed` so a stray click during the entrance morph doesn't bounce the
+  // visitor straight back out.
+  const handleBackdropClick = useCallback(
+    (e) => {
+      if (!revealed) return;
+      if (e.target.closest('[data-card],[data-vcard],button,a')) return;
+      onExit?.();
+    },
+    [revealed, onExit]
+  );
+
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === 'Escape') onExit?.();
+      else if (e.key === 'ArrowLeft') step(-1);
+      else if (e.key === 'ArrowRight') step(1);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onExit, step]);
+
+  return (
+    <motion.div
+      ref={overlayRef}
+      onClick={handleBackdropClick}
+      // The root itself stays fully opaque during a morph (so the lifting bridge
+      // image renders crisp — root opacity would dim it and re-expose the grid as
+      // a ghost). It's the *backdrop layer* below that veils in; the root holds no
+      // fill of its own. Without a morph the whole overlay still fades in gently.
+      initial={reduceMotion || wantMorph ? false : { opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: reduceMotion ? 0 : 0.3, ease: EASE_OUT }}
+      style={st.root}
+    >
+      {/* The dark gradient + grain backdrop. During a morph it starts transparent
+          and veils in a beat later, so the clicked note lifts off while the index
+          dissolves in view behind it; otherwise it's opaque from the start (the
+          root's own fade carries the entrance). */}
+      <motion.div
+        aria-hidden="true"
+        style={st.backdrop}
+        initial={wantMorph && !reduceMotion ? { opacity: 0 } : false}
+        animate={{ opacity: 1 }}
+        transition={
+          wantMorph && !reduceMotion
+            ? { duration: BACKDROP_VEIL_S, ease: EASE_OUT, delay: BACKDROP_VEIL_DELAY_S }
+            : { duration: 0 }
+        }
+      >
+        <TunableGrainBackground />
+      </motion.div>
+
+      {/* Horizontal side-scrolling note stack — the dial page's coverflow
+          carousel over all themed notes. Hidden (opacity 0) during the morph so
+          only the flying bridge image shows, then fades up to full opacity behind
+          the still-opaque bridge; the bridge dissolves into it only once it's fully
+          opaque (no crossfade dip — see the hand-off logic above). */}
+      <motion.div
+        initial={{ opacity: wantMorph ? 0 : 1 }}
+        animate={{ opacity: revealed ? 1 : 0 }}
+        transition={{ duration: BRIDGE_FADE_S, ease: EASE_OUT }}
+        style={{ ...st.stageArea, pointerEvents: revealed ? 'auto' : 'none' }}
+      >
+        {isMobile ? (
+          <VerticalConfessionStack
+            confessions={themed}
+            activeIndex={activeIndex}
+            onActiveChange={setActiveIndex}
+            mountEntrance={!reduceMotion}
+            entranceDelay={reduceMotion ? 0 : 0.08}
+          />
+        ) : (
+          <HorizontalConfessionStack
+            confessions={themed}
+            activeIndex={activeIndex}
+            onActiveChange={setActiveIndex}
+            mountEntrance={!reduceMotion && !wantMorph}
+            entranceDelay={reduceMotion ? 0 : 0.08}
+            showInlineCounter={false}
+          />
+        )}
+      </motion.div>
+
+      {/* Dark edge gradients so notes dissolve into black at the edges they
+          slide toward: left/right on desktop's horizontal strip, top/bottom on
+          the mobile vertical carousel (matching where prev/next peek). */}
+      <div aria-hidden="true" style={isMobile ? st.edgeVignetteV : st.edgeVignette} />
+
+      {/* Theme context washes in once the entrance has landed. Desktop shows the
+          left rotary wheel; mobile hides it (no room beside the full-width note)
+          and keeps just the category (top-left) and the note counter
+          (bottom-centre). */}
+      {revealed && (
+        <>
+          {isMobile ? (
+            <MobileThemeCaption
+              label={activeLabel}
+              position={indexInCategory + 1}
+              total={total}
+              reduceMotion={reduceMotion}
+            />
+          ) : (
+            <LeftThemeDial
+              emotions={emotions}
+              activeId={activeId}
+              onChange={handleCategoryChange}
+              reduceMotion={reduceMotion}
+              delay={reduceMotion ? 0 : CATEGORY_REVEAL_DELAY_S}
+            />
+          )}
+
+          {/* Desktop: the active note's "n / total" position, pinned to the
+              bottom-centre of the screen (mobile already has its own counter in
+              MobileThemeCaption). Updates live as you scroll between notes. */}
+          {!isMobile && total > 1 ? (
+            <motion.div
+              initial={reduceMotion ? false : { opacity: 0 }}
+              animate={{ opacity: 1 }}
+              transition={{ duration: reduceMotion ? 0 : 0.4, ease: EASE_OUT, delay: reduceMotion ? 0 : 0.12 }}
+              style={st.dCounterWrap}
+            >
+              <div
+                style={st.dCounter}
+                aria-label={`Note ${indexInCategory + 1} of ${total} in this category`}
+              >
+                <span style={st.dCounterCurrent}>{indexInCategory + 1}</span>
+                <span style={st.dCounterTotal}>{` / ${total}`}</span>
+              </div>
+            </motion.div>
+          ) : null}
+
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ duration: 0.4, ease: EASE_OUT, delay: reduceMotion ? 0 : 0.04 }}
+            style={st.chrome}
+          >
+            {/* Only ABOUT, styled to match the main index screen's nav bar.
+                INTRO/INDEX and the EXIT button are intentionally hidden — the
+                view is dismissed with Esc or a backdrop click. */}
+            <button
+              type="button"
+              style={st.navAbout}
+              aria-label="Open about panel"
+              onClick={() => onAbout?.()}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.opacity = '0.8';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.opacity = '0.5';
+              }}
+            >
+              ABOUT
+            </button>
+          </motion.div>
+        </>
+      )}
+
+      {/* Shared-element bridge: the clicked grid image, flown + scaled from its
+          tile onto the centered card, then faded out as the real card fades in.
+          Starts pinned exactly over the grid image so it reads as one element. */}
+      {showBridge && (
+        <>
+          {/* Same paper-warp + grain the grid tiles wear, so the lifted image is
+              identical to the clicked note (own id → no collision with the grid's). */}
+          <NoiseDisplaceFilter id={BRIDGE_FILTER_ID} animate={!reduceMotion} />
+          <img
+            ref={bridgeScope}
+            src={confession.image}
+            alt=""
+            draggable={false}
+            style={{ ...st.bridge, filter: BRIDGE_FILTER }}
+          />
+        </>
+      )}
+    </motion.div>
+  );
+}
+
+const MONO = 'var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace)';
+
+const st = {
+  root: {
+    position: 'fixed',
+    inset: 0,
+    zIndex: 800,
+    overflow: 'hidden',
+    // No fill of its own — the veil-in backdrop layer below owns the black
+    // gradient, so during the entrance morph the dissolving index shows through
+    // the (still fully opaque) root until the backdrop covers it.
+  },
+  backdrop: {
+    position: 'absolute',
+    inset: 0,
+    zIndex: 0,
+    pointerEvents: 'none',
+    // The design's black gradient: charcoal centre → pure black at the edges
+    // (shared `NOISE_GRADIENT`). `#010000` fallback keeps it black if the
+    // gradient can't paint.
+    background: '#010000',
+    backgroundImage: NOISE_GRADIENT,
+  },
+  stageArea: {
+    // The scrolling stack fills the viewport; its own paddingLeft/Right centre
+    // the active card at 50%, so the note sits dead-centre with the left dial
+    // overlaid on top and the neighbours sliding out toward the edges.
+    position: 'absolute',
+    inset: 0,
+    zIndex: 1,
+  },
+  edgeVignette: {
+    position: 'absolute',
+    inset: 0,
+    zIndex: 5,
+    pointerEvents: 'none',
+    background:
+      'linear-gradient(to right, rgba(0,0,0,0.92) 0%, rgba(0,0,0,0.6) 7%, rgba(0,0,0,0) 22%, rgba(0,0,0,0) 78%, rgba(0,0,0,0.6) 93%, rgba(0,0,0,0.92) 100%)',
+  },
+  // Mobile: fade top/bottom into black so the peeking prev/next notes dissolve
+  // at the edges they slide toward (the vertical analogue of edgeVignette).
+  edgeVignetteV: {
+    position: 'absolute',
+    inset: 0,
+    zIndex: 5,
+    pointerEvents: 'none',
+    // Very short fade (outer ~5%): darkens only the extreme top/bottom lip so
+    // the peeking prev/next notes stay legible — a longer fade swallows the
+    // whole peek on shorter viewports.
+    background:
+      'linear-gradient(to bottom, rgba(0,0,0,0.9) 0%, rgba(0,0,0,0) 5%, rgba(0,0,0,0) 95%, rgba(0,0,0,0.9) 100%)',
+  },
+
+  // Shared-element bridge image. Fixed to the viewport; box + transform written
+  // from JS (starts pinned over the clicked grid image, animates to the centered
+  // card). Hidden until positioned so there's no first-frame flash.
+  bridge: {
+    position: 'fixed',
+    left: 0,
+    top: 0,
+    width: 0,
+    height: 0,
+    opacity: 0,
+    objectFit: 'contain',
+    zIndex: 950,
+    pointerEvents: 'none',
+    willChange: 'transform, opacity',
+  },
+
+  // Matches the main index screen's top-right nav chrome (App.jsx AboutHeader):
+  // fixed to the top-right at the same inset, holding a single ABOUT button.
+  chrome: {
+    position: 'absolute',
+    top: 24,
+    right: 24,
+    zIndex: 40,
+    display: 'flex',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    padding: '0 12px',
+    minHeight: 40,
+  },
+  // Mirrors the index ABOUT button: ARCHIVE_NAV_TEXT (mono, bodySmall 16px, no
+  // letter-spacing, white) resting at 0.5 opacity, 0.8 on hover.
+  navAbout: {
+    background: 'none',
+    border: 'none',
+    padding: '2px 4px',
+    fontFamily: MONO,
+    fontSize: 16,
+    fontWeight: 400,
+    lineHeight: 1.5,
+    letterSpacing: '0',
+    color: '#fff',
+    opacity: 0.5,
+    cursor: 'pointer',
+    transition: 'opacity 0.2s ease',
+    // Reads as a hyperlink → persistent underline, matching the index nav.
+    textDecorationLine: 'underline',
+    textDecorationThickness: '1px',
+    textUnderlineOffset: '3px',
+  },
+
+  // Left rotary dial — a full-height positioning context on the left edge; the
+  // wheel's slots + counter are absolutely placed relative to it.
+  dialColumn: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    bottom: 0,
+    width: 420,
+    zIndex: 20,
+    pointerEvents: 'none',
+  },
+  // One wheel label. A 0-size anchor at (baseX, vertical centre); motion writes
+  // the arc translate + rotate. The inner word centres itself on the anchor.
+  slot: {
+    position: 'absolute',
+    left: WHEEL.baseX,
+    top: '50%',
+    willChange: 'transform, opacity',
+  },
+  slotButton: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    transform: 'translate(-50%, -50%)',
+    background: 'none',
+    border: 'none',
+    padding: 0,
+    margin: 0,
+    cursor: 'pointer',
+    pointerEvents: 'auto',
+    whiteSpace: 'nowrap',
+  },
+  slotStatic: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    transform: 'translate(-50%, -50%)',
+    pointerEvents: 'none',
+    whiteSpace: 'nowrap',
+  },
+  // Wordmark: letter-spaced Courier — one <span> per glyph so the gap between
+  // glyphs is even and real spaces widen (matches the Figma wordmark spacing).
+  word: {
+    display: 'inline-flex',
+    alignItems: 'baseline',
+    gap: `${WHEEL.gapEm}em`,
+    fontFamily: MONO,
+    fontSize: WHEEL.labelFont,
+    lineHeight: 1,
+    color: '#e2e2e2',
+    whiteSpace: 'nowrap',
+    // Categories render all-caps to match the dial + wordmark style elsewhere.
+    textTransform: 'uppercase',
+  },
+  wordChar: {},
+  wordSpace: { display: 'inline-block', width: '0.42em' },
+  // ── Mobile theme caption ──────────────────────────────────
+  // Top-left: category label. Sits above the top peek's dimmed note.
+  mCaption: {
+    position: 'absolute',
+    top: 74,
+    left: 22,
+    zIndex: 20,
+    maxWidth: '62vw',
+    pointerEvents: 'none',
+  },
+  mCategory: {
+    fontFamily: MONO,
+    fontSize: 13,
+    letterSpacing: '0.16em',
+    textTransform: 'uppercase',
+    color: 'rgba(255,255,255,0.72)',
+  },
+  // Bottom-centre: the NN/MM note counter.
+  mCounterWrap: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 40,
+    zIndex: 20,
+    display: 'flex',
+    justifyContent: 'center',
+    pointerEvents: 'none',
+  },
+  mCounter: {
+    fontFamily: MONO,
+    fontStyle: 'italic',
+    fontSize: 16,
+    letterSpacing: '-0.02em',
+    color: 'rgba(255,255,255,0.58)',
+  },
+  // ── Desktop bottom-centre note counter ────────────────────
+  // The active note's "n / total" position within its category, pinned to the
+  // bottom of the screen (relocated out from under the transcript). Sits above
+  // the edge vignette so it stays legible.
+  dCounterWrap: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 'clamp(18px, 3.6vh, 34px)',
+    zIndex: 20,
+    display: 'flex',
+    justifyContent: 'center',
+    pointerEvents: 'none',
+  },
+  dCounter: {
+    fontFamily: '"Courier New", Courier, var(--font-mono, ui-monospace, monospace)',
+    fontSize: 12,
+    letterSpacing: '0.12em',
+    fontVariantNumeric: 'tabular-nums',
+    whiteSpace: 'nowrap',
+    userSelect: 'none',
+  },
+  dCounterCurrent: { color: 'rgba(229,229,229,0.85)' },
+  dCounterTotal: { color: 'rgba(190,190,190,0.42)' },
+};

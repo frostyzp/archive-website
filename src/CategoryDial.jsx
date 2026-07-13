@@ -3,12 +3,12 @@ import { motion, useMotionValue, useTransform, animate } from 'motion/react';
 import { Text } from './text';
 
 const CATEGORIES = [
-  'Refusal',
-  'Harm',
-  'Therapist',
-  'Love',
-  'Family',
-  'Ghostwriter',
+  'REFUSAL',
+  'HARM',
+  'THERAPIST',
+  'LOVE',
+  'FAMILY',
+  'GHOSTWRITER',
 ];
 
 const DIAL_RADIUS = 260;

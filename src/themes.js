@@ -18,17 +18,27 @@
 const radial = (color) =>
   `radial-gradient(ellipse 90% 80% at 50% 100%, ${color} 0%, #111 70%)`;
 
+// Monochrome: the per-category colour tints were removed by request — every
+// theme now shares one neutral grey glow so the archive stays black-and-white.
+// (Swap this back to per-theme `radial('#xxxxxx')` values to restore colour.)
+// Exported so non-dial views (e.g. the grid) can share the exact same backdrop
+// glow the dial uses, keeping the film-grain reading consistent across views.
+export const NEUTRAL_GRADIENT = radial('#2a2a2a');
+
+// THEME_META locks ordering + gradient for known themes (object key order =
+// dial order). Any new theme that appears in the sheet is appended at the end
+// with the neutral fallback gradient so the app keeps working without a code change.
 export const THEME_META = {
-  Therapist:        { id: 'therapist',   gradient: radial('#2a1a4a') },
-  Harm:             { id: 'harm',        gradient: radial('#4a1a1a') },
-  Refusal:          { id: 'refusal',     gradient: radial('#1a1a1a') },
-  'In Love (w/AI)': { id: 'in-love',     gradient: radial('#4a1a2e') },
-  Exes:             { id: 'exes',        gradient: radial('#3a1a4a') },
-  Family:           { id: 'family',      gradient: radial('#1a3a3a') },
-  Ghostwriter:      { id: 'ghostwriter', gradient: radial('#4a3a1a') },
+  Therapist:        { id: 'therapist',   gradient: NEUTRAL_GRADIENT },
+  Harm:             { id: 'harm',        gradient: NEUTRAL_GRADIENT },
+  Refusal:          { id: 'refusal',     gradient: NEUTRAL_GRADIENT },
+  'In Love (w/AI)': { id: 'in-love',     gradient: NEUTRAL_GRADIENT },
+  Exes:             { id: 'exes',        gradient: NEUTRAL_GRADIENT },
+  Family:           { id: 'family',      gradient: NEUTRAL_GRADIENT },
+  Ghostwriter:      { id: 'ghostwriter', gradient: NEUTRAL_GRADIENT },
 };
 
-const FALLBACK_GRADIENT = radial('#2a2a2a');
+const FALLBACK_GRADIENT = NEUTRAL_GRADIENT;
 
 // Catch-all buckets we never want surfaced as a dial slot.
 export const HIDDEN_THEMES = new Set(['Misc', 'misc']);
@@ -49,16 +59,38 @@ export function deriveEmotions(confessions) {
   const emotions = [];
   Object.entries(THEME_META).forEach(([label, meta]) => {
     if (present.has(label)) {
-      emotions.push({ id: meta.id, label, gradient: meta.gradient });
+      emotions.push({
+        id: meta.id,
+        label,
+        gradient: meta.gradient,
+      });
       present.delete(label);
     }
   });
 
   [...present].sort().forEach((label) => {
-    emotions.push({ id: slug(label), label, gradient: FALLBACK_GRADIENT });
+    emotions.push({
+      id: slug(label),
+      label,
+      gradient: FALLBACK_GRADIENT,
+    });
   });
 
   return emotions;
+}
+
+/**
+ * Stats for one category label — currently just the note count, used by the
+ * note-open view's left theme dial ("N NOTES"). Kept separate from
+ * `deriveEmotions` so it can be recomputed cheaply as the confession set
+ * changes without rebuilding the whole emotion list.
+ */
+export function themeStats(confessions, label) {
+  const count = confessions.reduce(
+    (n, c) => (c.category === label ? n + 1 : n),
+    0
+  );
+  return { count };
 }
 
 /**

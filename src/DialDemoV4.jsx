@@ -113,8 +113,8 @@ function SideCompassDial({ emotions, activeEmotion, onEmotionChange }) {
       // others rotate radially around the dial.
       ctx.rotate(a - Math.PI);
       ctx.font = isActive
-        ? "600 22px 'News Plantin', Georgia, serif"
-        : "400 19px 'News Plantin', Georgia, serif";
+        ? "600 22px 'Faktory', Georgia, serif"
+        : "400 19px 'Faktory', Georgia, serif";
       ctx.fillStyle = isActive ? '#e5e5e5' : 'rgba(255,255,255,0.28)';
       ctx.textAlign = 'right';
       ctx.textBaseline = 'middle';

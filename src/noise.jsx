@@ -11,6 +11,8 @@
  * and tune in the top-right panel (`?dial=1`). Optional `opacityScale`
  * multiplies layer opacities (e.g. softer grain on the landing only).
  */
+import { useEffect, useRef, useState } from 'react';
+import { useReducedMotion } from 'motion/react';
 import { useDialKit } from 'dialkit';
 
 export const GRAIN_KEYFRAMES = `
@@ -124,7 +126,9 @@ export const HEAVY_PAPER = {
 const GRAIN_DEFAULTS = {
   coarse: {
     opacity: 0.6,
-    blend: 'overlay',
+    // `screen` so the grain reads as light film-grain on near-black backdrops
+    // (overlay/soft-light collapse to ~invisible on black).
+    blend: 'screen',
     tile: 240,
     duration: 2.8,
     steps: 2,
@@ -136,7 +140,7 @@ const GRAIN_DEFAULTS = {
   fine: {
     enabled: true,
     opacity: 0.12,
-    blend: 'overlay',
+    blend: 'screen',
     tile: 120,
     duration: 0.5,
     steps: 37,
@@ -248,11 +252,23 @@ const CARD_FILTER_DEFAULTS = {
   grayscale: 1,
   opacity: 0.75,
   scale: 0.89,
-  displacement: 28,
+  displacement: 14,
   baseFrequency: 1.1,
   numOctaves: 1.3,
   seed: 3,
   posterize: 0,
+  // Continuous noise — crawl the turbulence seed so the grain is alive.
+  animate: true,
+  noiseFps: 12, //          seed hops/sec (lower = chunkier TV-static shimmer)
+  // Dissolve-over-time — disabled: the noise now holds a constant level (the
+  // value the dissolve used to reset to at the end of each cycle, i.e.
+  // displacement = `displacement` with no hole-punch erosion). Flip back on in
+  // the "Inactive Cards" DialKit panel to restore the slow disintegration.
+  dissolve: false,
+  dissolveDuration: 7, //   seconds to reach full dissolve
+  dissolveAmount: 0.5, //   peak hole coverage (0 = none, 1 = note fully eaten)
+  dissolveSmear: 18, //     extra displacement added at full dissolve
+  dissolveLoop: true, //    ping-pong: dissolve in, reform, forever
 };
 
 export function useInactiveCardParams() {
@@ -263,11 +279,20 @@ export function useInactiveCardParams() {
     grayscale: [CARD_FILTER_DEFAULTS.grayscale, 0, 1],
     noise: {
       enabled: true,
+      animate: CARD_FILTER_DEFAULTS.animate,
+      fps: [CARD_FILTER_DEFAULTS.noiseFps, 1, 30],
       displacement: [CARD_FILTER_DEFAULTS.displacement, 0, 40],
       baseFrequency: [CARD_FILTER_DEFAULTS.baseFrequency, 0.1, 3],
       numOctaves: [CARD_FILTER_DEFAULTS.numOctaves, 1, 5],
       seed: [CARD_FILTER_DEFAULTS.seed, 0, 99],
       posterize: [CARD_FILTER_DEFAULTS.posterize, 0, 8],
+    },
+    dissolve: {
+      enabled: CARD_FILTER_DEFAULTS.dissolve,
+      duration: [CARD_FILTER_DEFAULTS.dissolveDuration, 1, 20],
+      amount: [CARD_FILTER_DEFAULTS.dissolveAmount, 0, 1],
+      smear: [CARD_FILTER_DEFAULTS.dissolveSmear, 0, 60],
+      loop: CARD_FILTER_DEFAULTS.dissolveLoop,
     },
   });
 }
@@ -277,19 +302,82 @@ export function useInactiveCardParams() {
  * Mount once anywhere in the tree — the filter is global by id.
  *
  * Pipeline:
- *   1. feTurbulence  → generates fractalNoise pattern
- *   2. feDisplacementMap  → smears the source by that pattern (pixelated feel)
- *   3. feComponentTransfer (optional)  → posterize / quantize channels for
- *      a true low-bit-depth look when posterize > 0
+ *   1. feTurbulence  → fractalNoise pattern. When `noise.animate` is on, the
+ *      `seed` crawls on a ~`fps` clock so the grain is alive (continuous noise).
+ *   2. feDisplacementMap  → smears the source by that pattern. The smear grows
+ *      with the dissolve progress (`dissolveSmear`).
+ *   3. Dissolve erosion (optional)  → thresholds the noise into a hole-punch
+ *      mask that grows over time, eating the note into the grain.
+ *   4. feComponentTransfer (optional)  → posterize / quantize channels.
+ *
+ * `dissolve` ping-pongs (dissolve in → reform) on a shared performance.now()
+ * clock so every mounted copy of the filter stays in sync. Respects
+ * prefers-reduced-motion (falls back to the static look).
  */
 export function CardNoiseFilterDefs({ params }) {
   const n = params?.noise ?? {};
+  const dz = params?.dissolve ?? {};
   const enabled = n.enabled ?? true;
-  const displacement = enabled ? (n.displacement ?? 0) : 0;
+  const baseDisplacement = enabled ? (n.displacement ?? 0) : 0;
   const baseFrequency = n.baseFrequency ?? 0.9;
   const numOctaves = Math.round(n.numOctaves ?? 2);
-  const seed = Math.round(n.seed ?? 3);
+  const baseSeed = Math.round(n.seed ?? 3);
   const posterize = Math.round(n.posterize ?? 0);
+
+  const reduceMotion = useReducedMotion();
+  const animate = enabled && (n.animate ?? false) && !reduceMotion;
+  const noiseFps = Math.max(1, n.fps ?? 12);
+
+  const dissolveOn = enabled && (dz.enabled ?? false) && !reduceMotion;
+  const dissolveDuration = Math.max(0.1, dz.duration ?? 6);
+  const dissolveAmount = Math.min(1, Math.max(0, dz.amount ?? 0));
+  const dissolveSmear = dz.smear ?? 0;
+  const dissolveLoop = dz.loop ?? true;
+
+  const live = animate || dissolveOn;
+
+  // One monotonic clock, captured on first render, shared by every instance.
+  const startRef = useRef(null);
+  if (startRef.current == null) {
+    startRef.current = typeof performance !== 'undefined' ? performance.now() : Date.now();
+  }
+  const [, setFrame] = useState(0);
+  useEffect(() => {
+    if (!live) return undefined;
+    let raf;
+    let last = 0;
+    const interval = 1000 / 30; // recompute the filter ~30×/s while it's alive
+    const loop = (t) => {
+      raf = requestAnimationFrame(loop);
+      if (t - last < interval) return;
+      last = t;
+      setFrame((f) => (f + 1) % 1e6);
+    };
+    raf = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(raf);
+  }, [live]);
+
+  const nowMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
+  const elapsed = live ? (nowMs - startRef.current) / 1000 : 0;
+
+  // Continuous noise: hop the seed at `noiseFps` so the grain crawls.
+  const liveSeed = animate ? baseSeed + Math.floor(elapsed * noiseFps) : baseSeed;
+
+  // Dissolve progress 0→1 (triangle ping-pong when looping, else one-shot).
+  let dissolveT = 0;
+  if (dissolveOn) {
+    const phase = elapsed / dissolveDuration;
+    dissolveT = dissolveLoop ? 1 - Math.abs((phase % 2) - 1) : Math.min(1, phase);
+  }
+
+  const liveScale = baseDisplacement + dissolveT * dissolveSmear;
+  const cutoff = dissolveT * dissolveAmount; // fraction eroded into holes
+
+  // Hole-punch mask: a discrete alpha threshold that grows with the dissolve.
+  const ALPHA_STEPS = 16;
+  const cut = Math.round(cutoff * ALPHA_STEPS);
+  const erodeTable =
+    cut > 0 ? Array.from({ length: ALPHA_STEPS }, (_, i) => (i < cut ? 0 : 1)).join(' ') : null;
 
   // posterize=0 → no quantization; >=2 → tableValues of `0, 1/(p-1), 2/(p-1), …, 1`
   const posterizeTable =
@@ -305,23 +393,39 @@ export function CardNoiseFilterDefs({ params }) {
       aria-hidden="true"
     >
       <defs>
-        <filter id={CARD_FILTER_ID} x="-10%" y="-10%" width="120%" height="120%">
+        <filter id={CARD_FILTER_ID} x="-20%" y="-20%" width="140%" height="140%">
           <feTurbulence
             type="fractalNoise"
             baseFrequency={baseFrequency}
             numOctaves={numOctaves}
-            seed={seed}
+            seed={liveSeed}
             stitchTiles="stitch"
             result="noise"
           />
           <feDisplacementMap
             in="SourceGraphic"
             in2="noise"
-            scale={displacement}
+            scale={liveScale}
             xChannelSelector="R"
             yChannelSelector="G"
             result="displaced"
           />
+          {erodeTable && (
+            <feColorMatrix
+              in="noise"
+              type="matrix"
+              values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  1 0 0 0 0"
+              result="erodeAlpha"
+            />
+          )}
+          {erodeTable && (
+            <feComponentTransfer in="erodeAlpha" result="erodeMask">
+              <feFuncA type="discrete" tableValues={erodeTable} />
+            </feComponentTransfer>
+          )}
+          {erodeTable && (
+            <feComposite in="displaced" in2="erodeMask" operator="in" result="displaced" />
+          )}
           {posterizeTable && (
             <feComponentTransfer in="displaced">
               <feFuncR type="discrete" tableValues={posterizeTable} />

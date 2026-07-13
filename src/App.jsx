@@ -1,106 +1,28 @@
-import { useState, useMemo, useEffect, useRef } from 'react';
+import { useState, useMemo, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
 import { motion, AnimatePresence, useReducedMotion } from 'motion/react';
-import { Text } from './text';
-import LandingReveal from './LandingReveal';
+import { Text, TRANSCRIPTION_TEXT, TRANSCRIPTION_FONT_SIZE, VARIANTS } from './text';
+import OnboardingReveal from './OnboardingReveal';
 import { Sidebar, SIDEBAR_WIDTH } from './Sidebar';
 import {
   BOTTOM_DIAL_SIZE,
   BottomCompassDial,
   getCategoryBreadcrumbInfo,
   HorizontalConfessionStack,
+  INTRO_SPIN_EASE_BEZIER,
 } from './SideDial';
 import { CONFESSIONS as FALLBACK_CONFESSIONS } from './confessions';
-import { deriveEmotions, sortConfessionsByEmotions } from './themes';
+import { deriveEmotions, sortConfessionsByEmotions, NEUTRAL_GRADIENT } from './themes';
 import { useConfessions } from './useConfessions';
-import { TunableGrainBackground } from './noise';
+import {
+  TunableGrainBackground,
+  CardNoiseFilterDefs,
+  CARD_FILTER_ID,
+  useInactiveCardParams,
+} from './noise';
+import { subscribeToKit } from './kit';
+import NoteOpenView, { TILE_PADDING } from './NoteOpenView';
+import { GridImageFilter, GRID_IMAGE_FILTER } from './NoiseDisplaceFilter';
 const ease = [0.22, 1, 0.36, 1];
-
-/** Onboarding stills (`public/confession_notes_2` WebP). */
-const LANDING_REVEAL_IMAGE_IDS = ['AC_185', 'AC_171', 'AC_190'];
-
-/** Unique image URLs for landing background slideshow (live sheet or fallback). */
-function useLandingBackgroundSrcs(liveConfessions) {
-  return useMemo(() => {
-    const pool = liveConfessions.length > 0 ? liveConfessions : FALLBACK_CONFESSIONS;
-    const seen = new Set();
-    const urls = [];
-    for (const c of pool) {
-      if (c.image && !seen.has(c.image)) {
-        seen.add(c.image);
-        urls.push(c.image);
-      }
-    }
-    return urls.length > 0 ? urls : ['/notes/AC_006.png'];
-  }, [liveConfessions]);
-}
-
-/**
- * The dial categories for the landing, mirroring exactly what the archive shows
- * (live sheet themes, or the bundled fallback while offline / loading). Each
- * category is paired with the first real confession in that bucket as a teaser.
- */
-function useLandingCategories({ confessions: liveConfessions, emotions: liveEmotions, error }) {
-  return useMemo(() => {
-    // Use the bundled set until live data arrives so the dial is never empty.
-    const useFallback = error || liveConfessions.length === 0;
-    const emotions = useFallback ? deriveEmotions(FALLBACK_CONFESSIONS) : liveEmotions;
-    const pool = useFallback ? FALLBACK_CONFESSIONS : liveConfessions;
-
-    const firstByLabel = new Map();
-    for (const c of pool) {
-      const t = c.transcription?.trim();
-      if (c.category && t && !firstByLabel.has(c.category)) {
-        firstByLabel.set(c.category, c);
-      }
-    }
-
-    return emotions.map((e) => {
-      const c = firstByLabel.get(e.label);
-      return {
-        key: e.id,
-        label: e.label,
-        teaser: c?.transcription?.trim() || '',
-        image: c?.image || null,
-      };
-    });
-  }, [liveConfessions, liveEmotions, error]);
-}
-
-/**
- * The onboarding carousel notes — pinned to three hand-picked confessions
- * (LANDING_REVEAL_IMAGE_IDS), shown in that exact order. Each note carries the
- * emotion id of its theme so the EXPLORE CTA label + archive dial still seed to
- * the right category on entry. Falls back to the per-category notes if those
- * specific IDs aren't present in the loaded corpus yet.
- */
-function useLandingRevealNotes({ confessions: liveConfessions, emotions: liveEmotions, error }) {
-  const categories = useLandingCategories({ confessions: liveConfessions, emotions: liveEmotions, error });
-  return useMemo(() => {
-    const useFallback = error || liveConfessions.length === 0;
-    const emotions = useFallback ? deriveEmotions(FALLBACK_CONFESSIONS) : liveEmotions;
-    const pool = useFallback ? FALLBACK_CONFESSIONS : liveConfessions;
-
-    const labelToEmotionId = new Map((emotions || []).map((e) => [e.label, e.id]));
-    const byGlobalId = new Map();
-    for (const c of pool) {
-      const gid = c.globalId || (c.image && String(c.image).match(/AC_\d+/)?.[0]);
-      if (gid && !byGlobalId.has(gid)) byGlobalId.set(gid, c);
-    }
-
-    const notes = LANDING_REVEAL_IMAGE_IDS.map((gid) => byGlobalId.get(gid))
-      .filter(Boolean)
-      .map((c) => ({
-        key: labelToEmotionId.get(c.category) || c.category,
-        label: c.category,
-        teaser: c.transcription?.trim() || '',
-        image: c.image || null,
-        globalId: c.globalId,
-      }));
-
-    // If the pinned confessions aren't loaded yet, keep the carousel populated.
-    return notes.length ? notes : categories;
-  }, [liveConfessions, liveEmotions, error, categories]);
-}
 
 // Matches grid breakpoints in this file; also drives archive top chrome layout.
 const ARCHIVE_NAV_COMPACT_MQ = '(max-width: 760px)';
@@ -126,17 +48,26 @@ const ARCHIVE_NAV_GRADIENT_HEIGHT = 152;
 const ARCHIVE_NAV_CHROME_HEIGHT = 40;
 
 /**
- * Landing→archive handoff. The chosen note fades out FIRST, then the dial
- * spins in to that category (sequential, not overlapping). The dial delay is a
- * touch longer than the note fade so there's a clean beat where only the
- * category's background shows before the spin begins.
+ * Archive dial entrance delay when arriving from the intro (vs. a direct/deep
+ * load), so the dial spins in a beat after the archive mounts.
  */
-const HANDOFF_NOTE_FADE_S = 0.45;
 const HANDOFF_DIAL_DELAY_MS = 560;
 
 /** Theme stack entrance — keep in sync with ThemeView `entranceDelay` + SideDial stagger cap. */
 const THEME_STACK_ENTRANCE_DELAY = 2.35;
 const THEME_STACK_CARD_DURATION = 0.22;
+/** How far (px) the notes stack slides across as it enters during the dial's
+ *  intro spin. Notes stay at full opacity (no fade) and glide in on the spin's
+ *  ease-out curve (see ThemeView). Kept small so the active card starts
+ *  near-centered — a large offset parks it clipped off the right edge on load,
+ *  which reads as broken (esp. during the landing→archive hold before the dial
+ *  spins in). */
+const NOTE_INTRO_SLIDE_PX = 72;
+/** Slide duration (ms) for the notes-stack entrance. Shorter than the dial's
+ *  full spin (INTRO_SPIN_DURATION = 2400) so the notes land promptly instead of
+ *  dragging the slow tail — the dial uses ease-out-quart so it's ~98% settled by
+ *  this point and the two still read as arriving together. */
+const NOTE_INTRO_SLIDE_MS = 1500;
 /** Active card + ~2 neighbor rings visible (not the full stagger tail). */
 const THEME_NAV_VISIBLE_STAGGER = 0.24;
 const ARCHIVE_NAV_CHROME_DELAY_THEME =
@@ -148,13 +79,22 @@ const GRID_TILE_DURATION = 0.55;
 const GRID_NAV_VISIBLE_STAGGER = 0.32;
 const ARCHIVE_NAV_CHROME_DELAY_GRID = GRID_NAV_VISIBLE_STAGGER + GRID_TILE_DURATION;
 
-/** Same as dial card `metaTranscription` (SideDial.jsx). */
+/** Archive nav chrome — the GRID / DIAL toggle and ABOUT. bodySmall metrics but
+ *  set in Courier New (--font-mono), rendered white. Per-button active/hover
+ *  states are handled via opacity. */
 const ARCHIVE_NAV_TEXT = {
+  ...VARIANTS.bodySmall,
   fontFamily: 'var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace)',
-  fontSize: 11,
-  lineHeight: 1.55,
-  letterSpacing: '0.01em',
-  color: 'rgba(229,229,229,0.85)',
+  color: '#fff',
+};
+
+// Plain-text nav items read as hyperlinks, so they carry a persistent underline
+// (kept consistent with the About contact links + onboarding skip link). Pill /
+// icon CTAs stay undecorated so they still read as buttons.
+const ARCHIVE_LINK_UNDERLINE = {
+  textDecorationLine: 'underline',
+  textDecorationThickness: '1px',
+  textUnderlineOffset: '3px',
 };
 
 const ARCHIVE_BRAND_MARK_STYLE = {
@@ -262,21 +202,15 @@ function ViewToggle({
         flexShrink: 0,
       }}
     >
-      <ToggleButton active={view === 'grid'} onClick={() => onChange('grid')}>
-        GRID
+      {/* INTRO — leaves the archive for the onboarding intro (first screen). */}
+      <ToggleButton active={false} onClick={() => window.location.assign('/onboarding')}>
+        INTRO
       </ToggleButton>
-      {columnStack ? (
-        <div
-          style={{
-            width: 40,
-            height: 1,
-            background: 'rgba(255,255,255,0.25)',
-            flexShrink: 0,
-          }}
-        />
-      ) : (
-        <div style={{ width: 1, height: 17, background: 'rgba(255,255,255,0.25)' }} />
-      )}
+      <ToggleButton active={view === 'grid'} onClick={() => onChange('grid')}>
+        INDEX
+      </ToggleButton>
+      {/* WALL tab hidden — WallView + the `view === 'wall'` branch are kept so it
+          can be restored by re-adding this ToggleButton. */}
       <ToggleButton active={view === 'theme'} onClick={() => onChange('theme')}>
         DIAL
       </ToggleButton>
@@ -284,7 +218,7 @@ function ViewToggle({
   );
 }
 
-function SiteTitle({ entranceDelay = 0.2 }) {
+function SiteTitle({ entranceDelay = 0.2, onReturnToIntro }) {
   const compactNav = useArchiveNavCompact();
   if (compactNav) return null;
 
@@ -301,86 +235,285 @@ function SiteTitle({ entranceDelay = 0.2 }) {
         height: ARCHIVE_NAV_CHROME_HEIGHT,
         display: 'flex',
         alignItems: 'center',
-        padding: '0 12px',
-        fontFamily: "'Reckless Italic', 'News Plantin', Georgia, serif",
-        fontSize: 18,
-        fontWeight: 400,
-        lineHeight: 1.05,
-        letterSpacing: '0.02em',
-        color: 'rgba(253,253,253,0.92)',
-        textTransform: 'none',
         pointerEvents: 'none',
       }}
     >
-      What We Tell AI
+      {/* Hand-lettered "What We / Tell AI" wordmark — the same outline art the
+          onboarding hero uses, dropped into the nav at a compact size. Tapping
+          it returns to the intro onboarding. */}
+      <button
+        type="button"
+        onClick={onReturnToIntro}
+        aria-label="What We Tell AI — return to the intro"
+        title="Return to the intro"
+        style={{
+          pointerEvents: 'auto',
+          background: 'none',
+          border: 'none',
+          margin: 0,
+          padding: '0 12px',
+          display: 'flex',
+          alignItems: 'center',
+          cursor: 'pointer',
+          opacity: 0.92,
+          transition: 'opacity 0.28s ease',
+        }}
+        onMouseEnter={(e) => {
+          e.currentTarget.style.opacity = '1';
+        }}
+        onMouseLeave={(e) => {
+          e.currentTarget.style.opacity = '0.92';
+        }}
+      >
+        <img
+          src="/What%20We%20Tell%20AI.png"
+          alt="What We Tell AI"
+          draggable={false}
+          style={{ height: 48, width: 'auto', display: 'block' }}
+        />
+      </button>
     </motion.div>
   );
 }
 
-function AboutHeader({ onClick, open, stacked = false, entranceDelay = 0.2 }) {
+/* ─────────────────────────────────────────────────────────
+ * ABOUT HOVER NOTE — storyboard (hover-driven, no timeline)
+ *
+ *   rest     torn-paper "?" note stowed up behind the word,
+ *            tilted a touch further, fully transparent
+ *   hover →  the note drops down *from the word* (transform-
+ *            origin top-right): it untilts toward its resting
+ *            angle, scales up, and fades in
+ *   leave →  everything springs back to rest
+ *
+ *   The note wears the same blur + grayscale + animated grain
+ *   filter as inactive cards elsewhere (`url(#card-noise)`), so
+ *   it reads as a degraded "placeholder" peek at the About page.
+ * ───────────────────────────────────────────────────────── */
+const ABOUT_NOTE = {
+  src: '/about-note-placeholder.png', // torn-paper "?" placeholder (645×748)
+  width: 92, //            px — note width; height follows the aspect ratio
+  aspect: '645 / 748', //  native image ratio (portrait)
+  gap: 12, //              px below the ABOUT word
+  hidden: {
+    opacity: 0,
+    y: -12, //     px — tucked up toward the word
+    scale: 0.9, // slightly small before it drops
+    rotate: -9, // deg — more tilt while stowed
+  },
+  rest: {
+    opacity: 1,
+    y: 0, //       resting position below the word
+    scale: 1,
+    rotate: -3, // deg — settled hand-pinned tilt
+  },
+  // Spring drives y / scale / rotate; opacity gets a quick ease so the note
+  // "develops in" rather than sliding a visible ghost down the screen.
+  spring: { type: 'spring', visualDuration: 0.34, bounce: 0.34 },
+  fade: { duration: 0.2, ease: [0.22, 1, 0.36, 1] },
+};
+
+/**
+ * Wraps the ABOUT button: hovering the word reveals a small torn-paper "?" note
+ * that unfurls downward from the word (see ABOUT_NOTE storyboard). The note
+ * carries the shared inactive-card noise filter. Reduced-motion keeps the
+ * cross-fade but skips the drop / tilt / scale movement.
+ */
+function AboutHoverNote({ children }) {
+  const reduceMotion = useReducedMotion();
+  const [hovered, setHovered] = useState(false);
+
+  // Exact filter chain inactive cards use: blur + grayscale + animated grain.
+  const inactive = useInactiveCardParams();
+  const noiseEnabled = inactive.noise?.enabled ?? true;
+  const noiseFilter =
+    [
+      inactive.blur > 0 ? `blur(${inactive.blur}px)` : '',
+      inactive.grayscale > 0 ? `grayscale(${inactive.grayscale})` : '',
+      noiseEnabled ? `url(#${CARD_FILTER_ID})` : '',
+    ]
+      .filter(Boolean)
+      .join(' ') || 'none';
+
+  const target = hovered ? ABOUT_NOTE.rest : ABOUT_NOTE.hidden;
+
   return (
-    <motion.button
+    <div
+      style={{ position: 'relative', display: 'inline-flex' }}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
+      {children}
+      {/* Filter defs are global by id — mounted here so the note also works on
+          the grid, where the dial's copy of the defs isn't in the tree. */}
+      <CardNoiseFilterDefs params={inactive} />
+      <motion.div
+        aria-hidden="true"
+        initial={false}
+        animate={{
+          opacity: target.opacity,
+          y: reduceMotion ? ABOUT_NOTE.rest.y : target.y,
+          scale: reduceMotion ? ABOUT_NOTE.rest.scale : target.scale,
+          rotate: reduceMotion ? ABOUT_NOTE.rest.rotate : target.rotate,
+        }}
+        transition={{
+          y: ABOUT_NOTE.spring,
+          scale: ABOUT_NOTE.spring,
+          rotate: ABOUT_NOTE.spring,
+          opacity: ABOUT_NOTE.fade,
+        }}
+        style={{
+          position: 'absolute',
+          top: `calc(100% + ${ABOUT_NOTE.gap}px)`,
+          right: 0,
+          width: ABOUT_NOTE.width,
+          aspectRatio: ABOUT_NOTE.aspect,
+          transformOrigin: 'top right',
+          pointerEvents: 'none',
+          zIndex: 210,
+        }}
+      >
+        <img
+          src={ABOUT_NOTE.src}
+          alt=""
+          draggable={false}
+          style={{
+            width: '100%',
+            height: '100%',
+            objectFit: 'contain',
+            display: 'block',
+            filter: noiseFilter,
+          }}
+        />
+      </motion.div>
+    </div>
+  );
+}
+
+function AboutHeader({ onClick, open, view, onChange, stacked = false, entranceDelay = 0.2 }) {
+  // Desktop top-right chrome is a small nav cluster: INTRO · INDEX · ABOUT.
+  // In the stacked (compact) top bar the view tabs already live on the left,
+  // so there we render only the ABOUT button to avoid duplicating them.
+  // The view tabs are also hidden on the grid (INDEX) view to keep it clean;
+  // ABOUT still shows. `view` is only passed to the desktop (non-stacked)
+  // cluster, which is the only place these tabs render anyway.
+  const showTabs = !stacked && view !== 'grid';
+  return (
+    <motion.div
       initial={{ opacity: 0, y: -12 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.5, ease, delay: entranceDelay }}
-      onClick={onClick}
-      aria-expanded={open}
-      aria-label="Open about panel"
       style={{
         ...(stacked
           ? { position: 'relative', top: 'auto', right: 'auto' }
           : { position: 'fixed', top: 24, right: 24 }),
         zIndex: 200,
-        background: 'transparent',
-        border: 'none',
+        display: 'flex',
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 12,
         padding: '0 12px',
         minHeight: ARCHIVE_NAV_CHROME_HEIGHT,
-        display: 'flex',
-        alignItems: 'center',
+        background: 'transparent',
+        border: 'none',
         ...ARCHIVE_NAV_TEXT,
-        cursor: 'pointer',
-        opacity: 0.85,
-        transition: 'opacity 0.2s',
       }}
-      onMouseEnter={(e) => (e.currentTarget.style.opacity = '1')}
-      onMouseLeave={(e) => (e.currentTarget.style.opacity = '0.85')}
     >
-      ABOUT
-    </motion.button>
+      {showTabs && (
+        <>
+          {/* INTRO — leaves the archive for the onboarding intro. */}
+          <ToggleButton active={false} onClick={() => window.location.assign('/onboarding')}>
+            INTRO
+          </ToggleButton>
+          <ToggleButton active={view === 'grid'} onClick={() => onChange?.('grid')}>
+            INDEX
+          </ToggleButton>
+          <ToggleButton active={view === 'theme'} onClick={() => onChange?.('theme')}>
+            DIAL
+          </ToggleButton>
+        </>
+      )}
+      <AboutHoverNote>
+        <button
+          type="button"
+          onClick={onClick}
+          aria-expanded={open}
+          aria-label="Open about panel"
+          style={{
+            background: 'none',
+            border: 'none',
+            padding: '2px 4px',
+            ...ARCHIVE_NAV_TEXT,
+            ...ARCHIVE_LINK_UNDERLINE,
+            opacity: open ? 1 : 0.5,
+            cursor: 'pointer',
+            transition: 'opacity 0.2s ease',
+          }}
+          onMouseEnter={(e) => {
+            if (!open) e.currentTarget.style.opacity = '0.8';
+          }}
+          onMouseLeave={(e) => {
+            if (!open) e.currentTarget.style.opacity = '0.5';
+          }}
+        >
+          ABOUT
+        </button>
+      </AboutHoverNote>
+    </motion.div>
   );
 }
-
-/** Kit (ConvertKit) inline form — script replaces this node with the form UI. */
-const ABOUT_KIT_FORM_UID = '4e99802b9e';
-const ABOUT_KIT_SCRIPT_SRC = `https://synthetic-wisdom-studio.kit.com/${ABOUT_KIT_FORM_UID}/index.js`;
-/** Set true to show the subscribe / email block in the About modal again. */
-const ABOUT_KIT_ENABLED = false;
 
 /**
  * Centered about modal. Backdrop + card fade in on open; on close (click-out
  * / ESC) both exit with opacity only — no scale or drift so it reads as a
  * simple dismiss. prefers-reduced-motion skips transforms on enter too.
  */
-function AboutModal({ open, onClose }) {
+function AboutModal({ open, onClose, noteThumbs = [] }) {
   const reduceMotion = useReducedMotion();
-  const kitMountRef = useRef(null);
 
+  // Mailing-list signup state.
+  const [email, setEmail] = useState('');
+  // 'idle' | 'submitting' | 'success' | 'error'
+  const [subscribeStatus, setSubscribeStatus] = useState('idle');
+  const [subscribeError, setSubscribeError] = useState('');
+
+  const subscribing = subscribeStatus === 'submitting';
+  const subscribed = subscribeStatus === 'success';
+
+  // Reset the signup form whenever the panel is closed so a reopen is fresh.
   useEffect(() => {
-    if (!open || !ABOUT_KIT_ENABLED) return;
-    const root = kitMountRef.current;
-    if (!root) return;
-
-    root.replaceChildren();
-    const script = document.createElement('script');
-    script.async = true;
-    script.dataset.uid = ABOUT_KIT_FORM_UID;
-    script.src = ABOUT_KIT_SCRIPT_SRC;
-    root.appendChild(script);
-
-    return () => {
-      root.replaceChildren();
-    };
+    if (!open) {
+      setEmail('');
+      setSubscribeStatus('idle');
+      setSubscribeError('');
+    }
   }, [open]);
+
+  async function handleSubscribe(e) {
+    e.preventDefault();
+    if (!email.trim() || subscribing) return;
+    setSubscribeStatus('submitting');
+    setSubscribeError('');
+    try {
+      await subscribeToKit(email);
+      setSubscribeStatus('success');
+    } catch (err) {
+      setSubscribeError(err.message);
+      setSubscribeStatus('error');
+    }
+  }
+
+  // Fonts: Faktory for body copy, mono for the contact links / credit. (The
+  // foot-of-panel wordmark is now an image, not the script italic face.)
+  const BODY_FONT = "'Faktory', Georgia, serif";
+  const MONO_FONT = 'var(--font-mono)';
+
+  // Torn strip of note thumbnails across the top — repeat/pad to a full row so
+  // it fills the width even when only a few confessions have loaded.
+  const STRIP_COUNT = 13;
+  const strip = Array.from({ length: STRIP_COUNT }, (_, i) =>
+    noteThumbs.length ? noteThumbs[i % noteThumbs.length] : null
+  );
 
   useEffect(() => {
     if (!open) return;
@@ -397,17 +530,13 @@ function AboutModal({ open, onClose }) {
     ? { initial: { opacity: 0 }, animate: { opacity: 1 }, exit: { opacity: 0 } }
     : {
         initial: { opacity: 0, backdropFilter: 'blur(0px)' },
-        animate: { opacity: 1, backdropFilter: 'blur(22px)' },
+        animate: { opacity: 1, backdropFilter: 'blur(6px)' },
         exit: { opacity: 0, backdropFilter: 'blur(0px)' },
       };
 
-  const cardMotion = reduceMotion
+  const panelMotion = reduceMotion
     ? { initial: { opacity: 0 }, animate: { opacity: 1 }, exit: { opacity: 0 } }
-    : {
-        initial: { opacity: 0, scale: 0.96, y: 8 },
-        animate: { opacity: 1, scale: 1, y: 0 },
-        exit: { opacity: 0, scale: 1, y: 0 },
-      };
+    : { initial: { x: '100%' }, animate: { x: 0 }, exit: { x: '100%' } };
 
   return (
     <AnimatePresence>
@@ -419,161 +548,406 @@ function AboutModal({ open, onClose }) {
             duration: 0.28,
             ease: easeOut,
             backdropFilter: { duration: 0.28, ease: easeOut },
-            exit: { duration: 0.22, ease: easeOut },
           }}
           onClick={onClose}
           style={{
             position: 'fixed',
             inset: 0,
             zIndex: 1000,
-            // Frosted dim: let blur carry the separation; avoid near-opaque black.
-            background: reduceMotion
-              ? 'rgba(10, 10, 14, 0.72)'
-              : 'rgba(10, 10, 14, 0.38)',
+            background: 'rgba(8, 8, 10, 0.55)',
+            WebkitBackdropFilter: 'blur(0px)',
+            cursor: 'pointer',
+          }}
+        />
+      )}
+      {open && (
+        <motion.aside
+          key="about-panel"
+          role="dialog"
+          aria-modal="true"
+          aria-label="About What We Tell AI"
+          {...panelMotion}
+          transition={
+            reduceMotion
+              ? { duration: 0.2, ease: easeOut }
+              : { type: 'spring', stiffness: 320, damping: 38, mass: 0.9 }
+          }
+          style={{
+            position: 'fixed',
+            top: 0,
+            right: 0,
+            bottom: 0,
+            zIndex: 1001,
+            width: 'min(460px, 92vw)',
+            // Same base as the rest of the site (#111). The grain layer inside
+            // paints over this, and the scrolling content sits above the grain.
+            background: '#111',
+            borderLeft: '1px solid rgba(255,255,255,0.1)',
+            boxShadow: '-24px 0 60px rgba(0,0,0,0.5)',
+            color: '#e5e5e5',
             display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            cursor: 'zoom-out',
-            padding: 24,
+            flexDirection: 'column',
+            overflow: 'hidden',
           }}
         >
-          <motion.div
-            key="about-card"
-            {...cardMotion}
-            transition={{
-              duration: 0.32,
-              ease: easeOut,
-              exit: { duration: 0.2, ease: easeOut },
-            }}
-            onClick={(e) => e.stopPropagation()}
+          {/* Same base + grain as the rest of the site: an isolated #111 layer
+              with the shared TunableGrainBackground (DialKit "Grain"), pinned to
+              the panel so it never scrolls. Content scrolls in the wrapper below. */}
+          <div
+            aria-hidden="true"
             style={{
-              position: 'relative',
-              maxWidth: 560,
-              width: '100%',
-              maxHeight: '88vh',
-              overflowY: 'auto',
-              padding: '36px 40px 32px',
-              background: '#ebe9e4',
-              border: '1px solid rgba(0,0,0,0.08)',
-              borderRadius: 8,
-              cursor: 'default',
-              color: '#121212',
-              boxShadow: '0 20px 50px rgba(0,0,0,0.25)',
+              position: 'absolute',
+              inset: 0,
+              zIndex: 0,
+              isolation: 'isolate',
+              pointerEvents: 'none',
+              background: '#111',
             }}
           >
-            <Text
-              variant="bodySmall"
-              mono={false}
-              style={{
-                display: 'block',
-                lineHeight: 1.7,
-                fontSize: 15,
-                marginBottom: 16,
-                fontFamily: "'Reckless Italic', 'News Plantin', Georgia, serif",
-                color: 'rgba(15,15,15,0.9)',
-              }}
-            >
-              What We Tell AI is a collection of anonymous notes people have written about their relationship with artificial intelligence.
-            </Text>
+            <TunableGrainBackground />
+          </div>
 
-            <Text
-              variant="bodySmall"
-              mono={false}
-              style={{
-                display: 'block',
-                lineHeight: 1.7,
-                fontSize: 15,
-                marginBottom: 18,
-                fontFamily: "'Reckless Italic', 'News Plantin', Georgia, serif",
-                color: 'rgba(15,15,15,0.8)',
-              }}
-            >
-              This anthropological art project documents AI&rsquo;s growing presence in the most intimate details of
-              our lives. Each handwritten note is collected in public parks, on street corners, and even at AI
-              conferences.
-            </Text>
+          <div
+            style={{
+              position: 'relative',
+              zIndex: 1,
+              flex: 1,
+              minHeight: 0,
+              overflowY: 'auto',
+              overflowX: 'hidden',
+              padding: '16px 34px 40px',
+              WebkitOverflowScrolling: 'touch',
+            }}
+          >
+          <style>{`
+            .about-close {
+              flex: 0 0 auto; display: inline-flex; align-items: center;
+              justify-content: center; padding: 6px; margin: -6px; border: none;
+              background: none; color: rgba(229,229,229,0.8); cursor: pointer;
+              line-height: 0; transition: color 0.18s ease, transform 0.12s ease;
+            }
+            .about-close:hover { color: #fff; }
+            .about-close:active { transform: scale(0.9); }
+            .about-contact-link {
+              display: inline-block; color: rgba(229,229,229,0.72);
+              text-decoration: underline; text-decoration-thickness: 1px;
+              text-underline-offset: 3px; transition: color 0.18s ease;
+            }
+            .about-contact-link:hover { color: #fff; }
+          `}</style>
 
-            <Text
-              variant="bodySmall"
-              mono={false}
+          {/* Torn strip of note thumbnails + a bare close X. */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 24 }}>
+            <div
+              aria-hidden="true"
               style={{
-                display: 'block',
-                fontFamily: "'Reckless Italic', 'News Plantin', Georgia, serif",
-                fontSize: 15,
-                fontWeight: 400,
-                lineHeight: 1.55,
-                letterSpacing: '0.02em',
-                color: 'rgba(15,15,15,0.58)',
+                flex: 1,
+                minWidth: 0,
+                display: 'flex',
+                flexDirection: 'row',
+                flexWrap: 'nowrap',
+                alignItems: 'center',
+                gap: 5,
+                overflow: 'hidden',
+                paddingTop: 6,
+                paddingBottom: 2,
               }}
             >
-              Collection is ongoing —{' '}
-              <a
-                href="https://linktr.ee/whatwetellai"
-                target="_blank"
-                rel="noopener noreferrer"
+              {strip.map((_, i) => {
+                // Alternating tilt + a repeating height pattern so the row
+                // reads as a scatter of translucent notes rather than a grid.
+                // Laid out with a real gap so the cards never overlap.
+                const rot = (i % 2 === 0 ? -1 : 1) * (2 + ((i * 7) % 3));
+                const height = [40, 30, 34, 44, 30, 38, 32][i % 7];
+                return (
+                  <div
+                    key={i}
+                    style={{
+                      flex: '0 0 auto',
+                      width: 30,
+                      height,
+                      transform: `rotate(${rot}deg)`,
+                      borderRadius: 2,
+                      background: 'rgba(136,134,134,0.22)',
+                    }}
+                  />
+                );
+              })}
+            </div>
+            <button
+              type="button"
+              className="about-close"
+              aria-label="Close about panel"
+              onClick={onClose}
+            >
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden="true"><line x1="5" y1="5" x2="19" y2="19" /><line x1="19" y1="5" x2="5" y2="19" /></svg>
+            </button>
+          </div>
+
+            <p
+              style={{
+                margin: '0 0 18px',
+                fontFamily: BODY_FONT,
+                fontSize: 18,
+                lineHeight: 1.4,
+                letterSpacing: '0.01em',
+                color: 'rgba(229,229,229,0.9)',
+              }}
+            >
+              What We Tell AI is a collection of anonymous notes people have
+              written about their relationship with{' '}
+              <span
                 style={{
-                  color: 'inherit',
                   textDecoration: 'underline',
-                  textDecorationColor: 'rgba(15,15,15,0.35)',
+                  textDecorationColor: 'rgba(229,229,229,0.5)',
                   textUnderlineOffset: '3px',
                 }}
               >
-                get in touch
-              </a>
-              !
-            </Text>
+                artificial intelligence
+              </span>{' '}
+              (AI).
+            </p>
 
-            {ABOUT_KIT_ENABLED && (
-              <>
-                <style>{`
-                  .about-kit-mount .formkit-powered-by-convertkit-container {
-                    display: none !important;
-                  }
-                  .about-kit-mount .formkit-submit {
-                    background-color: #111 !important;
-                    color: #fafafa !important;
-                    border: 1px solid #111 !important;
-                    border-radius: 4px !important;
-                  }
-                  .about-kit-mount .formkit-submit:hover,
-                  .about-kit-mount .formkit-submit:focus {
-                    background-color: #000 !important;
-                    color: #fff !important;
-                    border-color: #000 !important;
-                  }
-                  .about-kit-mount .formkit-submit span {
-                    color: #fafafa !important;
-                  }
-                `}</style>
-                <div
-                  ref={kitMountRef}
-                  className="about-kit-mount"
-                  style={{
-                    marginTop: 22,
-                    width: '100%',
-                    minHeight: 1,
-                  }}
-                />
-              </>
-            )}
+            <p
+              style={{
+                margin: '0 0 20px',
+                fontFamily: BODY_FONT,
+                fontSize: 18,
+                lineHeight: 1.4,
+                letterSpacing: '0.01em',
+                color: 'rgba(229,229,229,0.9)',
+              }}
+            >
+              This anthropological art project documents AI&rsquo;s growing
+              presence in the most intimate details of our lives. Each
+              handwritten note is collected in public parks, on street corners,
+              and even at{' '}
+              <span
+                style={{
+                  textDecoration: 'underline',
+                  textDecorationColor: 'rgba(229,229,229,0.5)',
+                  textUnderlineOffset: '3px',
+                }}
+              >
+                AI conferences
+              </span>
+              .
+            </p>
 
-            <Text
-              variant="caption"
-              mono
+            {/* Contact links. */}
+            <a
+              className="about-contact-link"
+              href="mailto:hello@whatwetellai.com"
               style={{
                 display: 'block',
-                marginTop: ABOUT_KIT_ENABLED ? 24 : 20,
-                paddingTop: 16,
-                borderTop: '1px solid rgba(0,0,0,0.08)',
-                fontSize: 10,
-                letterSpacing: '0.1em',
-                color: 'rgba(15,15,15,0.45)',
+                fontFamily: MONO_FONT,
+                fontSize: 13,
+                letterSpacing: '0.08em',
+                lineHeight: 1.95,
+              }}
+            >
+              EMAIL
+            </a>
+            <a
+              className="about-contact-link"
+              href="https://www.instagram.com/whatwetellai"
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{
+                display: 'block',
+                fontFamily: MONO_FONT,
+                fontSize: 13,
+                letterSpacing: '0.08em',
+                lineHeight: 1.95,
+              }}
+            >
+              INSTAGRAM
+            </a>
+
+            {/* Mailing-list signup. */}
+            <div
+              className="about-subscribe"
+              style={{
+                marginTop: 24,
+                paddingTop: 20,
+                borderTop: '1px solid rgba(255,255,255,0.1)',
+              }}
+            >
+              <style>{`
+                .about-subscribe input::placeholder { color: rgba(255,255,255,0.4); }
+                .about-subscribe input:focus { border-color: rgba(255,255,255,0.55); }
+                .about-subscribe button:hover:not(:disabled),
+                .about-subscribe button:focus-visible:not(:disabled) {
+                  background: #fff; border-color: #fff;
+                }
+                .about-subscribe button:disabled { opacity: 0.55; cursor: default; }
+                .about-subscribe input:disabled { opacity: 0.55; }
+              `}</style>
+
+              <p
+                style={{
+                  margin: '0 0 12px',
+                  fontFamily: BODY_FONT,
+                  fontSize: 18,
+                  lineHeight: 1.4,
+                  letterSpacing: '0.01em',
+                  color: 'rgba(229,229,229,0.9)',
+                }}
+              >
+                Join the mailing list
+              </p>
+
+              {!subscribed ? (
+                <form
+                  onSubmit={handleSubscribe}
+                  style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}
+                >
+                  <input
+                    type="email"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    placeholder="you@somewhere.com"
+                    required
+                    disabled={subscribing}
+                    autoComplete="email"
+                    aria-label="Email address"
+                    style={{
+                      flex: '1 1 200px',
+                      minWidth: 0,
+                      background: 'rgba(255,255,255,0.04)',
+                      border: '1px solid rgba(255,255,255,0.22)',
+                      borderRadius: 4,
+                      color: '#e5e5e5',
+                      padding: '10px 12px',
+                      fontFamily: 'var(--font-mono)',
+                      fontSize: 12,
+                      letterSpacing: '0.02em',
+                      outline: 'none',
+                      transition: 'border-color 0.18s ease',
+                    }}
+                  />
+                  <button
+                    type="submit"
+                    disabled={subscribing}
+                    style={{
+                      flex: '0 0 auto',
+                      background: '#e5e5e5',
+                      color: '#111',
+                      border: '1px solid #e5e5e5',
+                      borderRadius: 4,
+                      padding: '10px 18px',
+                      fontFamily: 'var(--font-mono)',
+                      fontSize: 11,
+                      letterSpacing: '0.12em',
+                      cursor: 'pointer',
+                      transition: 'background 0.18s ease, border-color 0.18s ease',
+                    }}
+                  >
+                    {subscribing ? 'SUBSCRIBING…' : 'SUBSCRIBE'}
+                  </button>
+                </form>
+              ) : (
+                <Text
+                  variant="bodySmall"
+                  style={{
+                    display: 'block',
+                    fontFamily: BODY_FONT,
+                    fontSize: 14,
+                    lineHeight: 1.6,
+                    color: 'rgba(229,229,229,0.8)',
+                  }}
+                >
+                  Thanks — check your inbox to confirm your subscription.
+                </Text>
+              )}
+
+              {subscribeStatus === 'error' && (
+                <Text
+                  variant="caption"
+                  mono
+                  style={{
+                    display: 'block',
+                    marginTop: 8,
+                    fontSize: 10,
+                    letterSpacing: '0.04em',
+                    lineHeight: 1.5,
+                    color: '#f0846b',
+                  }}
+                >
+                  {subscribeError}
+                </Text>
+              )}
+            </div>
+
+            <p
+              style={{
+                margin: '22px 0 0',
+                fontFamily: MONO_FONT,
+                fontSize: 12,
+                letterSpacing: '0.06em',
+                color: 'rgba(229,229,229,0.5)',
               }}
             >
               © What We Tell AI 2026
-            </Text>
-          </motion.div>
-        </motion.div>
+            </p>
+
+            {/* Oversized wordmark watermark anchored to the foot of the panel. */}
+            <div
+              aria-hidden="true"
+              style={{
+                marginTop: 'auto',
+                position: 'relative',
+                overflow: 'hidden',
+                marginLeft: -34,
+                marginRight: -34,
+                marginBottom: -20,
+                paddingTop: 48,
+              }}
+            >
+              <div
+                style={{
+                  position: 'absolute',
+                  left: 18,
+                  bottom: 26,
+                  width: 150,
+                  height: 180,
+                  border: '1px solid rgba(255,255,255,0.055)',
+                  borderRadius: 2,
+                  transform: 'rotate(-9deg)',
+                }}
+              />
+              <div
+                style={{
+                  position: 'relative',
+                  padding: '0 18px',
+                  display: 'flex',
+                  justifyContent: 'flex-end',
+                }}
+              >
+                {/* Brand lockup as an image, appended to the right. The art is a
+                    dark-grey lockup on solid black, so `screen` drops the black
+                    field and only the letterforms read as a faint watermark. */}
+                <img
+                  src="/about-wordmark.png"
+                  alt=""
+                  aria-hidden="true"
+                  draggable={false}
+                  style={{
+                    display: 'block',
+                    width: 'auto',
+                    height: 'clamp(110px, 30vw, 180px)',
+                    opacity: 0.7,
+                    // brightness lifts the near-black strokes; screen removes the
+                    // black background so no rectangle shows on the panel.
+                    filter: 'brightness(2.2)',
+                    mixBlendMode: 'screen',
+                    userSelect: 'none',
+                  }}
+                />
+              </div>
+            </div>
+          </div>
+        </motion.aside>
       )}
     </AnimatePresence>
   );
@@ -588,6 +962,7 @@ function ToggleButton({ active, onClick, children }) {
         border: 'none',
         padding: '2px 4px',
         ...ARCHIVE_NAV_TEXT,
+        ...ARCHIVE_LINK_UNDERLINE,
         opacity: active ? 1 : 0.5,
         cursor: 'pointer',
         transition: 'opacity 0.2s ease',
@@ -604,13 +979,898 @@ function ToggleButton({ active, onClick, children }) {
   );
 }
 
-function GridView({ confessions, sidebarInset = SIDEBAR_WIDTH }) {
+/** Spatial-canvas layout tuning (grid view → pannable wall of notes).
+ *  Tile + cell sizes scale together (~1.25×) so the wall just zooms — gaps stay
+ *  proportional and nothing overlaps. */
+const CANVAS_TILE_W = 188;
+const CANVAS_TILE_H = 236;
+const CANVAS_CELL_X = 290;
+const CANVAS_CELL_Y = 315;
+const CANVAS_JITTER = 42;
+const CANVAS_MAX_ROT = 2.2;
+const CANVAS_PAD = 260;
+
+/**
+ * Deterministic 0..1 hash so each note's jitter + rotation is stable across
+ * renders (no reshuffle when React re-renders / images settle).
+ */
+function canvasHash(seed) {
+  let h = 2166136261;
+  const s = String(seed);
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return (h >>> 0) / 4294967295;
+}
+
+/** Pill style for the grid-view category filter chips. */
+const gridChipStyle = (active) => ({
+  fontFamily: 'var(--font-mono)',
+  fontSize: 11,
+  fontWeight: 400,
+  letterSpacing: '0.12em',
+  textTransform: 'uppercase',
+  padding: '6px 13px',
+  borderRadius: 999,
+  border: active ? '1px solid transparent' : '1px solid rgba(255,255,255,0.2)',
+  background: active ? 'rgba(255,255,255,0.92)' : 'rgba(255,255,255,0.05)',
+  color: active ? '#111' : 'rgba(255,255,255,0.72)',
+  cursor: 'pointer',
+  whiteSpace: 'nowrap',
+});
+
+/** Embedded facet menu trigger (pill) that sits beside the search field. */
+const facetMenuButtonStyle = {
+  pointerEvents: 'auto',
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 8,
+  fontFamily: 'var(--font-mono)',
+  fontSize: 13,
+  fontWeight: 400,
+  letterSpacing: '0.08em',
+  textTransform: 'uppercase',
+  color: '#fff',
+  background: 'rgba(255,255,255,0.06)',
+  border: '1px solid rgba(255,255,255,0.18)',
+  borderRadius: 999,
+  padding: '9px 16px',
+  cursor: 'pointer',
+  whiteSpace: 'nowrap',
+  transition: 'border-color 0.2s ease, background 0.2s ease',
+};
+
+/** Floating dropdown surface for the facet menu (see 2nd reference shot).
+    Opens upward since the filter bar is pinned to the bottom of the view. */
+const facetMenuPanelStyle = {
+  position: 'absolute',
+  bottom: 'calc(100% + 8px)',
+  left: 0,
+  minWidth: 208,
+  zIndex: 20,
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 2,
+  padding: 6,
+  borderRadius: 14,
+  background: 'rgba(26,22,24,0.97)',
+  border: '1px solid rgba(255,255,255,0.14)',
+  boxShadow: '0 18px 46px rgba(0,0,0,0.55)',
+  backdropFilter: 'blur(14px)',
+  WebkitBackdropFilter: 'blur(14px)',
+};
+
+/** A single Category / Location / Recency row inside the facet menu. */
+const facetMenuItemStyle = (current) => ({
+  display: 'flex',
+  alignItems: 'center',
+  gap: 10,
+  width: '100%',
+  padding: '9px 12px',
+  borderRadius: 9,
+  border: 'none',
+  background: current ? 'rgba(255,255,255,0.09)' : 'transparent',
+  color: current ? '#fff' : 'rgba(255,255,255,0.72)',
+  fontFamily: 'var(--font-mono)',
+  fontSize: 12,
+  letterSpacing: '0.12em',
+  textTransform: 'uppercase',
+  cursor: 'pointer',
+});
+
+/** "M/D/YYYY" → epoch ms for recency sort. NaN when missing/unparseable. */
+function parseNoteDate(s) {
+  if (!s) return NaN;
+  const m = String(s).trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+  if (m) {
+    let y = Number(m[3]);
+    if (y < 100) y += 2000;
+    return new Date(y, Number(m[1]) - 1, Number(m[2])).getTime();
+  }
+  const t = Date.parse(s);
+  return Number.isNaN(t) ? NaN : t;
+}
+
+/** "San Francisco, CA" → "San Francisco" for compact location chips. */
+const cityLabel = (loc) => String(loc || '').split(',')[0].trim();
+
+/**
+ * Spatial canvas of notes — the "WALL" tab. A loose grid with deterministic
+ * jitter (reads as a hand-placed wall, not a rigid grid) on a large pannable
+ * surface. Trackpad / touch keep native momentum scrolling; mouse + pen get
+ * grab-to-pan. Hover reveals a small metadata caption; click opens the Lightbox.
+ */
+function WallView({ confessions, sidebarInset = SIDEBAR_WIDTH }) {
   const [selected, setSelected] = useState(null);
+  const reduceMotion = useReducedMotion();
   // Tiles whose image failed to load (e.g. file not yet on disk for that
-  // GlobalID). We hide the whole tile rather than showing a broken-image
-  // icon, since the grid is meant to read like a photo wall.
+  // GlobalID). We drop the whole tile rather than showing a broken-image icon.
   const [failedIds, setFailedIds] = useState(() => new Set());
-  const visible = confessions.filter((c) => c.image && !failedIds.has(c.id));
+  const visible = useMemo(
+    () => confessions.filter((c) => c.image && !failedIds.has(c.id)),
+    [confessions, failedIds]
+  );
+
+  // Category filter (chips, top-left). null = show all; otherwise notes whose
+  // category !== activeCat fade out (they stay mounted, just de-emphasized).
+  const [activeCat, setActiveCat] = useState(null);
+  const categories = useMemo(() => deriveEmotions(visible).map((e) => e.label), [visible]);
+  const isDimmed = (c) => activeCat != null && c.category !== activeCat;
+
+  // Lightbox prev/next: step through the visible notes, wrapping at the ends.
+  const goRelative = useCallback(
+    (dir) => {
+      setSelected((cur) => {
+        const n = visible.length;
+        if (!cur || n <= 1) return cur;
+        const idx = visible.findIndex((c) => c.id === cur.id);
+        if (idx < 0) return cur;
+        return visible[(idx + dir + n) % n];
+      });
+    },
+    [visible]
+  );
+  const goPrev = useCallback(() => goRelative(-1), [goRelative]);
+  const goNext = useCallback(() => goRelative(1), [goRelative]);
+
+  const layout = useMemo(() => {
+    const n = visible.length;
+    // Roughly landscape wall: a touch wider than tall.
+    const cols = Math.max(1, Math.round(Math.sqrt(n * 1.7)));
+    const positions = visible.map((c, i) => {
+      const col = i % cols;
+      const row = Math.floor(i / cols);
+      const jx = (canvasHash(c.id + ':x') - 0.5) * 2 * CANVAS_JITTER;
+      const jy = (canvasHash(c.id + ':y') - 0.5) * 2 * CANVAS_JITTER;
+      const rot = (canvasHash(c.id + ':r') - 0.5) * 2 * CANVAS_MAX_ROT;
+      return {
+        left: CANVAS_PAD + col * CANVAS_CELL_X + jx,
+        top: CANVAS_PAD + row * CANVAS_CELL_Y + jy,
+        rot,
+      };
+    });
+    const rows = Math.ceil(n / cols) || 1;
+    return {
+      positions,
+      width: CANVAS_PAD * 2 + cols * CANVAS_CELL_X,
+      height: CANVAS_PAD * 2 + rows * CANVAS_CELL_Y,
+    };
+  }, [visible]);
+
+  const scrollRef = useRef(null);
+  const dragRef = useRef({ active: false, moved: false, startX: 0, startY: 0, sl: 0, st: 0 });
+  const hasCenteredRef = useRef(false);
+
+  // Start centered so visitors land in the middle of the wall and can pan
+  // outward in any direction. Runs once, before paint, to avoid a jump.
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (!el || hasCenteredRef.current) return;
+    if (layout.width <= el.clientWidth && layout.height <= el.clientHeight) return;
+    el.scrollLeft = Math.max(0, (layout.width - el.clientWidth) / 2);
+    el.scrollTop = Math.max(0, (layout.height - el.clientHeight) / 2);
+    hasCenteredRef.current = true;
+  }, [layout.width, layout.height]);
+
+  // Grab-to-pan for mouse / pen. Touch pointers fall through to native scroll
+  // so we don't fight the OS's momentum + rubber-banding.
+  useEffect(() => {
+    const onMove = (e) => {
+      const d = dragRef.current;
+      if (!d.active) return;
+      const el = scrollRef.current;
+      if (!el) return;
+      const dx = e.clientX - d.startX;
+      const dy = e.clientY - d.startY;
+      if (Math.abs(dx) > 4 || Math.abs(dy) > 4) d.moved = true;
+      el.scrollLeft = d.sl - dx;
+      el.scrollTop = d.st - dy;
+    };
+    const onUp = () => {
+      const d = dragRef.current;
+      if (!d.active) return;
+      d.active = false;
+      const el = scrollRef.current;
+      if (el) el.style.cursor = 'grab';
+      // Let the tile's click handler observe `moved` first, then reset.
+      requestAnimationFrame(() => {
+        d.moved = false;
+      });
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
+    return () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
+    };
+  }, []);
+
+  const onPointerDown = (e) => {
+    if (e.pointerType === 'touch') return;
+    const el = scrollRef.current;
+    if (!el) return;
+    dragRef.current = {
+      active: true,
+      moved: false,
+      startX: e.clientX,
+      startY: e.clientY,
+      sl: el.scrollLeft,
+      st: el.scrollTop,
+    };
+    el.style.cursor = 'grabbing';
+  };
+
+  return (
+    <motion.div
+      key="wall-view"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: 0.4, ease }}
+      style={{
+        position: 'absolute',
+        top: 0,
+        bottom: 0,
+        left: sidebarInset,
+        right: 0,
+        overflow: 'hidden',
+        zIndex: 1,
+      }}
+    >
+      {/* Same grain as landing / theme: `TunableGrainBackground` → DialKit "Grain".
+          Fixed backdrop; the note wall pans over it. */}
+      <div
+        aria-hidden="true"
+        style={{
+          position: 'absolute',
+          inset: 0,
+          zIndex: 0,
+          isolation: 'isolate',
+          pointerEvents: 'none',
+          background: '#111',
+        }}
+      >
+        <TunableGrainBackground />
+      </div>
+
+      <style>{`
+        .canvas-scroll { scrollbar-width: none; -ms-overflow-style: none; }
+        .canvas-scroll::-webkit-scrollbar { display: none; }
+        .cstamp__img {
+          filter: grayscale(0.25);
+          transition: transform 0.4s cubic-bezier(0.22,1,0.36,1), filter 0.35s ease;
+        }
+        .cstamp:hover .cstamp__img { transform: scale(1.06); filter: grayscale(0); }
+        .cstamp__frame { transition: opacity 0.45s ease; }
+        .cstamp__meta {
+          opacity: 0;
+          transform: translateY(3px);
+          transition: opacity 0.25s ease, transform 0.25s ease;
+        }
+        .cstamp:hover .cstamp__meta { opacity: 1; transform: translateY(0); }
+        .grid-chip { transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease; }
+        .grid-chip:not(.is-active):hover { border-color: rgba(255,255,255,0.45); color: #fff; }
+      `}</style>
+
+      {/* Category filter chips (top-left). Click one to fade out notes that
+          aren't in that category; click it again (or "All") to clear. */}
+      {categories.length > 1 ? (
+        <div
+          style={{
+            position: 'absolute',
+            top: 72,
+            left: 24,
+            zIndex: 5,
+            display: 'flex',
+            flexWrap: 'wrap',
+            gap: 8,
+            maxWidth: 'min(62vw, 560px)',
+            pointerEvents: 'auto',
+          }}
+        >
+          <button
+            type="button"
+            className={`grid-chip${activeCat == null ? ' is-active' : ''}`}
+            onClick={() => setActiveCat(null)}
+            style={gridChipStyle(activeCat == null)}
+          >
+            All
+          </button>
+          {categories.map((label) => {
+            const active = activeCat === label;
+            return (
+              <button
+                key={label}
+                type="button"
+                className={`grid-chip${active ? ' is-active' : ''}`}
+                onClick={() => setActiveCat((cur) => (cur === label ? null : label))}
+                style={gridChipStyle(active)}
+              >
+                {label}
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
+
+      <div
+        ref={scrollRef}
+        className="canvas-scroll"
+        onPointerDown={onPointerDown}
+        style={{
+          position: 'relative',
+          zIndex: 1,
+          height: '100%',
+          width: '100%',
+          overflow: 'auto',
+          cursor: 'grab',
+          userSelect: 'none',
+          WebkitUserSelect: 'none',
+          touchAction: 'pan-x pan-y',
+        }}
+      >
+        <div style={{ position: 'relative', width: layout.width, height: layout.height }}>
+          {visible.map((c, i) => {
+            const p = layout.positions[i];
+            const base = { scale: 1, rotate: p.rot };
+            return (
+              <motion.div
+                key={c.id}
+                className="cstamp"
+                initial={reduceMotion ? { opacity: 1, ...base } : { opacity: 0, scale: 0.94, rotate: p.rot }}
+                animate={{ opacity: 1, ...base }}
+                transition={{
+                  duration: 0.5,
+                  ease,
+                  delay: reduceMotion ? 0 : Math.min(i * 0.01, 0.5),
+                }}
+                onClick={() => {
+                  if (!dragRef.current.moved) setSelected(c);
+                }}
+                style={{
+                  position: 'absolute',
+                  left: p.left,
+                  top: p.top,
+                  width: CANVAS_TILE_W,
+                  cursor: 'pointer',
+                }}
+              >
+                <div
+                  className="cstamp__frame"
+                  style={{
+                    position: 'relative',
+                    width: CANVAS_TILE_W,
+                    height: CANVAS_TILE_H,
+                    overflow: 'hidden',
+                    opacity: isDimmed(c) ? 0.12 : 1,
+                  }}
+                >
+                  <img
+                    className="cstamp__img"
+                    src={c.image}
+                    alt={`Note ${c.id}`}
+                    draggable={false}
+                    loading="lazy"
+                    decoding="async"
+                    onError={() =>
+                      setFailedIds((s) => {
+                        const next = new Set(s);
+                        next.add(c.id);
+                        return next;
+                      })
+                    }
+                    style={{
+                      width: '100%',
+                      height: '100%',
+                      objectFit: 'contain',
+                      padding: 12,
+                      boxSizing: 'border-box',
+                      display: 'block',
+                    }}
+                  />
+                </div>
+                <div
+                  className="cstamp__meta"
+                  style={{
+                    position: 'absolute',
+                    top: 'calc(100% + 8px)',
+                    left: 0,
+                    right: 0,
+                    textAlign: 'center',
+                    pointerEvents: 'none',
+                  }}
+                >
+                  {c.category ? (
+                    <div
+                      style={{
+                        fontFamily: 'var(--font-mono)',
+                        fontSize: 9,
+                        letterSpacing: '0.14em',
+                        textTransform: 'uppercase',
+                        color: 'rgba(206,108,82,0.95)',
+                        marginBottom: 3,
+                      }}
+                    >
+                      {c.category}
+                    </div>
+                  ) : null}
+                  <div
+                    style={{
+                      fontFamily: 'var(--font-mono)',
+                      fontSize: 10,
+                      letterSpacing: '0.06em',
+                      color: 'rgba(255,255,255,0.78)',
+                    }}
+                  >
+                    No. {String(c.id).padStart(3, '0')}
+                  </div>
+                </div>
+              </motion.div>
+            );
+          })}
+        </div>
+      </div>
+
+      <Lightbox
+        confession={selected}
+        onClose={() => setSelected(null)}
+        onPrev={visible.length > 1 ? goPrev : undefined}
+        onNext={visible.length > 1 ? goNext : undefined}
+      />
+    </motion.div>
+  );
+}
+
+/**
+ * Rigid gallery grid — the original "GRID" view (restored) before the pannable
+ * canvas/WALL replaced it. A centered, bordered CSS grid of square note tiles
+ * (3 / 2 / 1 columns, responsive). The search field at the top filters tiles by
+ * their transcript text (case-insensitive); click any tile to open the Lightbox
+ * (←/→ steps through the filtered set).
+ */
+/* ─────────────────────────────────────────────────────────
+ * GRID ENTRANCE STORYBOARD  (index — note tiles)
+ *
+ * Only tiles on screen at mount animate; tiles below the fold
+ * render in place. Each tile flies home from whichever viewport
+ * edge is nearest to it (shortest path), ease-out, staggered.
+ *
+ *  measuring   measure each tile, choose its nearest edge
+ *      ↓       (runs pre-paint, so nothing flashes at rest first)
+ *   parked     tiles parked just off their nearest edge (hidden)
+ *      ↓
+ *   flying     +80ms · fly to home, ease-out, 45ms stagger (row-by-row;
+ *      ↓                columns alternate per row — see gridColumnOrder)
+ *  settled     native scrolling restored
+ * ───────────────────────────────────────────────────────── */
+const GRID_ENTRANCE = {
+  startDelay: 80, // ms before the first tile leaves its edge
+  stagger: 0.045, // s between tiles, in reveal order (see gridColumnOrder)
+  duration: 0.72, // s per tile fly-in
+  ease: [0.16, 1, 0.3, 1], // ease-out (expo-ish): fast launch, soft landing
+  offscreenPad: 64, // px past the nearest edge so a tile parks fully hidden
+};
+
+/* Per-row reveal order for the entrance stagger. Rows fly in top→bottom, but the
+ * columns within a row alternate so the wall doesn't wipe in a plain left→right
+ * march:
+ *   even rows (top, 3rd, 5th…):  left → right → middle   → [0, 2, 1]
+ *   odd rows  (2nd, 4th…):       middle → left → right   → [1, 0, 2]
+ * Narrower responsive layouts (2 / 1 col) fall back to a simple zig-zag /
+ * top-down order. `parity` is the row's index from the top, mod 2. */
+function gridColumnOrder(cols, parity) {
+  if (cols === 3) return parity === 0 ? [0, 2, 1] : [1, 0, 2];
+  if (cols === 2) return parity === 0 ? [0, 1] : [1, 0];
+  return Array.from({ length: cols }, (_, i) => i);
+}
+
+// Rest transform for tiles that don't participate (below the fold at mount).
+const GRID_TILE_REST = { x: 0, y: 0, delay: 0 };
+
+// Each target carries its own transition, so measuring→parked is instant
+// (no fly-out) while parked→flying eases in. `custom` = { x, y, delay } per tile.
+const gridTileVariants = {
+  measuring: { opacity: 0, x: 0, y: 0, transition: { duration: 0 } },
+  parked: (d) => ({ opacity: 1, x: d.x, y: d.y, transition: { duration: 0 } }),
+  flying: (d) => ({
+    opacity: 1,
+    x: 0,
+    y: 0,
+    transition: { duration: GRID_ENTRANCE.duration, ease: GRID_ENTRANCE.ease, delay: d.delay },
+  }),
+  settled: { opacity: 1, x: 0, y: 0, transition: { duration: 0 } },
+};
+
+/* ─────────────────────────────────────────────────────────
+ * GRID EXIT / DISSOLVE STORYBOARD  (index — on note open)
+ *
+ * Trigger: a note is clicked → the full-screen note view opens.
+ * The clicked note lifts away (shared-element bridge, NoteOpenView),
+ * and everything else on the index dissolves so it lands in a clean
+ * focus view. The top nav lives ABOVE the grid, so it stays put.
+ *
+ *    0ms   note clicked · bridge lifts off the tile (NoteOpenView)
+ *    0ms   note tiles fade → 0 (scale 1 → 0.965, y 0 → 6px), rippling
+ *          OUTWARD from the clicked tile — nearest first, ~160ms spread
+ *    0ms   search + filter bar fades → 0
+ * ~140ms   the note view's dark backdrop veils in over the emptied grid
+ *
+ * On return (view closed) the tiles + bar fade back in, decelerating.
+ * ───────────────────────────────────────────────────────── */
+const GRID_EXIT = {
+  fadeOut: 0.34, //  s — per-tile opacity fade to 0
+  fadeIn: 0.5, //    s — per-tile fade back in on return
+  stagger: 0.16, //  s — max delay spread, rippling out from the clicked note
+  scaleTo: 0.965, // slight shrink as each note dissolves
+  yTo: 6, //         px — tiny downward settle
+  exitEase: [0.4, 0, 1, 1], //     ease-in: notes accelerate away
+  enterEase: [0.16, 1, 0.3, 1], // ease-out: notes settle back on return
+  barFade: 0.26, //  s — search / filter bar fade
+};
+
+/* Scrim behind the search / filter bar. A 3-stop linear ramp holds near-opaque
+ * for the first half then falls straight to 0, which kinks and leaves a hard
+ * "Mach band" edge where the scrim meets the grid. These closely-spaced stops
+ * trace an ease curve whose alpha *flattens* into 0 at the transparent end, so
+ * the fade is imperceptibly smooth. Fades to a transparent version of the SAME
+ * charcoal (not black) to avoid a grey wash. `dir` = the side it darkens toward
+ * ('to top' desktop / bottom-docked bar, 'to bottom' mobile / top-docked bar). */
+const filterBarScrim = (dir) =>
+  `linear-gradient(${dir},` +
+  ' rgba(17,17,17,0.96) 0%,' +
+  ' rgba(17,17,17,0.945) 11%,' +
+  ' rgba(17,17,17,0.9) 21%,' +
+  ' rgba(17,17,17,0.82) 31%,' +
+  ' rgba(17,17,17,0.71) 40%,' +
+  ' rgba(17,17,17,0.58) 49%,' +
+  ' rgba(17,17,17,0.44) 58%,' +
+  ' rgba(17,17,17,0.31) 67%,' +
+  ' rgba(17,17,17,0.19) 76%,' +
+  ' rgba(17,17,17,0.1) 85%,' +
+  ' rgba(17,17,17,0.04) 93%,' +
+  ' rgba(17,17,17,0) 100%)';
+
+function GridView({ confessions, sidebarInset = SIDEBAR_WIDTH, onOpenNote, noteOpen = false }) {
+  const [selected, setSelected] = useState(null);
+  const [query, setQuery] = useState('');
+  const reduceMotion = useReducedMotion();
+  // Phone widths (≤760): the filter bar moves to the TOP and stacks (search
+  // above the Category/Location tabs). On desktop it stays pinned to the
+  // bottom with the search centred between the tabs.
+  const compact = useArchiveNavCompact();
+  // Tiles whose image failed to load (file not yet on disk for that GlobalID).
+  // We drop the whole tile rather than show a broken-image icon.
+  const [failedIds, setFailedIds] = useState(() => new Set());
+
+  // Filter hierarchy. Each facet has its own tab + dropdown, but every facet's
+  // selection stays live and they combine with AND:
+  //   transcript search  ∧  category(s)  ∧  location(s)  ∧  recency sort.
+  // Non-matching notes are removed (not dimmed) — same behavior as search.
+  const [selectedCats, setSelectedCats] = useState(() => new Set());
+  const [selectedLocs, setSelectedLocs] = useState(() => new Set());
+  const [sortOrder, setSortOrder] = useState(null); // null | 'newest' | 'oldest'
+  // Which filter tab's dropdown is open (null = all closed). Each tab
+  // (Category / Location / Recency) opens a menu of its own selectable values.
+  const [openFacet, setOpenFacet] = useState(null); // null | 'category' | 'location' | 'recency'
+  const facetMenuRef = useRef(null); // anchor for outside-click / Escape dismissal
+
+  const withImages = useMemo(
+    () => confessions.filter((c) => c.image && !failedIds.has(c.id)),
+    [confessions, failedIds]
+  );
+
+  // Facet option lists, derived from what's actually present in the data.
+  const categoryOpts = useMemo(
+    () => deriveEmotions(withImages).map((e) => e.label),
+    [withImages]
+  );
+  const locationOpts = useMemo(() => {
+    const counts = new Map();
+    withImages.forEach((c) => {
+      const loc = (c.metadata?.location || '').trim();
+      if (loc) counts.set(loc, (counts.get(loc) || 0) + 1);
+    });
+    return [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([loc]) => loc);
+  }, [withImages]);
+
+  // Transcript search (case-insensitive). Every loaded note carries a
+  // transcription (see loadConfessions `isUsable`), so the filter is reliable.
+  const q = query.trim().toLowerCase();
+  const visible = useMemo(() => {
+    let arr = withImages;
+    if (q) arr = arr.filter((c) => (c.transcription || '').toLowerCase().includes(q));
+    if (selectedCats.size) arr = arr.filter((c) => selectedCats.has(c.category));
+    if (selectedLocs.size)
+      arr = arr.filter((c) => selectedLocs.has((c.metadata?.location || '').trim()));
+    if (sortOrder) {
+      const dir = sortOrder === 'newest' ? -1 : 1;
+      arr = [...arr].sort((a, b) => {
+        const ta = parseNoteDate(a.metadata?.date);
+        const tb = parseNoteDate(b.metadata?.date);
+        const na = Number.isNaN(ta);
+        const nb = Number.isNaN(tb);
+        if (na && nb) return 0;
+        if (na) return 1; // notes with no date sink to the bottom either way
+        if (nb) return -1;
+        return (ta - tb) * dir;
+      });
+    }
+    return arr;
+  }, [withImages, q, selectedCats, selectedLocs, sortOrder]);
+
+  const anyFilterActive =
+    !!q || selectedCats.size > 0 || selectedLocs.size > 0 || sortOrder != null;
+  const clearAll = useCallback(() => {
+    setQuery('');
+    setSelectedCats(new Set());
+    setSelectedLocs(new Set());
+    setSortOrder(null);
+  }, []);
+  const toggleInSet = (setter) => (value) =>
+    setter((prev) => {
+      const next = new Set(prev);
+      if (next.has(value)) next.delete(value);
+      else next.add(value);
+      return next;
+    });
+  const toggleCat = toggleInSet(setSelectedCats);
+  const toggleLoc = toggleInSet(setSelectedLocs);
+
+  // The filter bar floats over the top; measure it so the grid starts just below
+  // (its height changes when chips wrap or the active facet changes).
+  const barRef = useRef(null);
+  const [barH, setBarH] = useState(188);
+  useLayoutEffect(() => {
+    const el = barRef.current;
+    if (!el) return;
+    const update = () => setBarH(el.offsetHeight);
+    update();
+    if (typeof ResizeObserver === 'undefined') return undefined;
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  // ── Grid entrance — see GRID ENTRANCE STORYBOARD above. Measure every tile
+  //    that's on screen at mount, park it just off its nearest viewport edge,
+  //    then fly it home (ease-out, staggered). Tiles below the fold sit still.
+  const tileRefs = useRef(new Map());
+  const offsetsRef = useRef(new Map());
+  const flyCountRef = useRef(0);
+  const measuredRef = useRef(false);
+  const [entranceStage, setEntranceStage] = useState(reduceMotion ? 'settled' : 'measuring');
+
+  // ── Grid exit — see GRID EXIT / DISSOLVE STORYBOARD above. On note-open the
+  //    tiles fade out rippling OUTWARD from the clicked one; we snapshot each
+  //    tile's distance-from-click (→ stagger delay) the instant the note opens.
+  const exitDelaysRef = useRef(new Map());
+  const computeExitDelays = useCallback(
+    (originRect) => {
+      if (reduceMotion) {
+        exitDelaysRef.current = new Map();
+        return;
+      }
+      const ox = originRect.left + originRect.width / 2;
+      const oy = originRect.top + originRect.height / 2;
+      let maxD = 1;
+      const dist = new Map();
+      visible.forEach((c) => {
+        const el = tileRefs.current.get(c.id);
+        if (!el) return;
+        const r = el.getBoundingClientRect();
+        const dd = Math.hypot(r.left + r.width / 2 - ox, r.top + r.height / 2 - oy);
+        dist.set(c.id, dd);
+        if (dd > maxD) maxD = dd;
+      });
+      const delays = new Map();
+      dist.forEach((dd, id) => delays.set(id, (dd / maxD) * GRID_EXIT.stagger));
+      exitDelaysRef.current = delays;
+    },
+    [reduceMotion, visible]
+  );
+
+  useLayoutEffect(() => {
+    if (reduceMotion || measuredRef.current || entranceStage !== 'measuring') return;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const pad = GRID_ENTRANCE.offscreenPad;
+
+    // 1) Measure every on-screen tile + the park offset it flies in from (its
+    //    nearest viewport edge). Below-the-fold tiles get no offset → in place.
+    const onscreen = [];
+    visible.forEach((c) => {
+      const el = tileRefs.current.get(c.id);
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      const onScreen = r.bottom > 0 && r.top < vh && r.right > 0 && r.left < vw;
+      if (!onScreen) return; // below the fold at mount → no fly-in
+      const dTop = r.top;
+      const dBottom = vh - r.bottom;
+      const dLeft = r.left;
+      const dRight = vw - r.right;
+      const nearest = Math.min(dTop, dBottom, dLeft, dRight);
+      let x = 0;
+      let y = 0;
+      if (nearest === dTop) y = -(r.bottom + pad); // top is closest → park above
+      else if (nearest === dBottom) y = vh - r.top + pad; // bottom → park below
+      else if (nearest === dLeft) x = -(r.right + pad); // left → park to the left
+      else x = vw - r.left + pad; // right → park to the right
+      onscreen.push({ id: c.id, top: r.top, left: r.left, height: r.height, x, y });
+    });
+
+    // 2) Cluster tiles into visual rows (those sharing a top), ordered top→down.
+    const rowTol = onscreen.length ? Math.max(24, onscreen[0].height * 0.5) : 24;
+    const rows = [];
+    [...onscreen]
+      .sort((a, b) => a.top - b.top)
+      .forEach((t) => {
+        const row = rows[rows.length - 1];
+        if (row && Math.abs(row.top - t.top) <= rowTol) row.items.push(t);
+        else rows.push({ top: t.top, items: [t] });
+      });
+
+    // 3) Stagger row-by-row; within each row the columns reveal in a per-row
+    //    order (see gridColumnOrder) so the entrance reads as a woven cascade
+    //    rather than a flat left→right sweep.
+    const offsets = new Map();
+    let order = 0;
+    rows.forEach((row, rowIdx) => {
+      const cols = [...row.items].sort((a, b) => a.left - b.left); // 0 = leftmost
+      gridColumnOrder(cols.length, rowIdx % 2).forEach((colIdx) => {
+        const t = cols[colIdx];
+        if (!t) return;
+        offsets.set(t.id, {
+          x: t.x,
+          y: t.y,
+          delay: GRID_ENTRANCE.startDelay / 1000 + order * GRID_ENTRANCE.stagger,
+        });
+        order += 1;
+      });
+    });
+
+    offsetsRef.current = offsets;
+    flyCountRef.current = order;
+    measuredRef.current = true;
+    setEntranceStage(order > 0 ? 'parked' : 'settled');
+  }, [reduceMotion, entranceStage, visible]);
+
+  // Parked (hidden, off its edge) → fly in on the next frame.
+  useEffect(() => {
+    if (entranceStage !== 'parked') return undefined;
+    const raf = requestAnimationFrame(() =>
+      requestAnimationFrame(() => setEntranceStage('flying'))
+    );
+    return () => cancelAnimationFrame(raf);
+  }, [entranceStage]);
+
+  // Once the last tile lands, restore native scrolling (the grid is clipped
+  // during the flight so parked / flying tiles can't spawn a scrollbar).
+  useEffect(() => {
+    if (entranceStage !== 'flying') return undefined;
+    const total =
+      GRID_ENTRANCE.startDelay +
+      Math.max(0, flyCountRef.current - 1) * GRID_ENTRANCE.stagger * 1000 +
+      GRID_ENTRANCE.duration * 1000 +
+      120;
+    const t = setTimeout(() => setEntranceStage('settled'), total);
+    return () => clearTimeout(t);
+  }, [entranceStage]);
+
+  // Close the facet menu on outside click / Escape.
+  useEffect(() => {
+    if (!openFacet) return undefined;
+    const onDown = (e) => {
+      if (facetMenuRef.current && !facetMenuRef.current.contains(e.target))
+        setOpenFacet(null);
+    };
+    const onKey = (e) => {
+      if (e.key === 'Escape') setOpenFacet(null);
+    };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [openFacet]);
+
+  const FACETS = [
+    { id: 'category', label: 'Category', active: selectedCats.size > 0 },
+    { id: 'location', label: 'Location', active: selectedLocs.size > 0 },
+    // Recency tab hidden — restore this entry to bring the sort dropdown back.
+    // { id: 'recency', label: 'Recency', active: sortOrder != null },
+  ];
+
+  // The selectable rows shown inside a tab's dropdown. Category/Location are
+  // multi-select (with an "All" reset at top); Recency is a single-select sort
+  // that toggles off when the active option is picked again.
+  const facetValues = (facetId) => {
+    if (facetId === 'recency') {
+      return [
+        {
+          key: 'newest',
+          label: 'Newest first',
+          on: sortOrder === 'newest',
+          onClick: () => setSortOrder((c) => (c === 'newest' ? null : 'newest')),
+        },
+        {
+          key: 'oldest',
+          label: 'Oldest first',
+          on: sortOrder === 'oldest',
+          onClick: () => setSortOrder((c) => (c === 'oldest' ? null : 'oldest')),
+        },
+      ];
+    }
+    if (facetId === 'location') {
+      return [
+        {
+          key: '__all',
+          label: 'All locations',
+          on: selectedLocs.size === 0,
+          onClick: () => setSelectedLocs(new Set()),
+        },
+        ...locationOpts.map((loc) => ({
+          key: loc,
+          label: cityLabel(loc),
+          on: selectedLocs.has(loc),
+          onClick: () => toggleLoc(loc),
+        })),
+      ];
+    }
+    return [
+      {
+        key: '__all',
+        label: 'All categories',
+        on: selectedCats.size === 0,
+        onClick: () => setSelectedCats(new Set()),
+      },
+      ...categoryOpts.map((label) => ({
+        key: label,
+        label,
+        on: selectedCats.has(label),
+        onClick: () => toggleCat(label),
+      })),
+    ];
+  };
+
+  // Lightbox prev/next over the *filtered* set, wrapping at the ends.
+  const goRelative = useCallback(
+    (dir) => {
+      setSelected((cur) => {
+        const n = visible.length;
+        if (!cur || n <= 1) return cur;
+        const idx = visible.findIndex((c) => c.id === cur.id);
+        if (idx < 0) return cur;
+        return visible[(idx + dir + n) % n];
+      });
+    },
+    [visible]
+  );
+  const goPrev = useCallback(() => goRelative(-1), [goRelative]);
+  const goNext = useCallback(() => goRelative(1), [goRelative]);
 
   return (
     <motion.div
@@ -629,7 +1889,20 @@ function GridView({ confessions, sidebarInset = SIDEBAR_WIDTH }) {
         zIndex: 1,
       }}
     >
-      {/* Same grain as landing / theme: `TunableGrainBackground` → DialKit "Grain". */}
+      {/* Shared SVG filter def (paints nothing) — referenced ONLY by the
+          hovered grid image (see the tile below) for a heavier light-noise +
+          displacement warp. Punchier grain/warp than the resting scan since it's
+          now a focus treatment on one note at a time, not a wash over the whole
+          grid. The noise field animates (breathing warp + shimmering grain)
+          unless the visitor prefers reduced motion.
+          Strength is live-tunable via the "Note Hover Filter" DialKit panel
+          (append ?dial=1 to the URL, then hover a tile to preview). */}
+      <GridImageFilter animate={!reduceMotion} />
+
+      {/* Same backdrop as the dial: solid #111 base → neutral radial glow →
+          film grain (mix-blend). The gradient gives the grain something to
+          blend against so the noise actually reads here instead of washing out
+          on flat black. Isolated so mix-blend stays within this layer. */}
       <div
         aria-hidden="true"
         style={{
@@ -641,25 +1914,28 @@ function GridView({ confessions, sidebarInset = SIDEBAR_WIDTH }) {
           background: '#111',
         }}
       >
+        <div style={{ position: 'absolute', inset: 0, background: NEUTRAL_GRADIENT }} />
         <TunableGrainBackground />
       </div>
-      <div
-        style={{
-          position: 'relative',
-          zIndex: 1,
-          height: '100%',
-          overflowY: 'auto',
-          overflowX: 'hidden',
-          padding: '88px 32px 48px',
-        }}
-      >
+
       <style>{`
+        /* Subtle contact-sheet lattice: the grid frames its top + left edge and
+           each tile draws its own right + bottom hairline, so adjacent cells
+           share a single line (no doubling) and it stays pixel-aligned to the
+           tiles at any column count. box-sizing keeps the 1px lines from nudging
+           the square tiles out of alignment. */
         .confession-grid {
           display: grid;
           grid-template-columns: repeat(3, minmax(0, 1fr));
-          border: 1px solid #2a2a2a;
           max-width: 1100px;
           margin: 0 auto;
+          border-top: 1px solid rgba(255, 255, 255, 0.07);
+          border-left: 1px solid rgba(255, 255, 255, 0.07);
+        }
+        .grid-tile {
+          box-sizing: border-box;
+          border-right: 1px solid rgba(255, 255, 255, 0.07);
+          border-bottom: 1px solid rgba(255, 255, 255, 0.07);
         }
         @media (max-width: 760px) {
           .confession-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -667,77 +1943,416 @@ function GridView({ confessions, sidebarInset = SIDEBAR_WIDTH }) {
         @media (max-width: 460px) {
           .confession-grid { grid-template-columns: 1fr; }
         }
+        .grid-search-input::placeholder { color: rgba(255,255,255,0.4); }
+        .grid-search-input:focus { border-color: rgba(255,255,255,0.5); }
+        .grid-chip { transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease; }
+        .grid-chip:not(.is-active):hover { border-color: rgba(255,255,255,0.45); color: #fff; }
+        .facet-menu-btn:hover { border-color: rgba(255,255,255,0.4); background: rgba(255,255,255,0.1); }
+        .facet-menu-item:hover { background: rgba(255,255,255,0.09); color: #fff; }
+        /* Metadata caption: note number (flush-left) + category (flush-right) on
+           one row, sitting in the strip below the note. Grey at rest, white on
+           hover. A small even inset hugs the tile's grid lines (rather than the
+           note's content box) so the two ends read as flush to the cell edges.
+           It fades in only once the whole grid has flown in — opacity is driven
+           inline by the entrance settled stage. Group-hover via CSS so hovering
+           100+ tiles never re-renders React. */
+        .grid-tile-cap {
+          position: absolute;
+          left: 10px;
+          right: 10px;
+          bottom: 8px;
+          display: flex;
+          align-items: baseline;
+          justify-content: space-between;
+          gap: 12px;
+          font-family: var(--font-mono, ui-monospace, monospace);
+          font-size: 11px;
+          letter-spacing: 0.16em;
+          text-transform: uppercase;
+          color: rgba(255,255,255,0.4);
+          transition: color 0.28s ease, opacity 0.5s ease 0.1s;
+          pointer-events: none;
+        }
+        .grid-tile-cap .cap-num { flex: 0 0 auto; }
+        .grid-tile-cap .cap-cat {
+          min-width: 0;
+          text-align: right;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+        .grid-tile:hover .grid-tile-cap { color: #fff; }
+        @media (prefers-reduced-motion: reduce) {
+          .grid-tile-cap { transition: none; }
+        }
       `}</style>
-      <div className="confession-grid">
-        {visible.map((c, i) => (
-          <motion.div
-            key={c.id}
-            initial={{ opacity: 0, scale: 0.96 }}
-            animate={{ opacity: 1, scale: 1 }}
-            transition={{ duration: 0.55, ease, delay: Math.min(i * 0.04, 1.2) }}
-            whileHover={{ zIndex: 2 }}
-            onClick={() => setSelected(c)}
+
+      {/* Filter bar is pinned to the bottom: transcript search + a row of filter
+          tabs (Category · Location · Recency), each opening a dropdown of its own
+          selectable values. The gradient masks tiles scrolling underneath;
+          pointerEvents pass through the empty areas so the list still scrolls.
+          Fades out with the tiles when a note opens (see GRID EXIT storyboard). */}
+      <motion.div
+        ref={barRef}
+        initial={false}
+        animate={{ opacity: noteOpen ? 0 : 1 }}
+        transition={{
+          duration: reduceMotion ? 0 : GRID_EXIT.barFade,
+          ease: noteOpen ? GRID_EXIT.exitEase : GRID_EXIT.enterEase,
+        }}
+        style={{
+          position: 'absolute',
+          // Mobile: dock to the top (below the ABOUT chrome); desktop: bottom.
+          ...(compact ? { top: 0, bottom: 'auto' } : { top: 'auto', bottom: 0 }),
+          left: 0,
+          right: 0,
+          zIndex: 6,
+          pointerEvents: 'none',
+          // Top padding on mobile clears the fixed ABOUT row (top:24, ~40 tall).
+          padding: compact ? '76px 16px 20px' : '44px 24px 26px',
+          background: filterBarScrim(compact ? 'to bottom' : 'to top'),
+        }}
+      >
+        <div
+          style={{
+            maxWidth: 1100,
+            margin: '0 auto',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            gap: 12,
+          }}
+        >
+          {/* Row 1 — filter tabs (Category · Location · Recency) + transcript
+              search on one line. Each tab opens a dropdown of its own selectable
+              values, so no persistent chip row is needed. */}
+          <div
             style={{
-              position: 'relative',
-              aspectRatio: '1 / 1',
-              outline: '1px solid #2a2a2a',
-              outlineOffset: -1,
-              overflow: 'hidden',
-              cursor: 'pointer',
+              pointerEvents: 'auto',
+              display: 'flex',
+              // Mobile stacks (search on top, tabs below); desktop is one row
+              // with the search centred between an empty spacer and the tabs.
+              flexDirection: compact ? 'column' : 'row',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: compact ? 12 : 10,
+              flexWrap: compact ? 'nowrap' : 'wrap',
+              width: '100%',
             }}
           >
-            <img
-              src={c.image}
-              alt={`Confession ${c.id}`}
-              draggable={false}
-              loading="lazy"
-              onError={() =>
-                setFailedIds((s) => {
-                  const next = new Set(s);
-                  next.add(c.id);
-                  return next;
-                })
-              }
-              style={{
-                width: '100%',
-                height: '100%',
-                objectFit: 'contain',
-                padding: 42,
-                boxSizing: 'border-box',
-                display: 'block',
-                filter: 'grayscale(0.2)',
-                transition: 'transform 0.4s ease, filter 0.3s ease',
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.transform = 'scale(1.04)';
-                e.currentTarget.style.filter = 'grayscale(0)';
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.transform = 'scale(1)';
-                e.currentTarget.style.filter = 'grayscale(0.2)';
-              }}
+            {/* Desktop-only left spacer. It mirrors the tabs cell (both flex:1),
+                so the search input lands dead-centre in the bar no matter how
+                wide the tabs get. Hidden on mobile, where the row stacks. */}
+            <div
+              aria-hidden="true"
+              style={{ order: 0, flex: '1 1 0', minWidth: 0, display: compact ? 'none' : 'block' }}
             />
             <div
+              ref={facetMenuRef}
               style={{
-                position: 'absolute',
-                left: 8,
-                bottom: 8,
-                fontFamily: 'var(--font-mono)',
-                fontSize: 10,
-                letterSpacing: '0.08em',
-                color: 'rgba(255,255,255,0.75)',
-                pointerEvents: 'none',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: compact ? 'center' : 'flex-end',
+                gap: 8,
+                flex: compact ? '0 0 auto' : '1 1 0',
+                minWidth: 0,
+                flexWrap: 'wrap',
+                order: 2,
               }}
             >
-              {String(c.id).padStart(3, '0')}
-              {c.category ? ` · ${c.category.toUpperCase()}` : ''}
+              {FACETS.map((f) => {
+                const isOpen = openFacet === f.id;
+                return (
+                  <div key={f.id} style={{ position: 'relative', flex: '0 0 auto' }}>
+                    <button
+                      type="button"
+                      aria-haspopup="menu"
+                      aria-expanded={isOpen}
+                      className="facet-menu-btn"
+                      onClick={() => setOpenFacet((cur) => (cur === f.id ? null : f.id))}
+                      style={{
+                        ...facetMenuButtonStyle,
+                        // A facet with an active selection flips to a solid white
+                        // pill with black text (inline styles beat the :hover rule,
+                        // so it stays white on hover).
+                        ...(f.active
+                          ? { background: '#fff', color: '#111', border: '1px solid #fff' }
+                          : null),
+                      }}
+                    >
+                      {f.label}
+                      <span
+                        aria-hidden="true"
+                        style={{
+                          fontSize: 9,
+                          opacity: 0.7,
+                          transform: isOpen ? 'rotate(180deg)' : 'none',
+                          transition: 'transform 0.18s ease',
+                        }}
+                      >
+                        ▼
+                      </span>
+                    </button>
+
+                    <AnimatePresence>
+                      {isOpen ? (
+                        <motion.div
+                          role="menu"
+                          initial={{ opacity: 0, y: 6 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{ opacity: 0, y: 6 }}
+                          transition={{ duration: 0.16, ease }}
+                          style={{ ...facetMenuPanelStyle, maxHeight: 340, overflowY: 'auto' }}
+                        >
+                          {facetValues(f.id).map((opt) => (
+                            <button
+                              key={opt.key}
+                              type="button"
+                              role="menuitemcheckbox"
+                              aria-checked={opt.on}
+                              className="facet-menu-item"
+                              onClick={opt.onClick}
+                              style={facetMenuItemStyle(opt.on)}
+                            >
+                              <span
+                                aria-hidden="true"
+                                style={{
+                                  width: 14,
+                                  height: 14,
+                                  borderRadius: 999,
+                                  flex: '0 0 auto',
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  border: `1px solid ${
+                                    opt.on ? 'rgba(255,255,255,0.9)' : 'rgba(255,255,255,0.4)'
+                                  }`,
+                                }}
+                              >
+                                {opt.on ? (
+                                  <span
+                                    style={{ width: 7, height: 7, borderRadius: 999, background: '#fff' }}
+                                  />
+                                ) : null}
+                              </span>
+                              <span style={{ flex: 1, textAlign: 'left' }}>{opt.label}</span>
+                            </button>
+                          ))}
+                        </motion.div>
+                      ) : null}
+                    </AnimatePresence>
+                  </div>
+                );
+              })}
             </div>
-          </motion.div>
-        ))}
-      </div>
+
+            <input
+              className="grid-search-input"
+              type="search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search transcripts…"
+              aria-label="Search note transcripts"
+              style={{
+                pointerEvents: 'auto',
+                order: 1,
+                flex: compact ? '0 0 auto' : '0 1 440px',
+                width: compact ? '100%' : 'auto',
+                maxWidth: 440,
+                background: 'rgba(255,255,255,0.06)',
+                border: '1px solid rgba(255,255,255,0.18)',
+                borderRadius: 999,
+                padding: '9px 16px',
+                color: '#fff',
+                fontFamily: 'var(--font-mono)',
+                fontSize: 13,
+                letterSpacing: '0.04em',
+                outline: 'none',
+                transition: 'border-color 0.2s ease',
+              }}
+            />
+          </div>
+        </div>
+      </motion.div>
+
+      <div
+        style={{
+          position: 'relative',
+          zIndex: 1,
+          height: '100%',
+          // Clip while tiles are parked / flying so off-edge tiles can't spawn
+          // a scrollbar; restore native scroll once they've settled.
+          overflowY: entranceStage === 'settled' ? 'auto' : 'hidden',
+          overflowX: 'hidden',
+          scrollbarGutter: 'stable',
+          // Mobile: bar is docked at the top, so pad the top by its height and
+          // leave the bottom light. Desktop: pad the bottom for the docked bar.
+          padding: compact ? `${barH + 16}px 16px 56px` : `112px 32px ${barH + 24}px`,
+        }}
+      >
+        {visible.length === 0 ? (
+            <div
+            style={{
+              maxWidth: 1100,
+              margin: '0 auto',
+              paddingTop: 48,
+              textAlign: 'center',
+              color: 'rgba(255,255,255,0.5)',
+              fontFamily: 'var(--font-mono)',
+              fontSize: 13,
+              letterSpacing: '0.06em',
+            }}
+          >
+            <div>
+              {q ? (
+                <>No notes match &ldquo;{query.trim()}&rdquo;.</>
+              ) : (
+                'No notes match these filters.'
+              )}
+            </div>
+            {anyFilterActive ? (
+              <button
+                type="button"
+                onClick={clearAll}
+                style={{
+                  marginTop: 14,
+                  background: 'none',
+                  border: 'none',
+                  color: 'rgba(255,255,255,0.8)',
+                  fontFamily: 'var(--font-mono)',
+                  fontSize: 12,
+                  letterSpacing: '0.1em',
+                  textTransform: 'uppercase',
+                  textDecoration: 'underline',
+                  textUnderlineOffset: 3,
+                  cursor: 'pointer',
+                }}
+              >
+                Clear all filters
+              </button>
+            ) : null}
+          </div>
+        ) : (
+          <div className="confession-grid">
+            {visible.map((c, i) => {
+              const d = offsetsRef.current.get(c.id) || GRID_TILE_REST;
+              // Once the entrance has settled, the tile's motion is owned by the
+              // exit/dissolve (driven by noteOpen); before that the fly-in
+              // variants run. exitDelay ripples the fade out from the clicked tile.
+              const settled = entranceStage === 'settled';
+              const exitDelay = exitDelaysRef.current.get(c.id) || 0;
+              return (
+              <motion.div
+                key={c.id}
+                className="grid-tile"
+                ref={(el) => {
+                  const m = tileRefs.current;
+                  if (el) m.set(c.id, el);
+                  else m.delete(c.id);
+                }}
+                custom={d}
+                variants={gridTileVariants}
+                initial={false}
+                animate={
+                  settled
+                    ? {
+                        opacity: noteOpen ? 0 : 1,
+                        scale: noteOpen ? GRID_EXIT.scaleTo : 1,
+                        y: noteOpen ? GRID_EXIT.yTo : 0,
+                      }
+                    : entranceStage
+                }
+                transition={
+                  settled
+                    ? {
+                        duration: reduceMotion
+                          ? 0
+                          : noteOpen
+                            ? GRID_EXIT.fadeOut
+                            : GRID_EXIT.fadeIn,
+                        ease: noteOpen ? GRID_EXIT.exitEase : GRID_EXIT.enterEase,
+                        delay: reduceMotion ? 0 : exitDelay,
+                      }
+                    : undefined
+                }
+                onClick={(e) => {
+                  if (anyFilterActive || !onOpenNote) {
+                    setSelected(c);
+                    return;
+                  }
+                  const rect = e.currentTarget.getBoundingClientRect();
+                  computeExitDelays(rect);
+                  onOpenNote(c, rect);
+                }}
+                style={{
+                  position: 'relative',
+                  aspectRatio: '1 / 1',
+                  overflow: 'hidden',
+                  cursor: 'pointer',
+                }}
+              >
+                <img
+                  src={c.image}
+                  alt={`Note ${c.id}`}
+                  draggable={false}
+                  loading="lazy"
+                  decoding="async"
+                  onError={() =>
+                    setFailedIds((s) => {
+                      const next = new Set(s);
+                      next.add(c.id);
+                      return next;
+                    })
+                  }
+                  style={{
+                    width: '100%',
+                    height: '100%',
+                    objectFit: 'contain',
+                    // Shared with NoteOpenView's morph origin — see TILE_PADDING.
+                    // Tighter padding = bigger images + less gap between them.
+                    padding: TILE_PADDING,
+                    boxSizing: 'border-box',
+                    display: 'block',
+                    // At rest the tile is a clean, lightly-desaturated scan —
+                    // NO noise/displacement filter (it was a heavy wash across
+                    // the whole grid). The warp+grain is applied on hover only.
+                    filter: 'grayscale(0.2)',
+                    // Filter isn't transitioned: swapping to/from the url() noise
+                    // filter can't interpolate, so we apply it crisply on hover.
+                    transition: 'transform 0.4s ease',
+                  }}
+                  onMouseEnter={(e) => {
+                    // Slight paper-tilt on hover; alternate direction per tile
+                    // so the grid reads like scattered notes lifting, not a
+                    // uniform mechanical spin. The noise + displacement warp
+                    // switches on here (and only here) to focus the hovered note.
+                    e.currentTarget.style.transform = `scale(1.04) rotate(${
+                      i % 2 === 0 ? -2 : 2
+                    }deg)`;
+                    e.currentTarget.style.filter = `grayscale(0) ${GRID_IMAGE_FILTER}`;
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.transform = 'scale(1) rotate(0deg)';
+                    e.currentTarget.style.filter = 'grayscale(0.2)';
+                  }}
+                />
+                <div className="grid-tile-cap" style={{ opacity: settled ? 1 : 0 }}>
+                  <span className="cap-num">{c.id}</span>
+                  {c.category ? <span className="cap-cat">{c.category}</span> : null}
+                </div>
+              </motion.div>
+              );
+            })}
+          </div>
+        )}
       </div>
 
-      <Lightbox confession={selected} onClose={() => setSelected(null)} />
+      <Lightbox
+        confession={selected}
+        onClose={() => setSelected(null)}
+        onPrev={visible.length > 1 ? goPrev : undefined}
+        onNext={visible.length > 1 ? goNext : undefined}
+      />
     </motion.div>
   );
 }
@@ -753,19 +2368,22 @@ function GridView({ confessions, sidebarInset = SIDEBAR_WIDTH }) {
  *  - Backdrop and image share timing/easing (paired-elements rule).
  *  - prefers-reduced-motion disables motion entirely.
  */
-function Lightbox({ confession, onClose }) {
+function Lightbox({ confession, onClose, onPrev, onNext }) {
   const reduceMotion = useReducedMotion();
   const open = !!confession;
+  const canNav = !!(onPrev || onNext);
 
-  // ESC to close.
+  // ESC to close; ←/→ to step through notes.
   useEffect(() => {
     if (!open) return;
     const onKey = (e) => {
       if (e.key === 'Escape') onClose();
+      else if (e.key === 'ArrowLeft') onPrev?.();
+      else if (e.key === 'ArrowRight') onNext?.();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [open, onClose]);
+  }, [open, onClose, onPrev, onNext]);
 
   const easeOut = [0.165, 0.84, 0.44, 1];
 
@@ -786,6 +2404,16 @@ function Lightbox({ confession, onClose }) {
       };
 
   const transcription = confession?.transcription?.trim();
+
+  // Detail metadata shown at the top of the view, matching the note detail
+  // view's labelled key/value rows: DATE and LOCATION, plus THEME. Fields with
+  // no value drop out (live sheet vs. bundled fallback carry different subsets).
+  const meta = confession?.metadata || {};
+  const metaRows = [
+    ['DATE', meta.date],
+    ['LOCATION', meta.location],
+    ['THEME', confession?.category],
+  ].filter(([, v]) => v);
 
   return (
     <AnimatePresence>
@@ -816,7 +2444,6 @@ function Lightbox({ confession, onClose }) {
           }}
         >
           <div
-            onClick={(e) => e.stopPropagation()}
             style={{
               display: 'flex',
               flexDirection: 'column',
@@ -826,9 +2453,68 @@ function Lightbox({ confession, onClose }) {
               width: '100%',
               maxWidth: 'min(94vw, 900px)',
               margin: 'auto',
-              cursor: 'default',
+              // No stopPropagation here: clicks on the column's blank areas (and
+              // the image / text) bubble up to the backdrop and dismiss the view.
+              // Only the prev/next nav buttons stop propagation, so paging never
+              // closes it. The zoom-out cursor signals the click-to-close affordance.
+              cursor: 'zoom-out',
             }}
           >
+            {metaRows.length > 0 ? (
+              <motion.div
+                initial={{ opacity: 0, y: 6 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.24, ease: easeOut, delay: 0.04 }}
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  rowGap: 4,
+                  width: '100%',
+                  maxWidth: 'min(90vw, 360px)',
+                }}
+              >
+                {metaRows.map(([label, value]) => (
+                  <div
+                    key={label}
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'baseline',
+                      columnGap: 24,
+                      width: '100%',
+                    }}
+                  >
+                    <span
+                      style={{
+                        fontFamily: 'var(--font-mono)',
+                        fontSize: TRANSCRIPTION_FONT_SIZE,
+                        letterSpacing: '0.08em',
+                        lineHeight: 1.45,
+                        textTransform: 'uppercase',
+                        color: 'rgba(229,229,229,0.5)',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {label}
+                    </span>
+                    <span
+                      style={{
+                        fontFamily: 'var(--font-mono)',
+                        fontSize: TRANSCRIPTION_FONT_SIZE,
+                        letterSpacing: '0.02em',
+                        lineHeight: 1.45,
+                        color: 'rgba(229,229,229,0.85)',
+                        textAlign: 'right',
+                      }}
+                    >
+                      {value}
+                    </span>
+                  </div>
+                ))}
+              </motion.div>
+            ) : null}
+
             <motion.img
               key="lightbox-img"
               src={confession.image}
@@ -868,7 +2554,7 @@ function Lightbox({ confession, onClose }) {
                   style={{
                     display: 'block',
                     textAlign: 'center',
-                    ...ARCHIVE_NAV_TEXT,
+                    ...TRANSCRIPTION_TEXT,
                   }}
                 >
                   {transcription}
@@ -876,7 +2562,297 @@ function Lightbox({ confession, onClose }) {
               </motion.div>
             ) : null}
           </div>
+
+          {canNav && (
+            <>
+              <style>{`
+                .lb-nav {
+                  position: fixed;
+                  top: 50%;
+                  transform: translateY(-50%);
+                  z-index: 1001;
+                  width: 52px;
+                  height: 52px;
+                  display: flex;
+                  align-items: center;
+                  justify-content: center;
+                  padding: 0;
+                  border: none;
+                  border-radius: 50%;
+                  background: rgba(255, 255, 255, 0.06);
+                  color: #e5e5e5;
+                  opacity: 0.8;
+                  cursor: pointer;
+                  -webkit-backdrop-filter: blur(4px);
+                  backdrop-filter: blur(4px);
+                  transition: opacity 0.2s ease, background 0.2s ease, transform 0.15s ease;
+                }
+                .lb-nav--left { left: max(12px, 2.5vw); }
+                .lb-nav--right { right: max(12px, 2.5vw); }
+                .lb-nav:hover { opacity: 1; background: rgba(255, 255, 255, 0.16); }
+                .lb-nav:active { transform: translateY(-50%) scale(0.92); }
+              `}</style>
+              <button
+                type="button"
+                aria-label="Previous note"
+                className="lb-nav lb-nav--left"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onPrev?.();
+                }}
+              >
+                <svg
+                  width="22"
+                  height="22"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <polyline points="15 18 9 12 15 6" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                aria-label="Next note"
+                className="lb-nav lb-nav--right"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onNext?.();
+                }}
+              >
+                <svg
+                  width="22"
+                  height="22"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <polyline points="9 18 15 12 9 6" />
+                </svg>
+              </button>
+            </>
+          )}
         </motion.div>
+      )}
+    </AnimatePresence>
+  );
+}
+
+/**
+ * Right-side detail drawer for a single note. Slides in from the right edge with
+ * the enlarged image on top, the metadata below, then the full transcription.
+ * Backdrop click / ESC closes; ←/→ step through notes when onPrev/onNext given.
+ */
+function NoteDrawer({ confession, onClose, onPrev, onNext }) {
+  const reduceMotion = useReducedMotion();
+  const open = !!confession;
+  const canNav = !!(onPrev || onNext);
+
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e) => {
+      if (e.key === 'Escape') onClose();
+      else if (e.key === 'ArrowLeft') onPrev?.();
+      else if (e.key === 'ArrowRight') onNext?.();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open, onClose, onPrev, onNext]);
+
+  const easeOut = [0.165, 0.84, 0.44, 1];
+  const transcription = confession?.transcription?.trim();
+
+  // Detail metadata — show whichever fields are present (live sheet vs. bundled
+  // fallback carry different subsets). Order: theme → location → collected.
+  const meta = confession?.metadata || {};
+  const metaEntries = [
+    ['Theme', confession?.category],
+    ['Location', meta.location],
+    ['Collected', meta.collected],
+  ].filter(([, v]) => v);
+
+  const backdropMotion = reduceMotion
+    ? { initial: { opacity: 0 }, animate: { opacity: 1 }, exit: { opacity: 0 } }
+    : {
+        initial: { opacity: 0, backdropFilter: 'blur(0px)' },
+        animate: { opacity: 1, backdropFilter: 'blur(6px)' },
+        exit: { opacity: 0, backdropFilter: 'blur(0px)' },
+      };
+  const panelMotion = reduceMotion
+    ? { initial: { opacity: 0 }, animate: { opacity: 1 }, exit: { opacity: 0 } }
+    : { initial: { x: '100%' }, animate: { x: 0 }, exit: { x: '100%' } };
+
+  const labelStyle = {
+    fontFamily: 'var(--font-mono)',
+    fontSize: 9,
+    letterSpacing: '0.12em',
+    textTransform: 'uppercase',
+    color: 'rgba(255,255,255,0.4)',
+  };
+  const valueStyle = {
+    fontFamily: 'var(--font-mono)',
+    fontSize: 11,
+    letterSpacing: '0.02em',
+    color: 'rgba(229,229,229,0.85)',
+  };
+
+  return (
+    <AnimatePresence>
+      {open && (
+        <motion.div
+          key="note-drawer-backdrop"
+          {...backdropMotion}
+          transition={{
+            duration: 0.28,
+            ease: easeOut,
+            backdropFilter: { duration: 0.28, ease: easeOut },
+          }}
+          onClick={onClose}
+          style={{
+            position: 'fixed',
+            inset: 0,
+            zIndex: 1000,
+            background: 'rgba(8, 8, 10, 0.55)',
+            WebkitBackdropFilter: 'blur(0px)',
+            cursor: 'pointer',
+          }}
+        />
+      )}
+      {open && (
+        <motion.aside
+          key="note-drawer-panel"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Note detail"
+          {...panelMotion}
+          transition={
+            reduceMotion
+              ? { duration: 0.2, ease: easeOut }
+              : { type: 'spring', stiffness: 320, damping: 38, mass: 0.9 }
+          }
+          style={{
+            position: 'fixed',
+            top: 0,
+            right: 0,
+            bottom: 0,
+            zIndex: 1001,
+            width: 'min(440px, 92vw)',
+            background: 'rgba(16, 13, 15, 0.985)',
+            borderLeft: '1px solid rgba(255,255,255,0.1)',
+            boxShadow: '-24px 0 60px rgba(0,0,0,0.5)',
+            display: 'flex',
+            flexDirection: 'column',
+            overflowY: 'auto',
+            overflowX: 'hidden',
+            padding: '16px 22px 28px',
+            WebkitOverflowScrolling: 'touch',
+          }}
+        >
+          <style>{`
+            .nd-btn {
+              width: 34px; height: 34px; flex: 0 0 auto;
+              display: inline-flex; align-items: center; justify-content: center;
+              padding: 0; border: 1px solid rgba(255,255,255,0.12);
+              border-radius: 50%; background: rgba(255,255,255,0.04);
+              color: #e5e5e5; cursor: pointer; opacity: 0.85;
+              transition: opacity 0.18s ease, background 0.18s ease, transform 0.12s ease;
+            }
+            .nd-btn:hover { opacity: 1; background: rgba(255,255,255,0.14); }
+            .nd-btn:active { transform: scale(0.92); }
+          `}</style>
+
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: canNav ? 'space-between' : 'flex-end',
+              gap: 8,
+              marginBottom: 14,
+            }}
+          >
+            {canNav && (
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button type="button" className="nd-btn" aria-label="Previous note" onClick={() => onPrev?.()}>
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6" /></svg>
+                </button>
+                <button type="button" className="nd-btn" aria-label="Next note" onClick={() => onNext?.()}>
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6" /></svg>
+                </button>
+              </div>
+            )}
+            <button type="button" className="nd-btn" aria-label="Close note detail" onClick={onClose}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+            </button>
+          </div>
+
+          {confession && (
+            <>
+              <motion.img
+                key={confession.image}
+                src={confession.image}
+                alt={`Confession ${confession.id}`}
+                draggable={false}
+                initial={reduceMotion ? false : { opacity: 0, scale: 0.98 }}
+                animate={{ opacity: 1, scale: 1 }}
+                transition={{ duration: reduceMotion ? 0 : 0.26, ease: easeOut }}
+                style={{
+                  width: '100%',
+                  height: 'auto',
+                  maxHeight: '52vh',
+                  objectFit: 'contain',
+                  display: 'block',
+                  borderRadius: 2,
+                }}
+              />
+
+              {metaEntries.length > 0 && (
+                <div
+                  style={{
+                    marginTop: 18,
+                    paddingTop: 14,
+                    borderTop: '1px solid rgba(255,255,255,0.1)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 9,
+                  }}
+                >
+                  {metaEntries.map(([label, value]) => (
+                    <div
+                      key={label}
+                      style={{ display: 'flex', gap: 14, alignItems: 'baseline', justifyContent: 'space-between' }}
+                    >
+                      <span style={{ ...labelStyle, flex: '0 0 auto' }}>{label}</span>
+                      <span style={{ ...valueStyle, flex: '1 1 auto', minWidth: 0, textAlign: 'right', overflowWrap: 'anywhere' }}>
+                        {value}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {transcription && (
+                <div style={{ marginTop: 18, paddingTop: 14, borderTop: '1px solid rgba(255,255,255,0.1)' }}>
+                  <div style={{ ...labelStyle, marginBottom: 8 }}>Transcription</div>
+                  <Text
+                    variant="bodySmall"
+                    mono
+                    style={{ display: 'block', textAlign: 'left', ...TRANSCRIPTION_TEXT, lineHeight: 1.6 }}
+                  >
+                    {transcription}
+                  </Text>
+                </div>
+              )}
+            </>
+          )}
+        </motion.aside>
       )}
     </AnimatePresence>
   );
@@ -900,6 +2876,7 @@ function ThemeView({
   dialSpinDelayMs = 0,
 }) {
   const [lightboxConfession, setLightboxConfession] = useState(null);
+  const reduceMotion = useReducedMotion();
   const compact = useArchiveNavCompact();
   const dialBreadcrumb = useMemo(
     () => getCategoryBreadcrumbInfo(confessions, activeConfession),
@@ -968,16 +2945,56 @@ function ThemeView({
           overflow: 'visible',
         }}
       >
-        <HorizontalConfessionStack
-          confessions={confessions}
-          activeIndex={activeIndex}
-          onActiveChange={setActiveIndex}
-          onImageClick={setLightboxConfession}
-          entranceDelay={THEME_STACK_ENTRANCE_DELAY}
-        />
+        <motion.div
+          initial={reduceMotion ? false : { x: NOTE_INTRO_SLIDE_PX }}
+          animate={{ x: 0 }}
+          transition={
+            reduceMotion
+              ? { duration: 0 }
+              : {
+                  // Notes stay at full opacity (no fade) and slide into view on
+                  // the dial spin's ease-out curve. Shorter than the full spin
+                  // so they settle promptly — the dial decelerates (ease-out-
+                  // quart) so it's ~98% there by the time the notes land, and
+                  // the two still read as arriving together.
+                  x: {
+                    duration: NOTE_INTRO_SLIDE_MS / 1000,
+                    ease: INTRO_SPIN_EASE_BEZIER,
+                    delay: dialSpinDelayMs / 1000,
+                  },
+                }
+          }
+          style={{ width: '100%', height: '100%' }}
+        >
+          <HorizontalConfessionStack
+            confessions={confessions}
+            activeIndex={activeIndex}
+            onActiveChange={setActiveIndex}
+            onImageClick={setLightboxConfession}
+            mountEntrance={false}
+          />
+        </motion.div>
       </div>
 
-      <Lightbox
+      {/* Desktop-only edge vignette: darkens the far left/right so the notes
+          fade into the background at the screen edges instead of hard-clipping
+          as they slide. Above the cards (z 1), below the dial (z 10) and the
+          note drawer; never intercepts pointer events. */}
+      {!compact && (
+        <div
+          aria-hidden="true"
+          style={{
+            position: 'absolute',
+            inset: 0,
+            zIndex: 5,
+            pointerEvents: 'none',
+            background:
+              'linear-gradient(to right, rgba(0,0,0,0.92) 0%, rgba(0,0,0,0.6) 7%, rgba(0,0,0,0) 22%, rgba(0,0,0,0) 78%, rgba(0,0,0,0.6) 93%, rgba(0,0,0,0.92) 100%)',
+          }}
+        />
+      )}
+
+      <NoteDrawer
         confession={lightboxConfession}
         onClose={() => setLightboxConfession(null)}
       />
@@ -1008,6 +3025,7 @@ function ThemeView({
             activeEmotion={activeEmotion}
             onEmotionChange={handleEmotionChange}
             size={dialSize}
+            compact={compact}
             breadcrumb={dialBreadcrumb}
             introSpinDelayMs={dialSpinDelayMs}
           />
@@ -1062,7 +3080,28 @@ function useResponsiveDialSize() {
   return size;
 }
 
+const ARCHIVE_LOADING_TEXT = 'Entering the Archive';
+
 function ArchiveLoading() {
+  const reduceMotion = useReducedMotion();
+  // Type the line out one character at a time; reduced-motion shows it whole.
+  const [typed, setTyped] = useState(() => (reduceMotion ? ARCHIVE_LOADING_TEXT : ''));
+
+  useEffect(() => {
+    if (reduceMotion) {
+      setTyped(ARCHIVE_LOADING_TEXT);
+      return undefined;
+    }
+    setTyped('');
+    let i = 0;
+    const id = setInterval(() => {
+      i += 1;
+      setTyped(ARCHIVE_LOADING_TEXT.slice(0, i));
+      if (i >= ARCHIVE_LOADING_TEXT.length) clearInterval(id);
+    }, 60);
+    return () => clearInterval(id);
+  }, [reduceMotion]);
+
   return (
     <motion.div
       key="archive-loading"
@@ -1076,18 +3115,20 @@ function ArchiveLoading() {
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        color: 'rgba(255,255,255,0.55)',
+        color: 'rgba(255,255,255,0.6)',
         fontFamily: 'var(--font-mono, ui-monospace, monospace)',
-        fontSize: 12,
-        letterSpacing: '0.18em',
+        fontSize: 'clamp(13px, 1.9vw, 18px)',
+        letterSpacing: '0.16em',
       }}
     >
-      Entering the Archive
+      <span role="status" aria-label={ARCHIVE_LOADING_TEXT} style={{ whiteSpace: 'pre' }}>
+        <span aria-hidden="true">{typed}</span>
+      </span>
     </motion.div>
   );
 }
 
-function ArchivePage({ confessionQuery, initialEmotion = null }) {
+function ArchivePage({ confessionQuery, initialEmotion = null, initialView = 'theme', onReturnToIntro }) {
   // Live data from the published Google Sheet. Falls back to the bundled
   // sample data if the network call fails so the prototype still works
   // offline / behind a captive portal.
@@ -1115,8 +3156,15 @@ function ArchivePage({ confessionQuery, initialEmotion = null }) {
     [confessions]
   );
 
+  // A torn strip of note thumbnails for the About panel header.
+  const aboutThumbs = useMemo(
+    () => confessions.filter((c) => c.image).slice(0, 16).map((c) => c.image),
+    [confessions]
+  );
+
   // Main content area: 'theme' (default) or 'grid' — controlled by the pill.
-  const [view, setView] = useState('theme');
+  // `initialView` lets a deep link (e.g. `/?view=grid`) open straight on a view.
+  const [view, setView] = useState(initialView);
   // Sidebar panel content under the nav: 'metadata' (default — shows active
   // confession info) | 'about' | 'submit'.
   // ABOUT/SUBMIT in the sidebar nav swap to those panels; otherwise we stay
@@ -1129,6 +3177,8 @@ function ArchivePage({ confessionQuery, initialEmotion = null }) {
   // Top-right "ABOUT" header → modal. Independent of the sidebar's About
   // panel so it works regardless of sidebar state.
   const [aboutOpen, setAboutOpen] = useState(false);
+  // The note opened from the (unfiltered) grid → full-screen note-open view.
+  const [openNote, setOpenNote] = useState(null);
   const compactNav = useArchiveNavCompact();
   const reduceMotion = useReducedMotion();
   const navChromeEntranceDelay = reduceMotion
@@ -1238,7 +3288,7 @@ function ArchivePage({ confessionQuery, initialEmotion = null }) {
       style={{ height: '100vh', position: 'relative', overflow: 'hidden', background: '#111' }}
     >
       <ArchiveNavGradientWash />
-      <SiteTitle entranceDelay={navChromeEntranceDelay} />
+      <SiteTitle entranceDelay={navChromeEntranceDelay} onReturnToIntro={onReturnToIntro} />
       {compactNav ? (
         <div
           style={{
@@ -1256,14 +3306,18 @@ function ArchivePage({ confessionQuery, initialEmotion = null }) {
             pointerEvents: 'none',
           }}
         >
+          {/* View tabs hidden on the grid (INDEX) view — empty cell kept so
+              space-between still pins ABOUT to the right. */}
           <div style={{ pointerEvents: 'auto', flexShrink: 0 }}>
-            <ViewToggle
-              view={view}
-              onChange={setView}
-              sidebarInset={sidebarInset}
-              embedded
-              entranceDelay={navChromeEntranceDelay}
-            />
+            {view !== 'grid' && (
+              <ViewToggle
+                view={view}
+                onChange={setView}
+                sidebarInset={sidebarInset}
+                embedded
+                entranceDelay={navChromeEntranceDelay}
+              />
+            )}
           </div>
           <div style={{ pointerEvents: 'auto', flexShrink: 0 }}>
             <AboutHeader
@@ -1275,25 +3329,23 @@ function ArchivePage({ confessionQuery, initialEmotion = null }) {
           </div>
         </div>
       ) : (
-        <>
-          <ViewToggle
-            view={view}
-            onChange={setView}
-            sidebarInset={sidebarInset}
-            entranceDelay={navChromeEntranceDelay}
-          />
-          <AboutHeader
-            onClick={() => setAboutOpen(true)}
-            open={aboutOpen}
-            entranceDelay={navChromeEntranceDelay}
-          />
-        </>
+        <AboutHeader
+          onClick={() => setAboutOpen(true)}
+          open={aboutOpen}
+          view={view}
+          onChange={setView}
+          entranceDelay={navChromeEntranceDelay}
+        />
       )}
-      <AboutModal open={aboutOpen} onClose={() => setAboutOpen(false)} />
-      <ArchiveBrandMark
-        sidebarInset={sidebarInset}
-        entranceDelay={view === 'theme' ? navChromeEntranceDelay : 0.2}
-      />
+      <AboutModal open={aboutOpen} onClose={() => setAboutOpen(false)} noteThumbs={aboutThumbs} />
+      {/* Bottom-left wordmark + © — hidden on the grid/index, where SiteTitle
+          already shows the wordmark top-left (the bottom mark was redundant). */}
+      {view !== 'grid' ? (
+        <ArchiveBrandMark
+          sidebarInset={sidebarInset}
+          entranceDelay={view === 'theme' ? navChromeEntranceDelay : 0.2}
+        />
+      ) : null}
 
       <AnimatePresence mode="wait">
         {view === 'theme' ? (
@@ -1313,8 +3365,33 @@ function ArchivePage({ confessionQuery, initialEmotion = null }) {
             dialEntranceDelay={dialEntranceDelay}
             dialSpinDelayMs={dialSpinDelayMs}
           />
+        ) : view === 'wall' ? (
+          <WallView key="wall" confessions={confessions} sidebarInset={sidebarInset} />
         ) : (
-          <GridView key="grid" confessions={confessions} sidebarInset={sidebarInset} />
+          <GridView
+            key="grid"
+            confessions={confessions}
+            sidebarInset={sidebarInset}
+            onOpenNote={(c, rect) => setOpenNote({ confession: c, rect })}
+            noteOpen={!!openNote}
+          />
+        )}
+      </AnimatePresence>
+
+      {/* Full-screen note-open view — opened by clicking an unfiltered grid
+          note (see NoteOpenView.jsx + docs/note-open-view-handoff.md). Sits
+          above the grid, which stays mounted + blurred behind it. */}
+      <AnimatePresence>
+        {openNote && (
+          <NoteOpenView
+            key={openNote.confession.id}
+            confession={openNote.confession}
+            originRect={openNote.rect}
+            confessions={confessions}
+            emotions={emotions}
+            onExit={() => setOpenNote(null)}
+            onAbout={() => setAboutOpen(true)}
+          />
         )}
       </AnimatePresence>
 
@@ -1324,94 +3401,50 @@ function ArchivePage({ confessionQuery, initialEmotion = null }) {
 }
 
 export default function App() {
-  const [page, setPage] = useState('landing');
-  // Category (emotion id) the visitor selected on the landing dial; seeds the
-  // archive dial so it spins to that category on entry.
-  const [entryEmotion, setEntryEmotion] = useState(null);
-  // The selected note's image, kept mounted across the landing→archive swap so
-  // it visually "stays on screen" while the rest of the archive (other notes +
-  // dial) fades in around it. Cleared once it has handed off to the live card.
-  const [bridgeNote, setBridgeNote] = useState(null);
-  // The featured note's exact on-screen rect at the moment of entry, so the
-  // bridge image can hold its precise size/position (no jump) while the archive
-  // dial rises underneath it.
-  const [bridgeRect, setBridgeRect] = useState(null);
-  const reduceMotion = useReducedMotion();
+  // Deep link: `/?view=grid` (also `theme` | `wall`) opens straight into the
+  // archive on that view — e.g. the onboarding "Enter the archive" CTA. Any
+  // other load starts on the landing page as usual.
+  const deepLinkView = new URLSearchParams(
+    typeof window !== 'undefined' ? window.location.search : ''
+  ).get('view');
+  const deepLinkArchive =
+    deepLinkView === 'grid' || deepLinkView === 'theme' || deepLinkView === 'wall';
+
+  const [page, setPage] = useState(deepLinkArchive ? 'archive' : 'landing');
+  // Which view the archive opens on. The onboarding's ENTER lands on the grid
+  // (its designed destination); deep links honor their own `?view=`.
+  const [archiveView, setArchiveView] = useState(
+    deepLinkArchive ? deepLinkView : 'grid'
+  );
   const confessionQuery = useConfessions();
-  const landingBgSrcs = useLandingBackgroundSrcs(confessionQuery.confessions);
-  const landingNotes = useLandingRevealNotes(confessionQuery);
 
   return (
-    <>
-      <AnimatePresence mode="wait">
-        {page === 'landing' && (
-          <LandingReveal
-            onEnter={(emotionId, noteImage, noteRect) => {
-              setEntryEmotion(emotionId ?? null);
-              setBridgeNote(noteImage ?? null);
-              setBridgeRect(noteRect ?? null);
-              setPage('archive');
-            }}
-            backgroundImageSrcs={landingBgSrcs}
-            categories={landingNotes}
-          />
-        )}
-        {page === 'archive' && (
-          <ArchivePage confessionQuery={confessionQuery} initialEmotion={entryEmotion} />
-        )}
-      </AnimatePresence>
-
-      {/* Bridge note: the chosen confession holds its exact landing position +
-          size through the page swap (no jump, no double-fade), then crossfades
-          out once the archive's dial + cards have risen underneath it. */}
-      {bridgeNote && (
-        <div
-          style={{
-            position: 'fixed',
-            inset: 0,
-            zIndex: 50,
-            display: bridgeRect ? 'block' : 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            pointerEvents: 'none',
+    <AnimatePresence mode="wait">
+      {page === 'landing' && (
+        <OnboardingReveal
+          key="onboarding"
+          onEnter={() => {
+            setArchiveView('grid');
+            setPage('archive');
           }}
-        >
-          <motion.img
-            key={bridgeNote}
-            src={bridgeNote}
-            alt=""
-            draggable={false}
-            initial={{ opacity: 1 }}
-            animate={{ opacity: 0 }}
-            transition={{
-              duration: reduceMotion ? 0 : HANDOFF_NOTE_FADE_S,
-              ease: 'easeIn',
-            }}
-            onAnimationComplete={() => {
-              setBridgeNote(null);
-              setBridgeRect(null);
-            }}
-            style={
-              bridgeRect
-                ? {
-                    position: 'absolute',
-                    top: bridgeRect.top,
-                    left: bridgeRect.left,
-                    width: bridgeRect.width,
-                    height: 'auto',
-                    borderRadius: 2,
-                    filter: 'drop-shadow(0 14px 34px rgba(0, 0, 0, 0.55))',
-                  }
-                : {
-                    width: 'clamp(160px, 25vw, 220px)',
-                    height: 'auto',
-                    borderRadius: 2,
-                    filter: 'drop-shadow(0 14px 34px rgba(0, 0, 0, 0.55))',
-                  }
-            }
-          />
-        </div>
+        />
       )}
-    </>
+      {page === 'archive' && (
+        <ArchivePage
+          key="archive"
+          confessionQuery={confessionQuery}
+          initialEmotion={null}
+          initialView={archiveView}
+          onReturnToIntro={() => {
+            // Drop any deep-link `?view=` so the intro sits at a clean `/` (and a
+            // reload won't bounce straight back into the archive).
+            if (typeof window !== 'undefined') {
+              window.history.replaceState(null, '', '/');
+            }
+            setPage('landing');
+          }}
+        />
+      )}
+    </AnimatePresence>
   );
 }

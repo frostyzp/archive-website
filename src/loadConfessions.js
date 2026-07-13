@@ -30,6 +30,8 @@ const numericId = (globalId) => {
  *   Transcription → transcription
  *   Tags1, Tags2  → metadata.tags
  *   Theme         → category (drives dial bucket)
+ *   Date (col P)  → metadata.date
+ *   Location (Q)  → metadata.location
  *   Corpus?       → "yes" required to include the row
  */
 function rowToConfession(r) {
@@ -43,11 +45,10 @@ function rowToConfession(r) {
     transcription: cleanString(r['Transcription']),
     category: theme,
     metadata: {
-      // Location and Collected aren't in the sheet yet; left blank so the
-      // sidebar metadata panel can still render the labels later.
-      location: '',
+      location: cleanString(r['Location']),
       session: cleanString(r['Session ID']),
       collected: '',
+      date: cleanString(r['Date']),
       itemId: cleanString(r['Item ID']),
       tags: [r['Tags1'], r['Tags2']]
         .map(cleanString)

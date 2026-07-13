@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Text } from './text';
+import { subscribeToKit } from './kit';
 
 const ease = [0.22, 1, 0.36, 1];
 
@@ -246,7 +247,27 @@ function MetadataPanel({ metadata, transcription }) {
 
 function AboutPanel() {
   const [email, setEmail] = useState('');
-  const [submitted, setSubmitted] = useState(false);
+  // 'idle' | 'submitting' | 'success' | 'error'
+  const [status, setStatus] = useState('idle');
+  const [errorMsg, setErrorMsg] = useState('');
+
+  const submitting = status === 'submitting';
+  const submitted = status === 'success';
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    if (!email.trim() || submitting) return;
+
+    setStatus('submitting');
+    setErrorMsg('');
+    try {
+      await subscribeToKit(email);
+      setStatus('success');
+    } catch (err) {
+      setErrorMsg(err.message);
+      setStatus('error');
+    }
+  }
 
   return (
     <motion.div {...panelMotion} style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
@@ -325,10 +346,7 @@ function AboutPanel() {
 
         {!submitted ? (
           <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              if (email.trim()) setSubmitted(true);
-            }}
+            onSubmit={handleSubmit}
             style={{ display: 'flex', flexDirection: 'column', gap: 6 }}
           >
             <input
@@ -337,6 +355,8 @@ function AboutPanel() {
               onChange={(e) => setEmail(e.target.value)}
               placeholder="you@somewhere.com"
               required
+              disabled={submitting}
+              autoComplete="email"
               style={{
                 background: 'rgba(255,255,255,0.04)',
                 border: '1px solid rgba(255,255,255,0.15)',
@@ -348,6 +368,7 @@ function AboutPanel() {
                 outline: 'none',
                 borderRadius: 3,
                 width: '100%',
+                opacity: submitting ? 0.6 : 1,
               }}
               onFocus={(e) =>
                 (e.currentTarget.style.borderColor = 'rgba(255,255,255,0.4)')
@@ -358,6 +379,7 @@ function AboutPanel() {
             />
             <button
               type="submit"
+              disabled={submitting}
               style={{
                 background: '#e5e5e5',
                 color: '#0a0a0a',
@@ -366,12 +388,27 @@ function AboutPanel() {
                 fontSize: 11,
                 fontFamily: 'var(--font-mono)',
                 letterSpacing: '0.14em',
-                cursor: 'pointer',
+                cursor: submitting ? 'default' : 'pointer',
                 borderRadius: 3,
+                opacity: submitting ? 0.6 : 1,
               }}
             >
-              SUBSCRIBE
+              {submitting ? 'SUBSCRIBING…' : 'SUBSCRIBE'}
             </button>
+            {status === 'error' && (
+              <Text
+                variant="caption"
+                mono
+                style={{
+                  fontSize: 10,
+                  letterSpacing: '0.04em',
+                  lineHeight: 1.5,
+                  color: 'rgba(255,130,130,0.9)',
+                }}
+              >
+                {errorMsg}
+              </Text>
+            )}
           </form>
         ) : (
           <div
@@ -384,9 +421,10 @@ function AboutPanel() {
               fontSize: 11,
               letterSpacing: '0.04em',
               color: 'rgba(255,255,255,0.85)',
+              lineHeight: 1.5,
             }}
           >
-            Thanks — we'll be in touch.
+            Thanks — check your inbox to confirm your subscription.
           </div>
         )}
       </div>

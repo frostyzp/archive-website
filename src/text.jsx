@@ -12,32 +12,32 @@ const VARIANTS = {
     letterSpacing: '-0.015em',
   },
   subheading: {
-    fontSize: 20,
+    fontSize: 24,
     fontWeight: 600,
     lineHeight: 1.3,
     letterSpacing: '-0.01em',
   },
   body: {
-    fontSize: 16,
+    fontSize: 18,
     fontWeight: 400,
     lineHeight: 1.5,
     letterSpacing: '0',
   },
   bodySmall: {
-    fontSize: 14,
+    fontSize: 16,
     fontWeight: 400,
     lineHeight: 1.5,
     letterSpacing: '0',
   },
   caption: {
-    fontSize: 12,
+    fontSize: 14,
     fontWeight: 500,
     lineHeight: 1.4,
     letterSpacing: '0.02em',
     textTransform: 'uppercase',
   },
   label: {
-    fontSize: 13,
+    fontSize: 14,
     fontWeight: 500,
     lineHeight: 1.4,
     letterSpacing: '0.01em',
@@ -60,6 +60,21 @@ const ELEMENT_MAP = {
 
 const FONT_PRIMARY = 'var(--font-primary, system-ui, -apple-system, sans-serif)';
 const FONT_MONO = 'var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace)';
+
+/**
+ * Note transcription text — the mono transcript shown under a note in the dial
+ * card, the grid lightbox and the note drawer. SINGLE SOURCE OF TRUTH: bump
+ * TRANSCRIPTION_FONT_SIZE here to resize the transcription everywhere it appears
+ * across the site. (Nav chrome has its own size — see ARCHIVE_NAV_TEXT.)
+ */
+export const TRANSCRIPTION_FONT_SIZE = 14;
+export const TRANSCRIPTION_TEXT = {
+  fontFamily: FONT_MONO,
+  fontSize: TRANSCRIPTION_FONT_SIZE,
+  lineHeight: 1.55,
+  letterSpacing: '0.01em',
+  color: 'rgba(229, 229, 229, 0.85)',
+};
 
 export function Text({
   variant = 'body',
