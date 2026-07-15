@@ -42,6 +42,14 @@ export default function FontDecayTitle({
   text = 'What We Tell AI',
   maxWidthPx = 760,
   glow = false,
+  ink: inkOverride,
+  face: faceOverride,
+  // Override the intrinsic geometry width cap — scales the SVG up to match a
+  // hero wordmark or other large display size.
+  displayWidth,
+  maxDisplayHeight,
+  displayHeight,
+  renderFontSize = RENDER_FONT_SIZE,
   // Multi-line support: `text` may contain "\n". `lineGap` is the baseline-to-
   // baseline distance as a multiple of the font size. `centerLines` centers
   // each line against the widest one (for a stacked mobile title).
@@ -74,8 +82,8 @@ export default function FontDecayTitle({
     Appearance: { ink: { type: 'color', default: '#6A6666' } },
     Font: { face: { type: 'select', options: FONTS.map((f) => f.name), default: DEFAULT_FONT } },
   });
-  const ink = dial.Appearance?.ink ?? '#6A6666';
-  const faceName = dial.Font?.face ?? DEFAULT_FONT;
+  const ink = inkOverride ?? dial.Appearance?.ink ?? '#6A6666';
+  const faceName = faceOverride ?? dial.Font?.face ?? DEFAULT_FONT;
 
   /* ── Load every site font once (buffers parsed for outline extraction). ── */
   useEffect(() => {
@@ -108,8 +116,8 @@ export default function FontDecayTitle({
   const geo = useMemo(() => {
     if (!font || !text) return null;
     const lines = String(text).split('\n');
-    const lineH = RENDER_FONT_SIZE * lineGap;
-    const lineWidths = lines.map((line) => font.getAdvanceWidth(line, RENDER_FONT_SIZE));
+    const lineH = renderFontSize * lineGap;
+    const lineWidths = lines.map((line) => font.getAdvanceWidth(line, renderFontSize));
     const maxLineW = Math.max(0, ...lineWidths);
     const words = [];
     const bb = { x1: Infinity, y1: Infinity, x2: -Infinity, y2: -Infinity };
@@ -121,12 +129,12 @@ export default function FontDecayTitle({
       for (const tok of line.split(/(\s+)/)) {
         if (!tok) continue;
         if (/^\s+$/.test(tok)) {
-          x += font.getAdvanceWidth(tok, RENDER_FONT_SIZE);
+          x += font.getAdvanceWidth(tok, renderFontSize);
           continue;
         }
-        const p = font.getPath(tok, x, y, RENDER_FONT_SIZE);
+        const p = font.getPath(tok, x, y, renderFontSize);
         const d = p.toPathData(2);
-        x += font.getAdvanceWidth(tok, RENDER_FONT_SIZE);
+        x += font.getAdvanceWidth(tok, renderFontSize);
         if (!d) continue;
         const wb = p.getBoundingBox();
         words.push({ d });
@@ -138,8 +146,7 @@ export default function FontDecayTitle({
     });
     if (!words.length || !Number.isFinite(bb.x1)) return null;
     return { words, bbox: bb };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [font, text, lineGap, centerLines, loadedKey]);
+  }, [font, text, lineGap, centerLines, loadedKey, renderFontSize]);
 
   const wordCount = geo?.words.length || 0;
   const reveal = !reduceMotion && revealStaggerMs > 0 && wordCount > 1;
@@ -157,32 +164,53 @@ export default function FontDecayTitle({
     return () => clearTimeout(id);
   }, [geo, revealGate, reveal, wordCount, revealStaggerMs, revealDurationMs]);
 
-  if (!geo) return null;
+  if (!geo) {
+    return (
+      <div
+        aria-hidden="true"
+        style={{
+          width: displayWidth ?? `min(96vw, ${maxWidthPx}px)`,
+          maxHeight: maxDisplayHeight,
+          minHeight: maxDisplayHeight ?? '32vh',
+        }}
+      />
+    );
+  }
 
   const { bbox } = geo;
   const pad = 6; // breathing room for italic overhang / glow
   const vbW = bbox.x2 - bbox.x1 + pad * 2;
   const vbH = bbox.y2 - bbox.y1 + pad * 2;
   const viewBox = `${bbox.x1 - pad} ${bbox.y1 - pad} ${vbW} ${vbH}`;
-  const cssW = `min(${Math.ceil(vbW)}px, ${maxWidthPx}px, 92vw)`;
+  const cssW = displayWidth ?? `min(${Math.ceil(vbW)}px, ${maxWidthPx}px, 96vw)`;
   const glowFilter = glow
     ? 'drop-shadow(0 0 18px rgba(255,255,255,0.35)) drop-shadow(0 0 46px rgba(255,255,255,0.16))'
     : 'none';
-
   const staggerS = revealStaggerMs / 1000;
   const durS = revealDurationMs / 1000;
+  const sizeStyle = displayHeight
+    ? {
+        width: 'auto',
+        height: displayHeight,
+        maxWidth: displayWidth ?? '96vw',
+        maxHeight: maxDisplayHeight,
+      }
+    : {
+        width: cssW,
+        height: 'auto',
+        maxHeight: maxDisplayHeight,
+      };
 
   return (
     <svg
       role="img"
-      aria-label={text}
+      aria-label={text.replace(/\n/g, ' ')}
       viewBox={viewBox}
       preserveAspectRatio="xMidYMid meet"
       style={{
         display: 'block',
-        width: cssW,
-        height: 'auto',
-        aspectRatio: `${vbW} / ${vbH}`,
+        ...sizeStyle,
+        ...(displayHeight ? {} : { aspectRatio: `${vbW} / ${vbH}` }),
         overflow: 'visible',
         filter: glowFilter,
       }}

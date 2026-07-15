@@ -54,7 +54,7 @@ export function Sidebar({
         flexDirection: 'column',
         zIndex: 100,
         background: 'rgba(10,10,10,0.95)',
-        borderRight: '1px solid rgba(255,255,255,0.06)',
+        borderRight: '1px solid rgba(207,202,183,0.06)',
         // Hide the peek's interior content from screen readers / tab focus
         // when collapsed so users don't trip over invisible buttons.
         pointerEvents: collapsed ? 'none' : 'auto',
@@ -79,9 +79,9 @@ export function Sidebar({
           alignItems: 'center',
           justifyContent: 'center',
           background: 'rgba(20,20,20,0.95)',
-          border: '1px solid rgba(255,255,255,0.12)',
+          border: '1px solid rgba(207,202,183,0.12)',
           borderRadius: 4,
-          color: 'rgba(229,229,229,0.85)',
+          color: 'rgba(207,202,183,0.85)',
           cursor: 'pointer',
           fontFamily: 'var(--font-mono, ui-monospace, monospace)',
           fontSize: 11,
@@ -93,11 +93,11 @@ export function Sidebar({
         }}
         onMouseEnter={(e) => {
           e.currentTarget.style.background = 'rgba(40,40,40,0.95)';
-          e.currentTarget.style.color = '#fff';
+          e.currentTarget.style.color = '#CFCAB7';
         }}
         onMouseLeave={(e) => {
           e.currentTarget.style.background = 'rgba(20,20,20,0.95)';
-          e.currentTarget.style.color = 'rgba(229,229,229,0.85)';
+          e.currentTarget.style.color = 'rgba(207,202,183,0.85)';
         }}
       >
         {collapsed ? '›' : '‹'}
@@ -111,7 +111,7 @@ export function Sidebar({
           fontWeight: 400,
           lineHeight: 1,
           letterSpacing: '0.01em',
-          color: '#e5e5e5',
+          color: '#CFCAB7',
           margin: 0,
           marginBottom: 40,
           textTransform: 'uppercase',
@@ -176,7 +176,7 @@ function NavLink({ children, onClick, active }) {
       style={{
         background: 'none',
         border: 'none',
-        color: '#e5e5e5',
+        color: '#CFCAB7',
         cursor: 'pointer',
         fontSize: 12,
         fontWeight: 400,
@@ -231,9 +231,9 @@ function MetadataPanel({ metadata, transcription }) {
         <div
           style={{
             padding: '12px 14px',
-            background: 'rgba(255,255,255,0.05)',
+            background: 'rgba(207,202,183,0.05)',
             borderRadius: 4,
-            border: '1px solid rgba(255,255,255,0.08)',
+            border: '1px solid rgba(207,202,183,0.08)',
           }}
         >
           <Text variant="bodySmall" style={{ lineHeight: 1.6, opacity: 0.85 }}>
@@ -276,7 +276,7 @@ function AboutPanel() {
         style={{
           width: '100%',
           aspectRatio: '4 / 3',
-          border: '1px solid rgba(255,255,255,0.1)',
+          border: '1px solid rgba(207,202,183,0.1)',
           background: '#0a0a0a',
           position: 'relative',
           overflow: 'hidden',
@@ -302,7 +302,7 @@ function AboutPanel() {
             fontFamily: 'var(--font-mono)',
             fontSize: 9,
             letterSpacing: '0.12em',
-            color: 'rgba(255,255,255,0.55)',
+            color: 'rgba(207,202,183,0.55)',
             textTransform: 'uppercase',
           }}
         >
@@ -314,6 +314,7 @@ function AboutPanel() {
         What We Tell AI is a collection of anonymous notes people have written
         about their relationship with artificial intelligence.
       </Text>
+      
 
       <Text variant="bodySmall" style={{ lineHeight: 1.7, opacity: 0.75, fontSize: 13 }}>
         This anthropological art project documents AI&rsquo;s growing presence in
@@ -330,7 +331,7 @@ function AboutPanel() {
         style={{
           marginTop: 4,
           paddingTop: 16,
-          borderTop: '1px solid rgba(255,255,255,0.08)',
+          borderTop: '1px solid rgba(207,202,183,0.08)',
           display: 'flex',
           flexDirection: 'column',
           gap: 8,
@@ -358,9 +359,9 @@ function AboutPanel() {
               disabled={submitting}
               autoComplete="email"
               style={{
-                background: 'rgba(255,255,255,0.04)',
-                border: '1px solid rgba(255,255,255,0.15)',
-                color: '#e5e5e5',
+                background: 'rgba(207,202,183,0.04)',
+                border: '1px solid rgba(207,202,183,0.15)',
+                color: '#CFCAB7',
                 padding: '9px 10px',
                 fontSize: 12,
                 fontFamily: 'var(--font-mono)',
@@ -371,10 +372,10 @@ function AboutPanel() {
                 opacity: submitting ? 0.6 : 1,
               }}
               onFocus={(e) =>
-                (e.currentTarget.style.borderColor = 'rgba(255,255,255,0.4)')
+                (e.currentTarget.style.borderColor = 'rgba(207,202,183,0.4)')
               }
               onBlur={(e) =>
-                (e.currentTarget.style.borderColor = 'rgba(255,255,255,0.15)')
+                (e.currentTarget.style.borderColor = 'rgba(207,202,183,0.15)')
               }
             />
             <button
@@ -414,13 +415,13 @@ function AboutPanel() {
           <div
             style={{
               padding: '9px 10px',
-              background: 'rgba(255,255,255,0.04)',
-              border: '1px solid rgba(255,255,255,0.15)',
+              background: 'rgba(207,202,183,0.04)',
+              border: '1px solid rgba(207,202,183,0.15)',
               borderRadius: 3,
               fontFamily: 'var(--font-mono)',
               fontSize: 11,
               letterSpacing: '0.04em',
-              color: 'rgba(255,255,255,0.85)',
+              color: 'rgba(207,202,183,0.85)',
               lineHeight: 1.5,
             }}
           >
@@ -434,14 +435,14 @@ function AboutPanel() {
         style={{
           marginTop: 8,
           paddingTop: 16,
-          borderTop: '1px solid rgba(255,255,255,0.08)',
+          borderTop: '1px solid rgba(207,202,183,0.08)',
           display: 'flex',
           flexDirection: 'column',
           gap: 4,
           fontFamily: 'var(--font-mono)',
           fontSize: 10,
           letterSpacing: '0.08em',
-          color: 'rgba(255,255,255,0.45)',
+          color: 'rgba(207,202,183,0.45)',
         }}
       >
         <div>Project by Olivia</div>

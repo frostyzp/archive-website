@@ -4,6 +4,40 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>What We Tell AI</title>
+    <meta
+      name="description"
+      content="Anonymous handwritten notes about people's relationship with AI — an anthropological art project documenting its growing presence in the most intimate details of our lives."
+    />
+
+    <!-- Link-preview / social share card (Open Graph + Twitter). The image path
+         is root-relative so it resolves against whatever host serves the app —
+         Cloudflare/ngrok tunnel URLs change every session, so a hardcoded
+         absolute URL would go stale. Most chat apps (iMessage, Slack, Discord,
+         Telegram, WhatsApp) resolve relative og:image against the page URL. If
+         you ever deploy to a FIXED domain and want Facebook/LinkedIn previews
+         too, swap these to the absolute URL (e.g. https://your-domain/og-image.png). -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="What We Tell AI" />
+    <meta property="og:title" content="What We Tell AI" />
+    <meta
+      property="og:description"
+      content="Anonymous handwritten notes about people's relationship with AI — an anthropological art project documenting its growing presence in the most intimate details of our lives."
+    />
+    <meta property="og:image" content="/og-image.png" />
+    <meta property="og:image:type" content="image/png" />
+    <meta property="og:image:width" content="1024" />
+    <meta property="og:image:height" content="565" />
+    <meta property="og:image:alt" content="What We Tell AI — AI Confessions — Digital Archive" />
+
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="What We Tell AI" />
+    <meta
+      name="twitter:description"
+      content="Anonymous handwritten notes about people's relationship with AI — an anthropological art project documenting its growing presence in the most intimate details of our lives."
+    />
+    <meta name="twitter:image" content="/og-image.png" />
+    <meta name="twitter:image:alt" content="What We Tell AI — AI Confessions — Digital Archive" />
+
     <link rel="icon" id="favicon" type="image/png" href="/favicons/favicon_01.png" />
     <style>
       @font-face {
@@ -34,15 +68,24 @@
         font-style: normal;
         font-display: swap;
       }
+      @font-face {
+        font-family: 'TRJN DaVinci';
+        src: url('/TRJNDaVinci-Medium-Italic-Trial.otf') format('opentype');
+        font-weight: 500;
+        font-style: italic;
+        font-display: swap;
+      }
       :root {
         --font-primary: 'Faktory', Georgia, serif;
         --font-display: 'Faktory', Georgia, serif;
         --font-mono: 'Courier New', Courier, monospace;
+        --ink: #CFCAB7;
+        --ink-rgb: 207, 202, 183;
       }
       *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
       body {
         background: #0a0a0a;
-        color: #e5e5e5;
+        color: var(--ink);
         font-family: var(--font-primary);
         min-height: 100vh;
         -webkit-font-smoothing: antialiased;

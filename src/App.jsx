@@ -1,5 +1,11 @@
 import { useState, useMemo, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
-import { motion, AnimatePresence, useReducedMotion } from 'motion/react';
+import {
+  motion,
+  AnimatePresence,
+  useReducedMotion,
+  useMotionValue,
+  useSpring,
+} from 'motion/react';
 import { Text, TRANSCRIPTION_TEXT, TRANSCRIPTION_FONT_SIZE, VARIANTS } from './text';
 import OnboardingReveal from './OnboardingReveal';
 import { Sidebar, SIDEBAR_WIDTH } from './Sidebar';
@@ -15,14 +21,19 @@ import { deriveEmotions, sortConfessionsByEmotions, NEUTRAL_GRADIENT } from './t
 import { useConfessions } from './useConfessions';
 import {
   TunableGrainBackground,
-  CardNoiseFilterDefs,
+  noiseUrl,
   CARD_FILTER_ID,
+  CardNoiseFilterDefs,
   useInactiveCardParams,
 } from './noise';
+import { INK, inkA } from './colors';
 import { subscribeToKit } from './kit';
 import NoteOpenView, { TILE_PADDING } from './NoteOpenView';
 import { GridImageFilter, GRID_IMAGE_FILTER } from './NoiseDisplaceFilter';
 const ease = [0.22, 1, 0.36, 1];
+/** Shared hover / color / opacity transition curve (ease-out-quart). */
+const HOVER_EASE = 'cubic-bezier(0.17, 0.84, 0.44, 1)';
+const HOVER_EASE_ARR = [0.17, 0.84, 0.44, 1];
 
 // Matches grid breakpoints in this file; also drives archive top chrome layout.
 const ARCHIVE_NAV_COMPACT_MQ = '(max-width: 760px)';
@@ -38,6 +49,34 @@ function useArchiveNavCompact() {
     return () => mq.removeEventListener('change', onChange);
   }, []);
   return compact;
+}
+
+// Single-column phones. Together with ARCHIVE_NAV_COMPACT_MQ this mirrors the
+// grid's responsive column count exactly (see .confession-grid media queries):
+// 3 columns by default, 2 at ≤760px, 1 at ≤460px.
+const GRID_ONE_COL_MQ = '(max-width: 460px)';
+
+/** Live column count of the contact-sheet grid, so the lattice overlay can pin
+ *  its hairlines to the right cell edges (percentage-positioned to the cols×rows
+ *  tile grid). */
+function useGridColumns() {
+  const read = () => {
+    if (typeof window === 'undefined') return 3;
+    if (window.matchMedia(GRID_ONE_COL_MQ).matches) return 1;
+    if (window.matchMedia(ARCHIVE_NAV_COMPACT_MQ).matches) return 2;
+    return 3;
+  };
+  const [cols, setCols] = useState(read);
+  useEffect(() => {
+    const mqs = [
+      window.matchMedia(GRID_ONE_COL_MQ),
+      window.matchMedia(ARCHIVE_NAV_COMPACT_MQ),
+    ];
+    const onChange = () => setCols(read());
+    mqs.forEach((mq) => mq.addEventListener('change', onChange));
+    return () => mqs.forEach((mq) => mq.removeEventListener('change', onChange));
+  }, []);
+  return cols;
 }
 
 // Fixed wash behind archive top chrome (black → transparent) so labels stay
@@ -85,7 +124,7 @@ const ARCHIVE_NAV_CHROME_DELAY_GRID = GRID_NAV_VISIBLE_STAGGER + GRID_TILE_DURAT
 const ARCHIVE_NAV_TEXT = {
   ...VARIANTS.bodySmall,
   fontFamily: 'var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace)',
-  color: '#fff',
+  color: INK,
 };
 
 // Plain-text nav items read as hyperlinks, so they carry a persistent underline
@@ -104,7 +143,7 @@ const ARCHIVE_BRAND_MARK_STYLE = {
   lineHeight: 1.35,
   letterSpacing: '0.1em',
   textTransform: 'uppercase',
-  color: 'rgba(255,255,255,0.4)',
+  color: inkA(0.4),
 };
 
 /** Bottom-left wordmark + © on archive views (dial + grid). */
@@ -218,6 +257,45 @@ function ViewToggle({
   );
 }
 
+/** Hand-lettered "What We / Tell AI" wordmark button — the same outline art the
+ *  onboarding hero uses, dropped into the nav. Tapping it returns to the intro
+ *  onboarding. `logoHeight` lets the mobile chrome render it a touch smaller. */
+function WordmarkLogo({ onReturnToIntro, logoHeight = 48 }) {
+  return (
+    <button
+      type="button"
+      onClick={onReturnToIntro}
+      aria-label="What We Tell AI — return to the intro"
+      title="Return to the intro"
+      style={{
+        pointerEvents: 'auto',
+        background: 'none',
+        border: 'none',
+        margin: 0,
+        padding: '0 12px',
+        display: 'flex',
+        alignItems: 'center',
+        cursor: 'pointer',
+        opacity: 0.92,
+        transition: `opacity 0.28s ${HOVER_EASE}`,
+      }}
+      onMouseEnter={(e) => {
+        e.currentTarget.style.opacity = '1';
+      }}
+      onMouseLeave={(e) => {
+        e.currentTarget.style.opacity = '0.92';
+      }}
+    >
+      <img
+        src="/What%20We%20Tell%20AI.png"
+        alt="What We Tell AI"
+        draggable={false}
+        style={{ height: logoHeight, width: 'auto', display: 'block' }}
+      />
+    </button>
+  );
+}
+
 function SiteTitle({ entranceDelay = 0.2, onReturnToIntro }) {
   const compactNav = useArchiveNavCompact();
   if (compactNav) return null;
@@ -238,40 +316,7 @@ function SiteTitle({ entranceDelay = 0.2, onReturnToIntro }) {
         pointerEvents: 'none',
       }}
     >
-      {/* Hand-lettered "What We / Tell AI" wordmark — the same outline art the
-          onboarding hero uses, dropped into the nav at a compact size. Tapping
-          it returns to the intro onboarding. */}
-      <button
-        type="button"
-        onClick={onReturnToIntro}
-        aria-label="What We Tell AI — return to the intro"
-        title="Return to the intro"
-        style={{
-          pointerEvents: 'auto',
-          background: 'none',
-          border: 'none',
-          margin: 0,
-          padding: '0 12px',
-          display: 'flex',
-          alignItems: 'center',
-          cursor: 'pointer',
-          opacity: 0.92,
-          transition: 'opacity 0.28s ease',
-        }}
-        onMouseEnter={(e) => {
-          e.currentTarget.style.opacity = '1';
-        }}
-        onMouseLeave={(e) => {
-          e.currentTarget.style.opacity = '0.92';
-        }}
-      >
-        <img
-          src="/What%20We%20Tell%20AI.png"
-          alt="What We Tell AI"
-          draggable={false}
-          style={{ height: 48, width: 'auto', display: 'block' }}
-        />
-      </button>
+      <WordmarkLogo onReturnToIntro={onReturnToIntro} />
     </motion.div>
   );
 }
@@ -279,21 +324,22 @@ function SiteTitle({ entranceDelay = 0.2, onReturnToIntro }) {
 /* ─────────────────────────────────────────────────────────
  * ABOUT HOVER NOTE — storyboard (hover-driven, no timeline)
  *
- *   rest     torn-paper "?" note stowed up behind the word,
- *            tilted a touch further, fully transparent
+ *   rest     sketch note stowed up behind the word, tilted a
+ *            touch further, fully transparent
  *   hover →  the note drops down *from the word* (transform-
  *            origin top-right): it untilts toward its resting
  *            angle, scales up, and fades in
  *   leave →  everything springs back to rest
  *
- *   The note wears the same blur + grayscale + animated grain
- *   filter as inactive cards elsewhere (`url(#card-noise)`), so
- *   it reads as a degraded "placeholder" peek at the About page.
+ *   The asset carries its own grainy hand-drawn border + lines
+ *   (about-hover-note.png), with an extra inactive-card blur / grayscale /
+ *   animated grain pass on top (see useHoverPeekInactiveStyle).
+ *   Desktop only — the compact/touch top bar has no hover.
  * ───────────────────────────────────────────────────────── */
 const ABOUT_NOTE = {
-  src: '/about-note-placeholder.png', // torn-paper "?" placeholder (645×748)
-  width: 92, //            px — note width; height follows the aspect ratio
-  aspect: '645 / 748', //  native image ratio (portrait)
+  src: '/about-hover-note.png', // grainy sketch note (353×388)
+  width: 72, //            px — note width; height follows the aspect ratio
+  aspect: '353 / 388', //  native image ratio (portrait)
   gap: 12, //              px below the ABOUT word
   hidden: {
     opacity: 0,
@@ -310,30 +356,18 @@ const ABOUT_NOTE = {
   // Spring drives y / scale / rotate; opacity gets a quick ease so the note
   // "develops in" rather than sliding a visible ghost down the screen.
   spring: { type: 'spring', visualDuration: 0.34, bounce: 0.34 },
-  fade: { duration: 0.2, ease: [0.22, 1, 0.36, 1] },
+  fade: { duration: 0.2, ease: HOVER_EASE_ARR },
 };
 
 /**
- * Wraps the ABOUT button: hovering the word reveals a small torn-paper "?" note
- * that unfurls downward from the word (see ABOUT_NOTE storyboard). The note
- * carries the shared inactive-card noise filter. Reduced-motion keeps the
- * cross-fade but skips the drop / tilt / scale movement.
+ * Wraps the ABOUT button: hovering the word reveals a small grainy sketch note
+ * that unfurls downward from the word (see ABOUT_NOTE storyboard). Reduced-motion
+ * keeps the cross-fade but skips the drop / tilt / scale movement. Desktop only.
  */
 function AboutHoverNote({ children }) {
   const reduceMotion = useReducedMotion();
   const [hovered, setHovered] = useState(false);
-
-  // Exact filter chain inactive cards use: blur + grayscale + animated grain.
-  const inactive = useInactiveCardParams();
-  const noiseEnabled = inactive.noise?.enabled ?? true;
-  const noiseFilter =
-    [
-      inactive.blur > 0 ? `blur(${inactive.blur}px)` : '',
-      inactive.grayscale > 0 ? `grayscale(${inactive.grayscale})` : '',
-      noiseEnabled ? `url(#${CARD_FILTER_ID})` : '',
-    ]
-      .filter(Boolean)
-      .join(' ') || 'none';
+  const { filter, opacity, inactive } = useHoverPeekInactiveStyle();
 
   const target = hovered ? ABOUT_NOTE.rest : ABOUT_NOTE.hidden;
 
@@ -344,8 +378,6 @@ function AboutHoverNote({ children }) {
       onMouseLeave={() => setHovered(false)}
     >
       {children}
-      {/* Filter defs are global by id — mounted here so the note also works on
-          the grid, where the dial's copy of the defs isn't in the tree. */}
       <CardNoiseFilterDefs params={inactive} />
       <motion.div
         aria-hidden="true"
@@ -382,7 +414,8 @@ function AboutHoverNote({ children }) {
             height: '100%',
             objectFit: 'contain',
             display: 'block',
-            filter: noiseFilter,
+            opacity,
+            filter,
           }}
         />
       </motion.div>
@@ -398,6 +431,36 @@ function AboutHeader({ onClick, open, view, onChange, stacked = false, entranceD
   // ABOUT still shows. `view` is only passed to the desktop (non-stacked)
   // cluster, which is the only place these tabs render anyway.
   const showTabs = !stacked && view !== 'grid';
+
+  // ABOUT opens the panel. On desktop it's wrapped in the grainy sketch hover
+  // note (see AboutHoverNote); the compact/touch top bar keeps the plain button
+  // since there's no hover there.
+  const aboutButton = (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-expanded={open}
+      aria-label="Open about panel"
+      style={{
+        background: 'none',
+        border: 'none',
+        padding: '2px 4px',
+        ...ARCHIVE_NAV_TEXT,
+        ...ARCHIVE_LINK_UNDERLINE,
+        opacity: open ? 1 : 0.5,
+        cursor: 'pointer',
+        transition: `opacity 0.2s ${HOVER_EASE}`,
+      }}
+      onMouseEnter={(e) => {
+        if (!open) e.currentTarget.style.opacity = '0.8';
+      }}
+      onMouseLeave={(e) => {
+        if (!open) e.currentTarget.style.opacity = '0.5';
+      }}
+    >
+      ABOUT
+    </button>
+  );
   return (
     <motion.div
       initial={{ opacity: 0, y: -12 }}
@@ -433,32 +496,22 @@ function AboutHeader({ onClick, open, view, onChange, stacked = false, entranceD
           </ToggleButton>
         </>
       )}
-      <AboutHoverNote>
-        <button
-          type="button"
-          onClick={onClick}
-          aria-expanded={open}
-          aria-label="Open about panel"
-          style={{
-            background: 'none',
-            border: 'none',
-            padding: '2px 4px',
-            ...ARCHIVE_NAV_TEXT,
-            ...ARCHIVE_LINK_UNDERLINE,
-            opacity: open ? 1 : 0.5,
-            cursor: 'pointer',
-            transition: 'opacity 0.2s ease',
-          }}
-          onMouseEnter={(e) => {
-            if (!open) e.currentTarget.style.opacity = '0.8';
-          }}
-          onMouseLeave={(e) => {
-            if (!open) e.currentTarget.style.opacity = '0.5';
-          }}
-        >
-          ABOUT
-        </button>
-      </AboutHoverNote>
+      {/* When the full tab cluster is hidden (grid/INDEX view or the compact top
+          bar), keep a standalone INDEX next to ABOUT so it stays reachable.
+          Desktop upgrades it to a hover "deck of cards" that deals out the
+          section links (the tabs are hidden here); the compact/touch top bar
+          keeps the plain button since there's no hover. Both jump to the grid. */}
+      {!showTabs &&
+        (stacked ? (
+          <ToggleButton active={view === 'grid'} onClick={() => onChange?.('grid')}>
+            INDEX
+          </ToggleButton>
+        ) : (
+          <IndexMenu view={view} onChange={onChange} />
+        ))}
+      {/* Desktop reveals the torn-paper "?" hover note; the compact/touch top
+          bar keeps the plain ABOUT button (no hover). */}
+      {stacked ? aboutButton : <AboutHoverNote>{aboutButton}</AboutHoverNote>}
     </motion.div>
   );
 }
@@ -468,8 +521,11 @@ function AboutHeader({ onClick, open, view, onChange, stacked = false, entranceD
  * / ESC) both exit with opacity only — no scale or drift so it reads as a
  * simple dismiss. prefers-reduced-motion skips transforms on enter too.
  */
-function AboutModal({ open, onClose, noteThumbs = [] }) {
+function AboutModal({ open, onClose }) {
   const reduceMotion = useReducedMotion();
+  // Desktop docks the panel as a right-side drawer (matching NoteDrawer);
+  // phones (≤760) take the full screen.
+  const compact = useArchiveNavCompact();
 
   // Mailing-list signup state.
   const [email, setEmail] = useState('');
@@ -508,12 +564,13 @@ function AboutModal({ open, onClose, noteThumbs = [] }) {
   const BODY_FONT = "'Faktory', Georgia, serif";
   const MONO_FONT = 'var(--font-mono)';
 
-  // Torn strip of note thumbnails across the top — repeat/pad to a full row so
-  // it fills the width even when only a few confessions have loaded.
-  const STRIP_COUNT = 13;
-  const strip = Array.from({ length: STRIP_COUNT }, (_, i) =>
-    noteThumbs.length ? noteThumbs[i % noteThumbs.length] : null
-  );
+  // Torn strip of note thumbnails across the top. Fills the header width with
+  // as many thumbs as fit WITHOUT the last one clipping — measured live so it
+  // adapts to the desktop drawer vs the full-screen (mobile) width.
+  const STRIP_NOTE_W = 30; // px — each thumb card's width
+  const STRIP_GAP = 5; //     px — gap between cards (matches the row's `gap`)
+  const stripRef = useRef(null);
+  const [stripCount, setStripCount] = useState(0);
 
   useEffect(() => {
     if (!open) return;
@@ -524,7 +581,28 @@ function AboutModal({ open, onClose, noteThumbs = [] }) {
     return () => window.removeEventListener('keydown', onKey);
   }, [open, onClose]);
 
+  // Fit the torn strip: as many cards as the row can hold without the last one
+  // overflowing (a few px of headroom absorbs the cards' slight tilt so none
+  // clip). Re-measures on open and on resize (drawer ⇄ full-screen).
+  useLayoutEffect(() => {
+    if (!open) return undefined;
+    const el = stripRef.current;
+    if (!el) return undefined;
+    const fit = () => {
+      const w = el.clientWidth;
+      if (w <= 0) return;
+      const n = Math.floor((w + STRIP_GAP - 4) / (STRIP_NOTE_W + STRIP_GAP));
+      setStripCount(Math.max(1, n));
+    };
+    fit();
+    if (typeof ResizeObserver === 'undefined') return undefined;
+    const ro = new ResizeObserver(fit);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [open]);
+
   const easeOut = [0.165, 0.84, 0.44, 1];
+  const drawerEase = [0.23, 1, 0.32, 1];
 
   const backdropMotion = reduceMotion
     ? { initial: { opacity: 0 }, animate: { opacity: 1 }, exit: { opacity: 0 } }
@@ -534,8 +612,16 @@ function AboutModal({ open, onClose, noteThumbs = [] }) {
         exit: { opacity: 0, backdropFilter: 'blur(0px)' },
       };
 
+  // Mobile full-screen keeps the simple fade/scale pop; the desktop drawer
+  // slides in from the right edge (reverting to the pre-full-screen behavior).
   const panelMotion = reduceMotion
     ? { initial: { opacity: 0 }, animate: { opacity: 1 }, exit: { opacity: 0 } }
+    : compact
+    ? {
+        initial: { opacity: 0, scale: 0.985 },
+        animate: { opacity: 1, scale: 1 },
+        exit: { opacity: 0, scale: 0.985 },
+      }
     : { initial: { x: '100%' }, animate: { x: 0 }, exit: { x: '100%' } };
 
   return (
@@ -570,24 +656,32 @@ function AboutModal({ open, onClose, noteThumbs = [] }) {
           transition={
             reduceMotion
               ? { duration: 0.2, ease: easeOut }
-              : { type: 'spring', stiffness: 320, damping: 38, mass: 0.9 }
+              : compact
+              ? { duration: 0.32, ease: easeOut }
+              : { duration: 0.48, ease: drawerEase }
           }
           style={{
             position: 'fixed',
-            top: 0,
-            right: 0,
-            bottom: 0,
             zIndex: 1001,
-            width: 'min(460px, 92vw)',
             // Same base as the rest of the site (#111). The grain layer inside
             // paints over this, and the scrolling content sits above the grain.
             background: '#111',
-            borderLeft: '1px solid rgba(255,255,255,0.1)',
-            boxShadow: '-24px 0 60px rgba(0,0,0,0.5)',
-            color: '#e5e5e5',
+            color: '#CFCAB7',
             display: 'flex',
             flexDirection: 'column',
             overflow: 'hidden',
+            // Phones: full-screen takeover. Desktop: right-docked drawer
+            // (matches NoteDrawer) with an edge border + drop shadow.
+            ...(compact
+              ? { inset: 0 }
+              : {
+                  top: 0,
+                  right: 0,
+                  bottom: 0,
+                  width: 'min(460px, 92vw)',
+                  borderLeft: '1px solid rgba(207,202,183,0.1)',
+                  boxShadow: '-24px 0 60px rgba(0,0,0,0.5)',
+                }),
           }}
         >
           {/* Same base + grain as the rest of the site: an isolated #111 layer
@@ -615,30 +709,45 @@ function AboutModal({ open, onClose, noteThumbs = [] }) {
               minHeight: 0,
               overflowY: 'auto',
               overflowX: 'hidden',
-              padding: '16px 34px 40px',
               WebkitOverflowScrolling: 'touch',
+              // Column so the reading copy stacks above a full-bleed wordmark
+              // footer that gets pinned to the bottom (marginTop: auto).
+              display: 'flex',
+              flexDirection: 'column',
+            }}
+          >
+          {/* Reading column — centered + width-capped so the full-screen pop-up
+              doesn't stretch the copy edge-to-edge on wide viewports. */}
+          <div
+            style={{
+              flexShrink: 0,
+              width: '100%',
+              maxWidth: 640,
+              margin: '0 auto',
+              padding: '24px 34px 56px',
             }}
           >
           <style>{`
             .about-close {
               flex: 0 0 auto; display: inline-flex; align-items: center;
               justify-content: center; padding: 6px; margin: -6px; border: none;
-              background: none; color: rgba(229,229,229,0.8); cursor: pointer;
-              line-height: 0; transition: color 0.18s ease, transform 0.12s ease;
+              background: none; color: rgba(207,202,183,0.8); cursor: pointer;
+              line-height: 0; transition: color 0.18s ${HOVER_EASE}, transform 0.12s ${HOVER_EASE};
             }
-            .about-close:hover { color: #fff; }
+            .about-close:hover { color: #CFCAB7; }
             .about-close:active { transform: scale(0.9); }
             .about-contact-link {
-              display: inline-block; color: rgba(229,229,229,0.72);
+              display: inline-block; color: rgba(207,202,183,0.72);
               text-decoration: underline; text-decoration-thickness: 1px;
-              text-underline-offset: 3px; transition: color 0.18s ease;
+              text-underline-offset: 3px; transition: color 0.18s ${HOVER_EASE};
             }
-            .about-contact-link:hover { color: #fff; }
+            .about-contact-link:hover { color: #CFCAB7; }
           `}</style>
 
           {/* Torn strip of note thumbnails + a bare close X. */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 24 }}>
             <div
+              ref={stripRef}
               aria-hidden="true"
               style={{
                 flex: 1,
@@ -647,13 +756,13 @@ function AboutModal({ open, onClose, noteThumbs = [] }) {
                 flexDirection: 'row',
                 flexWrap: 'nowrap',
                 alignItems: 'center',
-                gap: 5,
+                gap: STRIP_GAP,
                 overflow: 'hidden',
                 paddingTop: 6,
                 paddingBottom: 2,
               }}
             >
-              {strip.map((_, i) => {
+              {Array.from({ length: stripCount }).map((_, i) => {
                 // Alternating tilt + a repeating height pattern so the row
                 // reads as a scatter of translucent notes rather than a grid.
                 // Laid out with a real gap so the cards never overlap.
@@ -664,7 +773,7 @@ function AboutModal({ open, onClose, noteThumbs = [] }) {
                     key={i}
                     style={{
                       flex: '0 0 auto',
-                      width: 30,
+                      width: STRIP_NOTE_W,
                       height,
                       transform: `rotate(${rot}deg)`,
                       borderRadius: 2,
@@ -691,7 +800,7 @@ function AboutModal({ open, onClose, noteThumbs = [] }) {
                 fontSize: 18,
                 lineHeight: 1.4,
                 letterSpacing: '0.01em',
-                color: 'rgba(229,229,229,0.9)',
+                color: 'rgba(200,200,200,0.9)',
               }}
             >
               What We Tell AI is a collection of anonymous notes people have
@@ -699,7 +808,7 @@ function AboutModal({ open, onClose, noteThumbs = [] }) {
               <span
                 style={{
                   textDecoration: 'underline',
-                  textDecorationColor: 'rgba(229,229,229,0.5)',
+                  textDecorationColor: 'rgba(207,202,183,0.5)',
                   textUnderlineOffset: '3px',
                 }}
               >
@@ -715,7 +824,7 @@ function AboutModal({ open, onClose, noteThumbs = [] }) {
                 fontSize: 18,
                 lineHeight: 1.4,
                 letterSpacing: '0.01em',
-                color: 'rgba(229,229,229,0.9)',
+                color: 'rgba(200,200,200,0.9)',
               }}
             >
               This anthropological art project documents AI&rsquo;s growing
@@ -725,7 +834,7 @@ function AboutModal({ open, onClose, noteThumbs = [] }) {
               <span
                 style={{
                   textDecoration: 'underline',
-                  textDecorationColor: 'rgba(229,229,229,0.5)',
+                  textDecorationColor: 'rgba(207,202,183,0.5)',
                   textUnderlineOffset: '3px',
                 }}
               >
@@ -770,15 +879,15 @@ function AboutModal({ open, onClose, noteThumbs = [] }) {
               style={{
                 marginTop: 24,
                 paddingTop: 20,
-                borderTop: '1px solid rgba(255,255,255,0.1)',
+                borderTop: '1px solid rgba(207,202,183,0.1)',
               }}
             >
               <style>{`
-                .about-subscribe input::placeholder { color: rgba(255,255,255,0.4); }
-                .about-subscribe input:focus { border-color: rgba(255,255,255,0.55); }
+                .about-subscribe input::placeholder { color: rgba(207,202,183,0.4); }
+                .about-subscribe input:focus { border-color: rgba(207,202,183,0.55); }
                 .about-subscribe button:hover:not(:disabled),
                 .about-subscribe button:focus-visible:not(:disabled) {
-                  background: #fff; border-color: #fff;
+                  background: #fff; border-color: #CFCAB7;
                 }
                 .about-subscribe button:disabled { opacity: 0.55; cursor: default; }
                 .about-subscribe input:disabled { opacity: 0.55; }
@@ -791,7 +900,7 @@ function AboutModal({ open, onClose, noteThumbs = [] }) {
                   fontSize: 18,
                   lineHeight: 1.4,
                   letterSpacing: '0.01em',
-                  color: 'rgba(229,229,229,0.9)',
+                  color: 'rgba(200,200,200,0.9)',
                 }}
               >
                 Join the mailing list
@@ -814,16 +923,16 @@ function AboutModal({ open, onClose, noteThumbs = [] }) {
                     style={{
                       flex: '1 1 200px',
                       minWidth: 0,
-                      background: 'rgba(255,255,255,0.04)',
-                      border: '1px solid rgba(255,255,255,0.22)',
+                      background: 'rgba(207,202,183,0.04)',
+                      border: '1px solid rgba(207,202,183,0.22)',
                       borderRadius: 4,
-                      color: '#e5e5e5',
+                      color: '#CFCAB7',
                       padding: '10px 12px',
                       fontFamily: 'var(--font-mono)',
                       fontSize: 12,
                       letterSpacing: '0.02em',
                       outline: 'none',
-                      transition: 'border-color 0.18s ease',
+                      transition: `border-color 0.18s ${HOVER_EASE}`,
                     }}
                   />
                   <button
@@ -840,7 +949,7 @@ function AboutModal({ open, onClose, noteThumbs = [] }) {
                       fontSize: 11,
                       letterSpacing: '0.12em',
                       cursor: 'pointer',
-                      transition: 'background 0.18s ease, border-color 0.18s ease',
+                      transition: `background 0.18s ${HOVER_EASE}, border-color 0.18s ${HOVER_EASE}`,
                     }}
                   >
                     {subscribing ? 'SUBSCRIBING…' : 'SUBSCRIBE'}
@@ -854,7 +963,7 @@ function AboutModal({ open, onClose, noteThumbs = [] }) {
                     fontFamily: BODY_FONT,
                     fontSize: 14,
                     lineHeight: 1.6,
-                    color: 'rgba(229,229,229,0.8)',
+                    color: 'rgba(207,202,183,0.8)',
                   }}
                 >
                   Thanks — check your inbox to confirm your subscription.
@@ -885,68 +994,91 @@ function AboutModal({ open, onClose, noteThumbs = [] }) {
                 fontFamily: MONO_FONT,
                 fontSize: 12,
                 letterSpacing: '0.06em',
-                color: 'rgba(229,229,229,0.5)',
+                color: 'rgba(207,202,183,0.5)',
               }}
             >
               © What We Tell AI 2026
             </p>
+          </div>
 
-            {/* Oversized wordmark watermark anchored to the foot of the panel. */}
+          {/* Oversized wordmark watermark — full-bleed footer pinned to the very
+              bottom of the scrolling panel. It sits OUTSIDE the centred reading
+              column (a direct child of the scroll area) so it spans the panel
+              edge-to-edge and parks the lockup in the bottom-right corner. */}
+          <div
+            aria-hidden="true"
+            style={{
+              marginTop: 'auto',
+              flexShrink: 0,
+              position: 'relative',
+              overflow: 'hidden',
+              paddingTop: 48,
+            }}
+          >
             <div
-              aria-hidden="true"
               style={{
-                marginTop: 'auto',
+                position: 'absolute',
+                left: 18,
+                bottom: 26,
+                width: 150,
+                height: 180,
+                border: '1px solid rgba(207,202,183,0.055)',
+                borderRadius: 2,
+                transform: 'rotate(-9deg)',
+              }}
+            />
+            <div
+              style={{
                 position: 'relative',
-                overflow: 'hidden',
-                marginLeft: -34,
-                marginRight: -34,
-                marginBottom: -20,
-                paddingTop: 48,
+                padding: '0 18px',
+                display: 'flex',
+                justifyContent: 'flex-end',
               }}
             >
-              <div
+              {/* Same hand-lettered outline wordmark as the nav + onboarding hero. */}
+              <img
+                src="/What%20We%20Tell%20AI.png"
+                alt=""
+                aria-hidden="true"
+                draggable={false}
                 style={{
-                  position: 'absolute',
-                  left: 18,
-                  bottom: 26,
-                  width: 150,
-                  height: 180,
-                  border: '1px solid rgba(255,255,255,0.055)',
-                  borderRadius: 2,
-                  transform: 'rotate(-9deg)',
+                  display: 'block',
+                  width: 'auto',
+                  height: 'clamp(110px, 30vw, 180px)',
+                  opacity: 0.9,
+                  userSelect: 'none',
                 }}
               />
-              <div
-                style={{
-                  position: 'relative',
-                  padding: '0 18px',
-                  display: 'flex',
-                  justifyContent: 'flex-end',
-                }}
-              >
-                {/* Brand lockup as an image, appended to the right. The art is a
-                    dark-grey lockup on solid black, so `screen` drops the black
-                    field and only the letterforms read as a faint watermark. */}
-                <img
-                  src="/about-wordmark.png"
-                  alt=""
-                  aria-hidden="true"
-                  draggable={false}
-                  style={{
-                    display: 'block',
-                    width: 'auto',
-                    height: 'clamp(110px, 30vw, 180px)',
-                    opacity: 0.7,
-                    // brightness lifts the near-black strokes; screen removes the
-                    // black background so no rectangle shows on the panel.
-                    filter: 'brightness(2.2)',
-                    mixBlendMode: 'screen',
-                    userSelect: 'none',
-                  }}
-                />
-              </div>
             </div>
           </div>
+          </div>
+
+          {/* Grain ON TOP of the copy: a single fine-noise tile blended (overlay)
+              over the scrolling content so the text picks up the same film-grain
+              texture instead of reading as clean type floating above it. A single
+              blended element (not a nested overlay) so it composites against the
+              panel's real backdrop — the blacks stay black; only the lit pixels
+              (the type) take the grain. Decorative + non-interactive. */}
+          <div
+            aria-hidden="true"
+            style={{
+              position: 'absolute',
+              inset: 0,
+              zIndex: 2,
+              pointerEvents: 'none',
+              backgroundImage: noiseUrl({
+                type: 'fractalNoise',
+                baseFrequency: 1.1,
+                numOctaves: 2,
+                seed: 7,
+                size: 200,
+              }),
+              backgroundSize: '200px 200px',
+              backgroundRepeat: 'repeat',
+              mixBlendMode: 'overlay',
+              opacity: 0.5,
+            }}
+          />
         </motion.aside>
       )}
     </AnimatePresence>
@@ -965,7 +1097,7 @@ function ToggleButton({ active, onClick, children }) {
         ...ARCHIVE_LINK_UNDERLINE,
         opacity: active ? 1 : 0.5,
         cursor: 'pointer',
-        transition: 'opacity 0.2s ease',
+        transition: `opacity 0.2s ${HOVER_EASE}`,
       }}
       onMouseEnter={(e) => {
         if (!active) e.currentTarget.style.opacity = 0.8;
@@ -976,6 +1108,329 @@ function ToggleButton({ active, onClick, children }) {
     >
       {children}
     </button>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────
+ * INDEX MENU — "fan open the deck" storyboard
+ *
+ * Hovering INDEX fans a small hand of grainy paper cards open
+ * below the button (per the provided design — /index-card-*.png).
+ * At rest the cards sit stacked square under the button's right
+ * edge; on hover they splay into a fan — pinned up near the
+ * button, bottoms spreading down-and-left — each swinging to its
+ * fan slot (x / y / rotate) + fading in, staggered like a dealer
+ * spreading a deck. Quick + springy. Anchored right so the fan
+ * never runs off the right edge of the viewport.
+ *
+ *   hover in ▸ fan open (button side → out)
+ *      0ms   DIAL  card swings to its slot + fades in
+ *     50ms   INDEX card  …  (stagger 50ms)
+ *    100ms   INTRO card  …
+ *   hover out ▸ cards collapse back into the stack (fast, reverse)
+ *
+ * Reduced motion: cards appear in their fanned slots — no travel.
+ * ───────────────────────────────────────────────────────── */
+const INDEX_MENU = {
+  gap: 12, //           px below the INDEX button the fan hangs
+  cardW: 56, //         px — paper-card width (matched to the INDEX word so the
+  cardH: 62, //         px — deck reads as small notes centered under the text)
+  stagger: 0.05, //     s between cards fanning out
+  exitStagger: 0.035, // s between cards collapsing back (reverse)
+  // Flick the fan open on a springy back-out ease — overshoots past the slot,
+  // then settles (the 1.27 control point is what gives the little bounce).
+  open: { duration: 0.42, ease: [0.18, 0.89, 0.32, 1.27] },
+  exit: { duration: 0.15, ease: [0.4, 0, 1, 1] },
+  closeDelayMs: 100, // grace period so button→card travel never flickers
+  // Collapsed stack (rest / hidden) — all cards share this, squared up under
+  // the button and centered on the text; the fan animates out from here.
+  collapsed: { opacity: 0, x: 0, y: -8, rotate: -3, scale: 0.9 },
+};
+
+// The archive's three views, rendered as the fanned paper cards (assets in
+// /public). `fan` is each card's resting slot { x, y, rotate } relative to the
+// fan's top-right anchor (INDEX's right edge); the fan opens down-and-left so it
+// stays on screen. INTRO leaves for the onboarding intro; the others switch view.
+const INDEX_MENU_ITEMS = [
+  { id: 'intro', label: 'INTRO', img: '/index-card-1.png', fan: { x: -40, y: 14, rotate: -18 } },
+  { id: 'grid', label: 'INDEX', img: '/index-card-2.png', fan: { x: 0, y: 0, rotate: -2 } },
+  { id: 'theme', label: 'DIAL', img: '/index-card-3.png', fan: { x: 38, y: 14, rotate: 16 } },
+];
+
+/* ─────────────────────────────────────────────────────────
+ * INDEX NOTE HOVER — 3D card tilt
+ *
+ *   rest   →  card sits flat in its fanned slot
+ *   hover  →  card leans toward the cursor + lifts a touch
+ *             · cursor x  →  rotateY  (turn left / right)
+ *             · cursor y  →  rotateX  (tip top back / forward)
+ *   leave  →  spring settles it back to flat
+ *
+ *   Kept slight (a peek of depth, not a flip). A per-card
+ *   `transformPerspective` keeps the 3D self-contained so the
+ *   fan's own 2D transform / drop-shadow can't flatten it.
+ * ───────────────────────────────────────────────────────── */
+const INDEX_CARD_TILT = {
+  maxYaw: 15, //       deg — rotateY at the card's left / right edge
+  maxPitch: 12, //     deg — rotateX at the card's top / bottom edge
+  perspective: 460, // px  — smaller reads as stronger 3D
+  lift: 1.06, //       scale pop that sells the "toward you" lean
+  spring: { stiffness: 260, damping: 20, mass: 0.5 },
+};
+
+/** Boost over the shared inactive-card dial defaults for nav hover peeks.
+ *  Tune here for About + INDEX hover images. Base inactive-card values
+ *  also live in the "Inactive Cards" DialKit panel (?dial=1). */
+const HOVER_PEEK_INACTIVE = {
+  blurMul: 0.2, //        × inactive-card blur (default dial: 4px → ~5px)
+  blurMin: 0.4, //         px floor even when dial blur is low
+  opacityMul: 0.92, //     × inactive-card opacity (lower = more faded)
+  opacityMax: 0.76, //     cap on peek opacity
+  displacementMul: 1.02, // × card-noise displacement warp
+  baseFrequencyMul: 1.0, // × card-noise grain density
+};
+
+/** Blur + grayscale + animated grain for About / Index hover peek images. */
+function useHoverPeekInactiveStyle() {
+  const inactive = useInactiveCardParams();
+  const noise = inactive.noise ?? {};
+  const noiseEnabled = noise.enabled ?? true;
+
+  const blur = Math.min(
+    16,
+    Math.max(HOVER_PEEK_INACTIVE.blurMin, (inactive.blur ?? 4) * HOVER_PEEK_INACTIVE.blurMul)
+  );
+  const grayscale = inactive.grayscale ?? 1;
+  const opacity = Math.min(
+    HOVER_PEEK_INACTIVE.opacityMax,
+    (inactive.opacity ?? 0.75) * HOVER_PEEK_INACTIVE.opacityMul
+  );
+  const filter =
+    [
+      blur > 0 ? `blur(${blur}px)` : '',
+      grayscale > 0 ? `grayscale(${grayscale})` : '',
+      noiseEnabled ? `url(#${CARD_FILTER_ID})` : '',
+    ]
+      .filter(Boolean)
+      .join(' ') || 'none';
+
+  const boostedParams = useMemo(() => {
+    const n = inactive.noise ?? {};
+    return {
+      ...inactive,
+      noise: {
+        ...n,
+        displacement: Math.min(40, (n.displacement ?? 14) * HOVER_PEEK_INACTIVE.displacementMul),
+        baseFrequency: Math.min(
+          3,
+          (n.baseFrequency ?? 1.1) * HOVER_PEEK_INACTIVE.baseFrequencyMul
+        ),
+      },
+    };
+  }, [inactive]);
+
+  return { filter, opacity, inactive: boostedParams };
+}
+
+/**
+ * One fanned "deck" card in the INDEX menu. Owns its own tilt springs so the
+ * card can lean toward the cursor in 3D on hover. The image wears a boosted
+ * inactive-card blur / grayscale / grain pass (see useHoverPeekInactiveStyle).
+ */
+function IndexMenuCard({ item, i, count, reduceMotion, active, onSelect, peekStyle }) {
+  const yaw = useMotionValue(0); //   rotateY (raw target from cursor x)
+  const pitch = useMotionValue(0); // rotateX (raw target from cursor y)
+  const rotateY = useSpring(yaw, INDEX_CARD_TILT.spring);
+  const rotateX = useSpring(pitch, INDEX_CARD_TILT.spring);
+
+  const fanned = {
+    opacity: 1,
+    x: item.fan.x,
+    y: item.fan.y,
+    rotate: item.fan.rotate,
+    scale: 1,
+  };
+
+  const handleTilt = useCallback(
+    (e) => {
+      if (reduceMotion) return;
+      const r = e.currentTarget.getBoundingClientRect();
+      // -0.5..0.5 across the card; leans toward the cursor.
+      const nx = (e.clientX - r.left) / r.width - 0.5;
+      const ny = (e.clientY - r.top) / r.height - 0.5;
+      yaw.set(nx * (INDEX_CARD_TILT.maxYaw * 2));
+      pitch.set(-ny * (INDEX_CARD_TILT.maxPitch * 2));
+    },
+    [reduceMotion, yaw, pitch]
+  );
+  const resetTilt = useCallback(() => {
+    yaw.set(0);
+    pitch.set(0);
+  }, [yaw, pitch]);
+
+  return (
+    <motion.button
+      type="button"
+      role="menuitem"
+      aria-label={item.label}
+      onClick={() => onSelect(item.id)}
+      onMouseMove={handleTilt}
+      onMouseLeave={resetTilt}
+      onBlur={resetTilt}
+      whileHover={reduceMotion ? undefined : { scale: INDEX_CARD_TILT.lift }}
+      initial={reduceMotion ? { ...fanned, opacity: 0 } : INDEX_MENU.collapsed}
+      animate={fanned}
+      exit={
+        reduceMotion
+          ? { opacity: 0, transition: { duration: 0.12 } }
+          : {
+              ...INDEX_MENU.collapsed,
+              transition: {
+                ...INDEX_MENU.exit,
+                delay: i * INDEX_MENU.exitStagger,
+              },
+            }
+      }
+      transition={
+        reduceMotion
+          ? { duration: 0.16 }
+          : { ...INDEX_MENU.open, delay: (count - 1 - i) * INDEX_MENU.stagger }
+      }
+      style={{
+        position: 'absolute',
+        top: INDEX_MENU.gap,
+        right: 0,
+        width: INDEX_MENU.cardW,
+        height: INDEX_MENU.cardH,
+        padding: 0,
+        border: 'none',
+        background: 'none',
+        cursor: 'pointer',
+        transformOrigin: 'top center',
+        zIndex: active ? 3 : 2,
+        filter: 'drop-shadow(0 10px 16px rgba(0,0,0,0.4))',
+      }}
+    >
+      {/* Inner tilt layer: cursor-tracked 3D lean around the card's own center,
+          with a self-contained perspective (unaffected by the button's fan
+          transform / drop-shadow). */}
+      <motion.div
+        style={{
+          width: '100%',
+          height: '100%',
+          rotateX,
+          rotateY,
+          transformPerspective: INDEX_CARD_TILT.perspective,
+        }}
+      >
+        <img
+          src={item.img}
+          alt=""
+          aria-hidden="true"
+          draggable={false}
+          style={{
+            position: 'absolute',
+            inset: 0,
+            width: '100%',
+            height: '100%',
+            objectFit: 'contain',
+            display: 'block',
+            opacity: peekStyle.opacity,
+            filter: peekStyle.filter,
+          }}
+        />
+      </motion.div>
+    </motion.button>
+  );
+}
+
+/**
+ * INDEX with a hover-revealed "deck of cards" menu of the archive's views.
+ * Desktop only (hover/focus); the trigger still clicks through to the grid.
+ */
+function IndexMenu({ view, onChange }) {
+  const reduceMotion = useReducedMotion();
+  const [open, setOpen] = useState(false);
+  const closeTimer = useRef(null);
+  const peekStyle = useHoverPeekInactiveStyle();
+
+  const cancelClose = useCallback(() => {
+    if (closeTimer.current) {
+      clearTimeout(closeTimer.current);
+      closeTimer.current = null;
+    }
+  }, []);
+  const openNow = useCallback(() => {
+    cancelClose();
+    setOpen(true);
+  }, [cancelClose]);
+  const scheduleClose = useCallback(() => {
+    cancelClose();
+    closeTimer.current = setTimeout(() => setOpen(false), INDEX_MENU.closeDelayMs);
+  }, [cancelClose]);
+  useEffect(() => cancelClose, [cancelClose]);
+
+  const go = useCallback(
+    (id) => {
+      setOpen(false);
+      if (id === 'intro') window.location.assign('/onboarding');
+      else onChange?.(id);
+    },
+    [onChange]
+  );
+
+  const count = INDEX_MENU_ITEMS.length;
+
+  return (
+    <div
+      style={{ position: 'relative', display: 'inline-flex' }}
+      onMouseEnter={openNow}
+      onMouseLeave={scheduleClose}
+      onFocusCapture={openNow}
+      onBlurCapture={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget)) scheduleClose();
+      }}
+    >
+      {/* Trigger — visually the same INDEX toggle; still jumps to the grid. */}
+      <ToggleButton active={view === 'grid'} onClick={() => onChange?.('grid')}>
+        INDEX
+      </ToggleButton>
+
+      {/* Fan anchor — a box pinned under the button's right edge that also
+          bridges the gap (hoverable while open, so travelling from the button
+          onto a card never crosses a dead zone). Cards are absolutely stacked
+          at its top-right and fan out via transform. */}
+      <div
+        role="menu"
+        aria-label="Sections"
+        style={{
+          position: 'absolute',
+          top: '100%',
+          right: 0,
+          width: 200,
+          height: 160,
+          zIndex: 220,
+          pointerEvents: open ? 'auto' : 'none',
+        }}
+      >
+        <CardNoiseFilterDefs params={peekStyle.inactive} />
+        <AnimatePresence>
+          {open &&
+            INDEX_MENU_ITEMS.map((item, i) => (
+              <IndexMenuCard
+                key={item.id}
+                item={item}
+                i={i}
+                count={count}
+                reduceMotion={reduceMotion}
+                active={item.id === view}
+                onSelect={go}
+                peekStyle={peekStyle}
+              />
+            ))}
+        </AnimatePresence>
+      </div>
+    </div>
   );
 }
 
@@ -1013,9 +1468,9 @@ const gridChipStyle = (active) => ({
   textTransform: 'uppercase',
   padding: '6px 13px',
   borderRadius: 999,
-  border: active ? '1px solid transparent' : '1px solid rgba(255,255,255,0.2)',
-  background: active ? 'rgba(255,255,255,0.92)' : 'rgba(255,255,255,0.05)',
-  color: active ? '#111' : 'rgba(255,255,255,0.72)',
+  border: active ? '1px solid transparent' : '1px solid rgba(207,202,183,0.2)',
+  background: active ? 'rgba(207,202,183,0.92)' : 'rgba(207,202,183,0.05)',
+  color: active ? '#111' : 'rgba(207,202,183,0.72)',
   cursor: 'pointer',
   whiteSpace: 'nowrap',
 });
@@ -1031,14 +1486,14 @@ const facetMenuButtonStyle = {
   fontWeight: 400,
   letterSpacing: '0.08em',
   textTransform: 'uppercase',
-  color: '#fff',
-  background: 'rgba(255,255,255,0.06)',
-  border: '1px solid rgba(255,255,255,0.18)',
+  color: '#CFCAB7',
+  background: 'rgba(207,202,183,0.1)',
+  border: '1px solid rgba(207,202,183,0.18)',
   borderRadius: 999,
   padding: '9px 16px',
   cursor: 'pointer',
   whiteSpace: 'nowrap',
-  transition: 'border-color 0.2s ease, background 0.2s ease',
+  transition: `border-color 0.2s ${HOVER_EASE}, background 0.2s ${HOVER_EASE}`,
 };
 
 /** Floating dropdown surface for the facet menu (see 2nd reference shot).
@@ -1055,7 +1510,7 @@ const facetMenuPanelStyle = {
   padding: 6,
   borderRadius: 14,
   background: 'rgba(26,22,24,0.97)',
-  border: '1px solid rgba(255,255,255,0.14)',
+  border: '1px solid rgba(207,202,183,0.14)',
   boxShadow: '0 18px 46px rgba(0,0,0,0.55)',
   backdropFilter: 'blur(14px)',
   WebkitBackdropFilter: 'blur(14px)',
@@ -1070,8 +1525,8 @@ const facetMenuItemStyle = (current) => ({
   padding: '9px 12px',
   borderRadius: 9,
   border: 'none',
-  background: current ? 'rgba(255,255,255,0.09)' : 'transparent',
-  color: current ? '#fff' : 'rgba(255,255,255,0.72)',
+  background: current ? 'rgba(207,202,183,0.09)' : 'transparent',
+  color: current ? INK : inkA(0.72),
   fontFamily: 'var(--font-mono)',
   fontSize: 12,
   letterSpacing: '0.12em',
@@ -1261,18 +1716,18 @@ function WallView({ confessions, sidebarInset = SIDEBAR_WIDTH }) {
         .canvas-scroll::-webkit-scrollbar { display: none; }
         .cstamp__img {
           filter: grayscale(0.25);
-          transition: transform 0.4s cubic-bezier(0.22,1,0.36,1), filter 0.35s ease;
+          transition: transform 0.4s cubic-bezier(0.22,1,0.36,1), filter 0.35s ${HOVER_EASE};
         }
         .cstamp:hover .cstamp__img { transform: scale(1.06); filter: grayscale(0); }
-        .cstamp__frame { transition: opacity 0.45s ease; }
+        .cstamp__frame { transition: opacity 0.45s ${HOVER_EASE}; }
         .cstamp__meta {
           opacity: 0;
           transform: translateY(3px);
-          transition: opacity 0.25s ease, transform 0.25s ease;
+          transition: opacity 0.25s ${HOVER_EASE}, transform 0.25s ${HOVER_EASE};
         }
         .cstamp:hover .cstamp__meta { opacity: 1; transform: translateY(0); }
-        .grid-chip { transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease; }
-        .grid-chip:not(.is-active):hover { border-color: rgba(255,255,255,0.45); color: #fff; }
+        .grid-chip { transition: background 0.2s ${HOVER_EASE}, color 0.2s ${HOVER_EASE}, border-color 0.2s ${HOVER_EASE}; }
+        .grid-chip:not(.is-active):hover { border-color: rgba(207,202,183,0.45); color: #CFCAB7; }
       `}</style>
 
       {/* Category filter chips (top-left). Click one to fade out notes that
@@ -1422,7 +1877,7 @@ function WallView({ confessions, sidebarInset = SIDEBAR_WIDTH }) {
                       fontFamily: 'var(--font-mono)',
                       fontSize: 10,
                       letterSpacing: '0.06em',
-                      color: 'rgba(255,255,255,0.78)',
+                      color: 'rgba(207,202,183,0.78)',
                     }}
                   >
                     No. {String(c.id).padStart(3, '0')}
@@ -1513,7 +1968,7 @@ const gridTileVariants = {
  * focus view. The top nav lives ABOVE the grid, so it stays put.
  *
  *    0ms   note clicked · bridge lifts off the tile (NoteOpenView)
- *    0ms   note tiles fade → 0 (scale 1 → 0.965, y 0 → 6px), rippling
+ *    0ms   note tiles fade → 0 (y 0 → 6px), rippling
  *          OUTWARD from the clicked tile — nearest first, ~160ms spread
  *    0ms   search + filter bar fades → 0
  * ~140ms   the note view's dark backdrop veils in over the emptied grid
@@ -1524,7 +1979,6 @@ const GRID_EXIT = {
   fadeOut: 0.34, //  s — per-tile opacity fade to 0
   fadeIn: 0.5, //    s — per-tile fade back in on return
   stagger: 0.16, //  s — max delay spread, rippling out from the clicked note
-  scaleTo: 0.965, // slight shrink as each note dissolves
   yTo: 6, //         px — tiny downward settle
   exitEase: [0.4, 0, 1, 1], //     ease-in: notes accelerate away
   enterEase: [0.16, 1, 0.3, 1], // ease-out: notes settle back on return
@@ -1553,7 +2007,15 @@ const filterBarScrim = (dir) =>
   ' rgba(17,17,17,0.04) 93%,' +
   ' rgba(17,17,17,0) 100%)';
 
-function GridView({ confessions, sidebarInset = SIDEBAR_WIDTH, onOpenNote, noteOpen = false }) {
+function GridView({
+  confessions,
+  sidebarInset = SIDEBAR_WIDTH,
+  onOpenNote,
+  noteOpen = false,
+  /** When true, skip the fly-in entrance (e.g. returning from dial → grid). */
+  skipEntrance = false,
+  onEntranceSettled,
+}) {
   const [selected, setSelected] = useState(null);
   const [query, setQuery] = useState('');
   const reduceMotion = useReducedMotion();
@@ -1561,6 +2023,8 @@ function GridView({ confessions, sidebarInset = SIDEBAR_WIDTH, onOpenNote, noteO
   // above the Category/Location tabs). On desktop it stays pinned to the
   // bottom with the search centred between the tabs.
   const compact = useArchiveNavCompact();
+  // Live grid column count (3 / 2 / 1) — positions the lattice hairlines.
+  const gridCols = useGridColumns();
   // Tiles whose image failed to load (file not yet on disk for that GlobalID).
   // We drop the whole tile rather than show a broken-image icon.
   const [failedIds, setFailedIds] = useState(() => new Set());
@@ -1660,8 +2124,10 @@ function GridView({ confessions, sidebarInset = SIDEBAR_WIDTH, onOpenNote, noteO
   const tileRefs = useRef(new Map());
   const offsetsRef = useRef(new Map());
   const flyCountRef = useRef(0);
-  const measuredRef = useRef(false);
-  const [entranceStage, setEntranceStage] = useState(reduceMotion ? 'settled' : 'measuring');
+  const measuredRef = useRef(skipEntrance);
+  const [entranceStage, setEntranceStage] = useState(
+    reduceMotion || skipEntrance ? 'settled' : 'measuring'
+  );
 
   // ── Grid exit — see GRID EXIT / DISSOLVE STORYBOARD above. On note-open the
   //    tiles fade out rippling OUTWARD from the clicked one; we snapshot each
@@ -1775,9 +2241,17 @@ function GridView({ confessions, sidebarInset = SIDEBAR_WIDTH, onOpenNote, noteO
       Math.max(0, flyCountRef.current - 1) * GRID_ENTRANCE.stagger * 1000 +
       GRID_ENTRANCE.duration * 1000 +
       120;
-    const t = setTimeout(() => setEntranceStage('settled'), total);
+    const t = setTimeout(() => {
+      setEntranceStage('settled');
+      onEntranceSettled?.();
+    }, total);
     return () => clearTimeout(t);
-  }, [entranceStage]);
+  }, [entranceStage, onEntranceSettled]);
+
+  // First paint with nothing to fly (or skipEntrance) — mark entrance done.
+  useEffect(() => {
+    if (entranceStage === 'settled' && measuredRef.current) onEntranceSettled?.();
+  }, [entranceStage, onEntranceSettled]);
 
   // Close the facet menu on outside click / Escape.
   useEffect(() => {
@@ -1872,6 +2346,62 @@ function GridView({ confessions, sidebarInset = SIDEBAR_WIDTH, onOpenNote, noteO
   const goPrev = useCallback(() => goRelative(-1), [goRelative]);
   const goNext = useCallback(() => goRelative(1), [goRelative]);
 
+  // Lattice reveal — the hairline grid is its OWN layer, so it animates apart
+  // from the tiles. It stays hidden for the entire fly-in and only draws on once
+  // the tiles have landed (entranceStage 'settled'), so the lattice appears
+  // AFTER the notes. Rather than a clip-path wipe, each grid line is a solid 1px
+  // <div> that draws on by scaling from one end (scaleY top→down for verticals,
+  // scaleX left→right for horizontals), staggered so the grid constructs itself.
+  // Solid lines (no stroke-dasharray), so they never read as dashed. Reduced
+  // motion shows it immediately.
+  const latticeDrawn = reduceMotion || skipEntrance || entranceStage === 'settled';
+
+  // Line geometry for the lattice. Each line is positioned by percentage on the
+  // overlay (which sits exactly over the tile grid), so it pins to a cell edge at
+  // any column count without measuring. We mirror the tile grid exactly —
+  // including a ragged last row — so lines only exist where a note sits: a
+  // vertical at column k runs full height only while a cell still sits beneath it
+  // in the last row; the bottom edge is as wide as the last row is full. The far
+  // right/bottom edge lines are pulled in 1px so the whole stroke stays inside.
+  const noteCount = visible.length;
+  const latticeRows = Math.max(1, Math.ceil(noteCount / gridCols));
+  const latticeLastRow = noteCount - (latticeRows - 1) * gridCols; // cells in last row
+  const latticeLines = useMemo(() => {
+    const rows = latticeRows;
+    const cols = gridCols;
+    const last = latticeLastRow;
+    const lines = [];
+    // Verticals stagger left→right; horizontals top→down. Spreads are bounded
+    // (a fraction of the count) so the draw stays snappy even for tall grids.
+    const V_SPREAD = 0.22;
+    const H_SPREAD = 0.34;
+    const BASE = 0.15; // beat after the tiles settle
+    for (let k = 0; k <= cols; k += 1) {
+      const yEnd = k <= last ? rows : rows - 1; // stop before the ragged last row
+      if (yEnd <= 0) continue;
+      lines.push({
+        key: `v${k}`,
+        axis: 'v',
+        main: k < cols ? `${(k / cols) * 100}%` : 'calc(100% - 1px)',
+        lenPct: (yEnd / rows) * 100,
+        delay: BASE + (cols ? (k / cols) * V_SPREAD : 0),
+      });
+    }
+    const topWidth = rows > 1 ? cols : last; // single partial row → top edge = last
+    for (let m = 0; m <= rows; m += 1) {
+      const xEnd = m === 0 ? topWidth : m === rows ? last : cols;
+      if (xEnd <= 0) continue;
+      lines.push({
+        key: `h${m}`,
+        axis: 'h',
+        main: m < rows ? `${(m / rows) * 100}%` : 'calc(100% - 1px)',
+        lenPct: (xEnd / cols) * 100,
+        delay: BASE + (rows ? (m / rows) * H_SPREAD : 0),
+      });
+    }
+    return lines;
+  }, [gridCols, latticeRows, latticeLastRow]);
+
   return (
     <motion.div
       key="grid-view"
@@ -1919,71 +2449,96 @@ function GridView({ confessions, sidebarInset = SIDEBAR_WIDTH, onOpenNote, noteO
       </div>
 
       <style>{`
-        /* Subtle contact-sheet lattice: the grid frames its top + left edge and
-           each tile draws its own right + bottom hairline, so adjacent cells
-           share a single line (no doubling) and it stays pixel-aligned to the
-           tiles at any column count. box-sizing keeps the 1px lines from nudging
-           the square tiles out of alignment. */
+        /* Contact-sheet lattice — the hairline grid. It lives on its OWN layer
+           (.grid-lattice), a sibling of the tiles rather than borders riding on
+           each flying tile, so the grid can draw on independently instead of
+           assembling out of the notes as they fly in. It's an overlay of solid
+           1px <div> lines (see GridView / latticeLines) positioned by percentage
+           onto the square-cell grid, so every line pins to a cell edge and draws
+           on by scaling from one end — solid strokes, never dashed. */
+        .grid-stack { position: relative; max-width: 1100px; margin: 0 auto; }
         .confession-grid {
+          position: relative;
+          z-index: 1;
           display: grid;
           grid-template-columns: repeat(3, minmax(0, 1fr));
-          max-width: 1100px;
-          margin: 0 auto;
-          border-top: 1px solid rgba(255, 255, 255, 0.07);
-          border-left: 1px solid rgba(255, 255, 255, 0.07);
         }
-        .grid-tile {
-          box-sizing: border-box;
-          border-right: 1px solid rgba(255, 255, 255, 0.07);
-          border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+        .grid-lattice {
+          position: absolute;
+          inset: 0;
+          z-index: 0;
+          pointer-events: none;
+          overflow: hidden;
         }
+        .grid-lattice-line {
+          position: absolute;
+          background: rgba(207, 202, 183, 0.07);
+        }
+        .grid-tile { box-sizing: border-box; transition: filter 0.4s ${HOVER_EASE}; }
+        /* Spotlight the note under the cursor: while the grid is hovered, gently
+           fade every other tile, then lift that treatment off the one actually
+           hovered so it stays crisp (its own scale/warp is handled inline).
+           Using filter: opacity() rather than plain opacity sidesteps the inline
+           opacity/transform Motion writes per tile, so no !important is needed;
+           the specificity of the :hover-inside-:hover rule restores the active
+           tile. All pure CSS group-hover — scrubbing 100+ tiles never re-renders
+           React. */
+        .confession-grid:hover .grid-tile { filter: opacity(0.8); }
+        .confession-grid:hover .grid-tile:hover { filter: none; }
         @media (max-width: 760px) {
           .confession-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
         }
         @media (max-width: 460px) {
           .confession-grid { grid-template-columns: 1fr; }
         }
-        .grid-search-input::placeholder { color: rgba(255,255,255,0.4); }
-        .grid-search-input:focus { border-color: rgba(255,255,255,0.5); }
-        .grid-chip { transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease; }
-        .grid-chip:not(.is-active):hover { border-color: rgba(255,255,255,0.45); color: #fff; }
-        .facet-menu-btn:hover { border-color: rgba(255,255,255,0.4); background: rgba(255,255,255,0.1); }
-        .facet-menu-item:hover { background: rgba(255,255,255,0.09); color: #fff; }
-        /* Metadata caption: note number (flush-left) + category (flush-right) on
-           one row, sitting in the strip below the note. Grey at rest, white on
-           hover. A small even inset hugs the tile's grid lines (rather than the
-           note's content box) so the two ends read as flush to the cell edges.
-           It fades in only once the whole grid has flown in — opacity is driven
-           inline by the entrance settled stage. Group-hover via CSS so hovering
-           100+ tiles never re-renders React. */
-        .grid-tile-cap {
+        .grid-search-input::placeholder { color: rgba(207,202,183,0.4); }
+        .grid-search-input:focus { border-color: rgba(207,202,183,0.5); }
+        /* The native search "clear" (✕) renders as a near-invisible dark glyph
+           on this dark input — replace it with a white ✕ drawn via inline SVG
+           (WebKit/Chromium only; this is where the type=search button lives). */
+        .grid-search-input::-webkit-search-cancel-button {
+          -webkit-appearance: none;
+          appearance: none;
+          height: 13px;
+          width: 13px;
+          cursor: pointer;
+          background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M5 5 L19 19 M19 5 L5 19' stroke='%23CFCAB7' stroke-width='2.6' stroke-linecap='round'/%3E%3C/svg%3E") center / contain no-repeat;
+        }
+        .grid-chip { transition: background 0.2s ${HOVER_EASE}, color 0.2s ${HOVER_EASE}, border-color 0.2s ${HOVER_EASE}; }
+        .grid-chip:not(.is-active):hover { border-color: rgba(207,202,183,0.45); color: #CFCAB7; }
+        .facet-menu-btn:hover { border-color: rgba(207,202,183,0.4); background: rgba(207,202,183,0.14); }
+        .facet-menu-item:hover { background: rgba(207,202,183,0.09); color: #CFCAB7; }
+        /* Metadata: note number top-left, category bottom-right only. Grey at
+           rest, ink on hover. Fades in once the grid entrance settles. */
+        .grid-tile-num,
+        .grid-tile-cat {
           position: absolute;
-          left: 10px;
-          right: 10px;
-          bottom: 8px;
-          display: flex;
-          align-items: baseline;
-          justify-content: space-between;
-          gap: 12px;
           font-family: var(--font-mono, ui-monospace, monospace);
-          font-size: 11px;
+          font-size: 13px;
           letter-spacing: 0.16em;
           text-transform: uppercase;
-          color: rgba(255,255,255,0.4);
-          transition: color 0.28s ease, opacity 0.5s ease 0.1s;
+          color: rgba(207,202,183,0.4);
+          transition: color 0.28s ${HOVER_EASE}, opacity 0.5s ${HOVER_EASE} 0.1s;
           pointer-events: none;
         }
-        .grid-tile-cap .cap-num { flex: 0 0 auto; }
-        .grid-tile-cap .cap-cat {
-          min-width: 0;
+        .grid-tile-num {
+          top: 8px;
+          left: 10px;
+        }
+        .grid-tile-cat {
+          bottom: 8px;
+          right: 10px;
+          max-width: calc(100% - 20px);
           text-align: right;
           white-space: nowrap;
           overflow: hidden;
           text-overflow: ellipsis;
         }
-        .grid-tile:hover .grid-tile-cap { color: #fff; }
+        .grid-tile:hover .grid-tile-num,
+        .grid-tile:hover .grid-tile-cat { color: #CFCAB7; }
         @media (prefers-reduced-motion: reduce) {
-          .grid-tile-cap { transition: none; }
+          .grid-tile-num, .grid-tile-cat { transition: none; }
+          .grid-tile { transition: none; }
         }
       `}</style>
 
@@ -2125,7 +2680,7 @@ function GridView({ confessions, sidebarInset = SIDEBAR_WIDTH, onOpenNote, noteO
                                   alignItems: 'center',
                                   justifyContent: 'center',
                                   border: `1px solid ${
-                                    opt.on ? 'rgba(255,255,255,0.9)' : 'rgba(255,255,255,0.4)'
+                                    opt.on ? 'rgba(207,202,183,0.9)' : 'rgba(207,202,183,0.4)'
                                   }`,
                                 }}
                               >
@@ -2159,16 +2714,16 @@ function GridView({ confessions, sidebarInset = SIDEBAR_WIDTH, onOpenNote, noteO
                 flex: compact ? '0 0 auto' : '0 1 440px',
                 width: compact ? '100%' : 'auto',
                 maxWidth: 440,
-                background: 'rgba(255,255,255,0.06)',
-                border: '1px solid rgba(255,255,255,0.18)',
+                background: 'rgba(207,202,183,0.1)',
+                border: '1px solid rgba(207,202,183,0.18)',
                 borderRadius: 999,
                 padding: '9px 16px',
-                color: '#fff',
+                color: '#CFCAB7',
                 fontFamily: 'var(--font-mono)',
                 fontSize: 13,
                 letterSpacing: '0.04em',
                 outline: 'none',
-                transition: 'border-color 0.2s ease',
+                transition: `border-color 0.2s ${HOVER_EASE}`,
               }}
             />
           </div>
@@ -2197,18 +2752,41 @@ function GridView({ confessions, sidebarInset = SIDEBAR_WIDTH, onOpenNote, noteO
               margin: '0 auto',
               paddingTop: 48,
               textAlign: 'center',
-              color: 'rgba(255,255,255,0.5)',
+              color: 'rgba(207,202,183,0.5)',
               fontFamily: 'var(--font-mono)',
               fontSize: 13,
               letterSpacing: '0.06em',
             }}
           >
-            <div>
-              {q ? (
-                <>No notes match &ldquo;{query.trim()}&rdquo;.</>
-              ) : (
-                'No notes match these filters.'
-              )}
+            <div
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 16,
+              }}
+            >
+              <img
+                src="/box-bg.png"
+                alt="AI Confessions installation"
+                draggable={false}
+                style={{
+                  width: 120,
+                  height: 'auto',
+                  flexShrink: 0,
+                  objectFit: 'contain',
+                  opacity: 0.55,
+                  filter: 'grayscale(0.3)',
+                }}
+              />
+              <span>
+                {q ? (
+                  <>No notes match &ldquo;{query.trim()}&rdquo;.</>
+                ) : (
+                  'No notes match these filters.'
+                )}
+              </span>
             </div>
             {anyFilterActive ? (
               <button
@@ -2218,7 +2796,7 @@ function GridView({ confessions, sidebarInset = SIDEBAR_WIDTH, onOpenNote, noteO
                   marginTop: 14,
                   background: 'none',
                   border: 'none',
-                  color: 'rgba(255,255,255,0.8)',
+                  color: 'rgba(207,202,183,0.8)',
                   fontFamily: 'var(--font-mono)',
                   fontSize: 12,
                   letterSpacing: '0.1em',
@@ -2233,7 +2811,51 @@ function GridView({ confessions, sidebarInset = SIDEBAR_WIDTH, onOpenNote, noteO
             ) : null}
           </div>
         ) : (
-          <div className="confession-grid">
+          <div className="grid-stack">
+            {/* Lattice layer — the hairline grid drawn on independently of the
+                tiles. Each line is a solid 1px <div> pinned to a cell edge by
+                percentage; it "draws on" by scaling from one end (top→down for
+                verticals, left→right for horizontals), staggered so the grid
+                constructs itself a beat after the notes land. No stroke-dasharray
+                anywhere, so the lines are always solid, never dashed. */}
+            <motion.div
+              className="grid-lattice"
+              aria-hidden="true"
+              initial={false}
+              animate={{ opacity: noteOpen ? 0 : 1 }}
+              transition={{
+                duration: reduceMotion
+                  ? 0
+                  : noteOpen
+                    ? GRID_EXIT.fadeOut
+                    : GRID_EXIT.fadeIn,
+                ease: noteOpen ? GRID_EXIT.exitEase : GRID_EXIT.enterEase,
+              }}
+            >
+              {latticeLines.map((ln) => {
+                const v = ln.axis === 'v';
+                return (
+                  <motion.div
+                    key={ln.key}
+                    className="grid-lattice-line"
+                    style={{
+                      transformOrigin: v ? 'top center' : 'left center',
+                      ...(v
+                        ? { top: 0, left: ln.main, width: 1, height: `${ln.lenPct}%` }
+                        : { left: 0, top: ln.main, height: 1, width: `${ln.lenPct}%` }),
+                    }}
+                    initial={v ? { scaleY: reduceMotion ? 1 : 0 } : { scaleX: reduceMotion ? 1 : 0 }}
+                    animate={v ? { scaleY: latticeDrawn ? 1 : 0 } : { scaleX: latticeDrawn ? 1 : 0 }}
+                    transition={
+                      latticeDrawn && !reduceMotion && !skipEntrance
+                        ? { duration: 0.6, ease: GRID_ENTRANCE.ease, delay: ln.delay }
+                        : { duration: 0 }
+                    }
+                  />
+                );
+              })}
+            </motion.div>
+            <div className="confession-grid">
             {visible.map((c, i) => {
               const d = offsetsRef.current.get(c.id) || GRID_TILE_REST;
               // Once the entrance has settled, the tile's motion is owned by the
@@ -2257,7 +2879,6 @@ function GridView({ confessions, sidebarInset = SIDEBAR_WIDTH, onOpenNote, noteO
                   settled
                     ? {
                         opacity: noteOpen ? 0 : 1,
-                        scale: noteOpen ? GRID_EXIT.scaleTo : 1,
                         y: noteOpen ? GRID_EXIT.yTo : 0,
                       }
                     : entranceStage
@@ -2276,7 +2897,11 @@ function GridView({ confessions, sidebarInset = SIDEBAR_WIDTH, onOpenNote, noteO
                     : undefined
                 }
                 onClick={(e) => {
-                  if (anyFilterActive || !onOpenNote) {
+                  // Mobile always uses the Lightbox overlay (the full-screen
+                  // note-open / dial view is a desktop treatment). On desktop we
+                  // also fall back to the Lightbox when a filter is active or no
+                  // open handler was provided.
+                  if (compact || anyFilterActive || !onOpenNote) {
                     setSelected(c);
                     return;
                   }
@@ -2313,13 +2938,11 @@ function GridView({ confessions, sidebarInset = SIDEBAR_WIDTH, onOpenNote, noteO
                     padding: TILE_PADDING,
                     boxSizing: 'border-box',
                     display: 'block',
-                    // At rest the tile is a clean, lightly-desaturated scan —
-                    // NO noise/displacement filter (it was a heavy wash across
-                    // the whole grid). The warp+grain is applied on hover only.
-                    filter: 'grayscale(0.2)',
+                    // At rest the tile is full colour — no grayscale. The noise +
+                    // displacement warp is applied on hover only.
                     // Filter isn't transitioned: swapping to/from the url() noise
                     // filter can't interpolate, so we apply it crisply on hover.
-                    transition: 'transform 0.4s ease',
+                    transition: `transform 0.3s ${HOVER_EASE}`,
                   }}
                   onMouseEnter={(e) => {
                     // Slight paper-tilt on hover; alternate direction per tile
@@ -2329,20 +2952,25 @@ function GridView({ confessions, sidebarInset = SIDEBAR_WIDTH, onOpenNote, noteO
                     e.currentTarget.style.transform = `scale(1.04) rotate(${
                       i % 2 === 0 ? -2 : 2
                     }deg)`;
-                    e.currentTarget.style.filter = `grayscale(0) ${GRID_IMAGE_FILTER}`;
+                    e.currentTarget.style.filter = GRID_IMAGE_FILTER;
                   }}
                   onMouseLeave={(e) => {
                     e.currentTarget.style.transform = 'scale(1) rotate(0deg)';
-                    e.currentTarget.style.filter = 'grayscale(0.2)';
+                    e.currentTarget.style.filter = 'none';
                   }}
                 />
-                <div className="grid-tile-cap" style={{ opacity: settled ? 1 : 0 }}>
-                  <span className="cap-num">{c.id}</span>
-                  {c.category ? <span className="cap-cat">{c.category}</span> : null}
-                </div>
+                <span className="grid-tile-num" style={{ opacity: settled ? 1 : 0 }}>
+                  {c.id}
+                </span>
+                {c.category ? (
+                  <span className="grid-tile-cat" style={{ opacity: settled ? 1 : 0 }}>
+                    {c.category}
+                  </span>
+                ) : null}
               </motion.div>
               );
             })}
+            </div>
           </div>
         )}
       </div>
@@ -2492,7 +3120,7 @@ function Lightbox({ confession, onClose, onPrev, onNext }) {
                         letterSpacing: '0.08em',
                         lineHeight: 1.45,
                         textTransform: 'uppercase',
-                        color: 'rgba(229,229,229,0.5)',
+                        color: 'rgba(207,202,183,0.5)',
                         whiteSpace: 'nowrap',
                       }}
                     >
@@ -2504,7 +3132,7 @@ function Lightbox({ confession, onClose, onPrev, onNext }) {
                         fontSize: TRANSCRIPTION_FONT_SIZE,
                         letterSpacing: '0.02em',
                         lineHeight: 1.45,
-                        color: 'rgba(229,229,229,0.85)',
+                        color: 'rgba(207,202,183,0.85)',
                         textAlign: 'right',
                       }}
                     >
@@ -2579,17 +3207,15 @@ function Lightbox({ confession, onClose, onPrev, onNext }) {
                   padding: 0;
                   border: none;
                   border-radius: 50%;
-                  background: rgba(255, 255, 255, 0.06);
-                  color: #e5e5e5;
+                  background: transparent;
+                  color: #CFCAB7;
                   opacity: 0.8;
                   cursor: pointer;
-                  -webkit-backdrop-filter: blur(4px);
-                  backdrop-filter: blur(4px);
-                  transition: opacity 0.2s ease, background 0.2s ease, transform 0.15s ease;
+                  transition: opacity 0.2s ${HOVER_EASE}, transform 0.15s ${HOVER_EASE};
                 }
                 .lb-nav--left { left: max(12px, 2.5vw); }
                 .lb-nav--right { right: max(12px, 2.5vw); }
-                .lb-nav:hover { opacity: 1; background: rgba(255, 255, 255, 0.16); }
+                .lb-nav:hover { opacity: 1; }
                 .lb-nav:active { transform: translateY(-50%) scale(0.92); }
               `}</style>
               <button
@@ -2695,13 +3321,13 @@ function NoteDrawer({ confession, onClose, onPrev, onNext }) {
     fontSize: 9,
     letterSpacing: '0.12em',
     textTransform: 'uppercase',
-    color: 'rgba(255,255,255,0.4)',
+    color: 'rgba(207,202,183,0.4)',
   };
   const valueStyle = {
     fontFamily: 'var(--font-mono)',
     fontSize: 11,
     letterSpacing: '0.02em',
-    color: 'rgba(229,229,229,0.85)',
+    color: 'rgba(207,202,183,0.85)',
   };
 
   return (
@@ -2746,7 +3372,7 @@ function NoteDrawer({ confession, onClose, onPrev, onNext }) {
             zIndex: 1001,
             width: 'min(440px, 92vw)',
             background: 'rgba(16, 13, 15, 0.985)',
-            borderLeft: '1px solid rgba(255,255,255,0.1)',
+            borderLeft: '1px solid rgba(207,202,183,0.1)',
             boxShadow: '-24px 0 60px rgba(0,0,0,0.5)',
             display: 'flex',
             flexDirection: 'column',
@@ -2760,12 +3386,12 @@ function NoteDrawer({ confession, onClose, onPrev, onNext }) {
             .nd-btn {
               width: 34px; height: 34px; flex: 0 0 auto;
               display: inline-flex; align-items: center; justify-content: center;
-              padding: 0; border: 1px solid rgba(255,255,255,0.12);
-              border-radius: 50%; background: rgba(255,255,255,0.04);
-              color: #e5e5e5; cursor: pointer; opacity: 0.85;
-              transition: opacity 0.18s ease, background 0.18s ease, transform 0.12s ease;
+              padding: 0; border: 1px solid rgba(207,202,183,0.12);
+              border-radius: 50%; background: rgba(207,202,183,0.04);
+              color: #CFCAB7; cursor: pointer; opacity: 0.85;
+              transition: opacity 0.18s ${HOVER_EASE}, background 0.18s ${HOVER_EASE}, transform 0.12s ${HOVER_EASE};
             }
-            .nd-btn:hover { opacity: 1; background: rgba(255,255,255,0.14); }
+            .nd-btn:hover { opacity: 1; background: rgba(207,202,183,0.14); }
             .nd-btn:active { transform: scale(0.92); }
           `}</style>
 
@@ -2818,7 +3444,7 @@ function NoteDrawer({ confession, onClose, onPrev, onNext }) {
                   style={{
                     marginTop: 18,
                     paddingTop: 14,
-                    borderTop: '1px solid rgba(255,255,255,0.1)',
+                    borderTop: '1px solid rgba(207,202,183,0.1)',
                     display: 'flex',
                     flexDirection: 'column',
                     gap: 9,
@@ -2839,7 +3465,7 @@ function NoteDrawer({ confession, onClose, onPrev, onNext }) {
               )}
 
               {transcription && (
-                <div style={{ marginTop: 18, paddingTop: 14, borderTop: '1px solid rgba(255,255,255,0.1)' }}>
+                <div style={{ marginTop: 18, paddingTop: 14, borderTop: '1px solid rgba(207,202,183,0.1)' }}>
                   <div style={{ ...labelStyle, marginBottom: 8 }}>Transcription</div>
                   <Text
                     variant="bodySmall"
@@ -2867,6 +3493,8 @@ function ThemeView({
   activeConfession,
   activeEmotionData,
   handleEmotionChange,
+  onReturnToIntro,
+  aboutOpen = false,
   sidebarInset = SIDEBAR_WIDTH,
   dialSize = BOTTOM_DIAL_SIZE,
   dialLabelInset = Math.round(BOTTOM_DIAL_SIZE * 0.232 + 40),
@@ -2972,6 +3600,9 @@ function ThemeView({
             onActiveChange={setActiveIndex}
             onImageClick={setLightboxConfession}
             mountEntrance={false}
+            showNavHint={!compact}
+            onReturnToIntro={onReturnToIntro}
+            navDisabled={aboutOpen || !!lightboxConfession}
           />
         </motion.div>
       </div>
@@ -3115,7 +3746,7 @@ function ArchiveLoading() {
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        color: 'rgba(255,255,255,0.6)',
+        color: 'rgba(207,202,183,0.6)',
         fontFamily: 'var(--font-mono, ui-monospace, monospace)',
         fontSize: 'clamp(13px, 1.9vw, 18px)',
         letterSpacing: '0.16em',
@@ -3156,12 +3787,6 @@ function ArchivePage({ confessionQuery, initialEmotion = null, initialView = 'th
     [confessions]
   );
 
-  // A torn strip of note thumbnails for the About panel header.
-  const aboutThumbs = useMemo(
-    () => confessions.filter((c) => c.image).slice(0, 16).map((c) => c.image),
-    [confessions]
-  );
-
   // Main content area: 'theme' (default) or 'grid' — controlled by the pill.
   // `initialView` lets a deep link (e.g. `/?view=grid`) open straight on a view.
   const [view, setView] = useState(initialView);
@@ -3179,6 +3804,8 @@ function ArchivePage({ confessionQuery, initialEmotion = null, initialView = 'th
   const [aboutOpen, setAboutOpen] = useState(false);
   // The note opened from the (unfiltered) grid → full-screen note-open view.
   const [openNote, setOpenNote] = useState(null);
+  // Grid fly-in runs once per session; returning from dial → grid stays settled.
+  const gridEntranceDoneRef = useRef(false);
   const compactNav = useArchiveNavCompact();
   const reduceMotion = useReducedMotion();
   const navChromeEntranceDelay = reduceMotion
@@ -3306,10 +3933,13 @@ function ArchivePage({ confessionQuery, initialEmotion = null, initialView = 'th
             pointerEvents: 'none',
           }}
         >
-          {/* View tabs hidden on the grid (INDEX) view — empty cell kept so
-              space-between still pins ABOUT to the right. */}
+          {/* View tabs are hidden on the grid (INDEX) view; the wordmark logo
+              takes the left cell there instead so the mobile index keeps a
+              top-left brand mark. Other views show the tabs. */}
           <div style={{ pointerEvents: 'auto', flexShrink: 0 }}>
-            {view !== 'grid' && (
+            {view === 'grid' ? (
+              <WordmarkLogo onReturnToIntro={onReturnToIntro} logoHeight={34} />
+            ) : (
               <ViewToggle
                 view={view}
                 onChange={setView}
@@ -3324,6 +3954,8 @@ function ArchivePage({ confessionQuery, initialEmotion = null, initialView = 'th
               onClick={() => setAboutOpen(true)}
               open={aboutOpen}
               stacked
+              view={view}
+              onChange={setView}
               entranceDelay={navChromeEntranceDelay}
             />
           </div>
@@ -3337,7 +3969,7 @@ function ArchivePage({ confessionQuery, initialEmotion = null, initialView = 'th
           entranceDelay={navChromeEntranceDelay}
         />
       )}
-      <AboutModal open={aboutOpen} onClose={() => setAboutOpen(false)} noteThumbs={aboutThumbs} />
+      <AboutModal open={aboutOpen} onClose={() => setAboutOpen(false)} />
       {/* Bottom-left wordmark + © — hidden on the grid/index, where SiteTitle
           already shows the wordmark top-left (the bottom mark was redundant). */}
       {view !== 'grid' ? (
@@ -3359,6 +3991,8 @@ function ArchivePage({ confessionQuery, initialEmotion = null, initialView = 'th
             activeConfession={activeConfession}
             activeEmotionData={activeEmotionData}
             handleEmotionChange={handleEmotionChange}
+            onReturnToIntro={onReturnToIntro}
+            aboutOpen={aboutOpen}
             sidebarInset={sidebarInset}
             dialSize={dialSize}
             dialLabelInset={dialLabelInset}
@@ -3374,6 +4008,10 @@ function ArchivePage({ confessionQuery, initialEmotion = null, initialView = 'th
             sidebarInset={sidebarInset}
             onOpenNote={(c, rect) => setOpenNote({ confession: c, rect })}
             noteOpen={!!openNote}
+            skipEntrance={gridEntranceDoneRef.current}
+            onEntranceSettled={() => {
+              gridEntranceDoneRef.current = true;
+            }}
           />
         )}
       </AnimatePresence>
@@ -3391,6 +4029,10 @@ function ArchivePage({ confessionQuery, initialEmotion = null, initialView = 'th
             emotions={emotions}
             onExit={() => setOpenNote(null)}
             onAbout={() => setAboutOpen(true)}
+            onIndex={() => {
+              setOpenNote(null);
+              setView('grid');
+            }}
           />
         )}
       </AnimatePresence>
@@ -3423,6 +4065,7 @@ export default function App() {
       {page === 'landing' && (
         <OnboardingReveal
           key="onboarding"
+          skipEntrance
           onEnter={() => {
             setArchiveView('grid');
             setPage('archive');

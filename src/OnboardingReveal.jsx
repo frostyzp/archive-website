@@ -1,5 +1,6 @@
 import { createElement, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion, useInView, useReducedMotion, useScroll, useSpring } from 'motion/react';
+import { INK, inkA } from './colors';
 import { TunableGrainBackground } from './noise';
 
 /* ─────────────────────────────────────────────────────────────────────
@@ -9,8 +10,8 @@ import { TunableGrainBackground } from './noise';
  * animates on a global clock — every block reveals itself the moment it
  * scrolls into view. Read top-to-bottom; each row is one block:
  *
- *   HERO      title "What We Tell AI" decays in word-by-word, the opening
- *             question fades in beneath it, a ↓ cue bounces
+ *   HERO      title "What We Tell AI" (Figma 280:71) reveals word-by-word in
+ *             TRJN DaVinci on two lines; opening question fades in beneath
  *   CUBE      the glowing cube fades in as its blur / grayscale filter
  *             resolves over ~1.9s, then the intro line reveals word-by-word
  *   BODY      "AI is quietly entering…" reveals word-by-word
@@ -65,6 +66,15 @@ const IMAGE = {
   ease,
 };
 
+/** Directional slide-in used by the confession notes (RevealImage's
+ *  `slideFrom`): they arrive from alternating sides with a slight tilt on the
+ *  shared ease-out, instead of developing in place. */
+const SLIDE = {
+  x: 80, //      px the note starts off to its side
+  rotate: 5, //  deg tilt it straightens out of
+  durS: 0.9, //  slide + settle duration
+};
+
 /**
  * Reveal a block just before it hits the vertical center, so you read it as
  * you "come across it." `once` keeps it revealed after (no re-hiding on scroll
@@ -78,8 +88,231 @@ const IN_VIEW = { once: true, margin: '0px 0px -24% 0px' };
  * written in the project's voice. Note stills reuse the archive's onboarding
  * WebPs in `public/confession_notes_2/`.
  */
+/** Hero title + opening question — timed as one sequence after the loader.
+ *  Title spec: Figma AI-CONFESSIONS-RAW node 280:71 (matches /What We Tell AI.png). */
 const OPENING_QUESTION =
   'What do you have to confess about your relationship with AI?';
+const HERO_TITLE = {
+  postLoaderDelayMs: 1000, // beat after the loader lifts (onboarding route)
+  mountDelayMs: 200, //      beat after mount when the loader is skipped (main site)
+  staggerMs: 100,
+  fadeMs: 620,
+  fontFamily: "'TRJN DaVinci', Georgia, serif",
+  fill: 'rgba(221, 221, 174, 0.2)', // #DDDDAE, translucent so the page grain reads through
+  stroke: '#393626',
+  strokeWidth: '0.01em',
+  fontSize: 'min(13vw, calc(66vh / 1.85))',
+  lineHeight: 0.94,
+  letterSpacing: '-0.03em', // Figma −10%
+  textAlign: 'center',
+  maxWidth: '96vw',
+  maxHeight: '66vh',
+  // Particle / noise filter (Figma 254:420): feTurbulence displaces the glyph
+  // edges into grain so the type reads as if it's made of / dissolving into noise.
+  noiseBaseFrequency: 0.92,
+  noiseOctaves: 2,
+  noiseScale: 8, //   px of edge displacement (grain coarseness)
+  noiseSeed: 7,
+  noiseAnimate: true, // crawl the seed so the grain is alive (film-grain boil)
+  noiseFps: 12, //      seed hops/sec (lower = chunkier flicker)
+};
+const HERO_TITLE_LINES = ['What We', 'Tell AI'];
+const HERO_QUESTION = {
+  fadeS: 0.65,
+};
+
+/** Opening question beneath the hero title — one opacity fade, not word-by-word. */
+function HeroOpeningQuestion({ hold = false, instant = false, style }) {
+  const ref = useRef(null);
+  const inView = useInView(ref, IN_VIEW);
+  const reduce = useReducedMotion();
+  const show = inView && !hold;
+
+  return (
+    <motion.p
+      ref={ref}
+      aria-label={OPENING_QUESTION}
+      initial={reduce || instant ? false : { opacity: 0 }}
+      animate={show ? { opacity: 1 } : undefined}
+      transition={{
+        duration: reduce || instant ? 0 : HERO_QUESTION.fadeS,
+        ease,
+      }}
+      style={{ margin: 0, ...style }}
+    >
+      {OPENING_QUESTION}
+    </motion.p>
+  );
+}
+
+/**
+ * Animated grain <filter> for the hero title. Crawls the feTurbulence seed on a
+ * ~30fps rAF clock so the glyph edges "boil" with living noise (same trick as
+ * the inactive-card grain in noise.jsx). Scoped to its own component so only
+ * this tiny subtree re-renders per frame, not the whole title. Respects
+ * prefers-reduced-motion (falls back to the static grain).
+ */
+function HeroNoiseFilter({ id, reduceMotion = false, strength = 1 }) {
+  const animate = HERO_TITLE.noiseAnimate && !reduceMotion;
+  const startRef = useRef(null);
+  if (startRef.current == null) {
+    startRef.current = typeof performance !== 'undefined' ? performance.now() : Date.now();
+  }
+  const [, setFrame] = useState(0);
+  useEffect(() => {
+    if (!animate) return undefined;
+    let raf;
+    let last = 0;
+    const interval = 1000 / 30;
+    const loop = (t) => {
+      raf = requestAnimationFrame(loop);
+      if (t - last < interval) return;
+      last = t;
+      setFrame((f) => (f + 1) % 1e6);
+    };
+    raf = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(raf);
+  }, [animate]);
+
+  const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+  const seed = animate
+    ? HERO_TITLE.noiseSeed + Math.floor(((now - startRef.current) / 1000) * HERO_TITLE.noiseFps)
+    : HERO_TITLE.noiseSeed;
+  const scale = HERO_TITLE.noiseScale * strength;
+  const baseFrequency = HERO_TITLE.noiseBaseFrequency * (0.7 + strength * 0.3);
+
+  return (
+    <svg
+      width="0"
+      height="0"
+      aria-hidden="true"
+      style={{ position: 'absolute', width: 0, height: 0, pointerEvents: 'none' }}
+    >
+      <defs>
+        <filter id={id} x="-15%" y="-15%" width="130%" height="130%">
+          <feTurbulence
+            type="fractalNoise"
+            baseFrequency={baseFrequency}
+            numOctaves={HERO_TITLE.noiseOctaves}
+            seed={seed}
+            stitchTiles="stitch"
+            result="noise"
+          />
+          <feDisplacementMap
+            in="SourceGraphic"
+            in2="noise"
+            scale={scale}
+            xChannelSelector="R"
+            yChannelSelector="G"
+          />
+        </filter>
+      </defs>
+    </svg>
+  );
+}
+
+/** "What We Tell AI" — Figma 280:71 via native TRJN DaVinci (not SVG paths). */
+function HeroTitleText({ hold = false, onRevealComplete, reduceMotion = false }) {
+  const ref = useRef(null);
+  const inView = useInView(ref, IN_VIEW);
+  const show = inView && !hold;
+  const words = HERO_TITLE_LINES.flatMap((line) => line.split(' '));
+  const staggerS = reduceMotion ? 0 : HERO_TITLE.staggerMs / 1000;
+  const durS = reduceMotion ? 0 : HERO_TITLE.fadeMs / 1000;
+  const revealDoneRef = useRef(false);
+  const onRevealCompleteRef = useRef(onRevealComplete);
+  onRevealCompleteRef.current = onRevealComplete;
+
+  useEffect(() => {
+    revealDoneRef.current = false;
+  }, [hold]);
+
+  useEffect(() => {
+    if (!show || revealDoneRef.current) return undefined;
+    const total = reduceMotion ? 0 : (words.length - 1) * HERO_TITLE.staggerMs + HERO_TITLE.fadeMs;
+    const id = setTimeout(() => {
+      revealDoneRef.current = true;
+      onRevealCompleteRef.current?.();
+    }, total);
+    return () => clearTimeout(id);
+  }, [show, reduceMotion, words.length]);
+
+  let wordIdx = 0;
+  const glyphStyle = {
+    color: 'transparent',
+    WebkitTextFillColor: HERO_TITLE.fill,
+    WebkitTextStroke: `${HERO_TITLE.strokeWidth} ${HERO_TITLE.stroke}`,
+    paintOrder: 'stroke fill',
+  };
+
+  const noiseId = `hero-title-noise-${useId().replace(/:/g, '')}`;
+
+  return (
+    <figure
+      ref={ref}
+      style={{
+        margin: 0,
+        display: 'flex',
+        justifyContent: 'center',
+        width: 'fit-content',
+        maxWidth: HERO_TITLE.maxWidth,
+      }}
+    >
+      <HeroNoiseFilter id={noiseId} reduceMotion={reduceMotion} />
+      <h1
+        aria-label="What We Tell AI"
+        style={{
+          margin: 0,
+          fontFamily: HERO_TITLE.fontFamily,
+          fontStyle: 'italic',
+          fontWeight: 500,
+          fontSize: HERO_TITLE.fontSize,
+          lineHeight: HERO_TITLE.lineHeight,
+          letterSpacing: HERO_TITLE.letterSpacing,
+          textAlign: HERO_TITLE.textAlign,
+          width: 'fit-content',
+          maxWidth: HERO_TITLE.maxWidth,
+          filter: `url(#${noiseId})`,
+          ...glyphStyle,
+        }}
+      >
+        {HERO_TITLE_LINES.map((line) => {
+          const lineWords = line.split(' ');
+          return (
+            <span
+              key={line}
+              style={{ display: 'block', textAlign: 'center', whiteSpace: 'nowrap' }}
+            >
+              {lineWords.map((w, wi) => {
+                const i = wordIdx;
+                wordIdx += 1;
+                return (
+                  <span key={`${line}-${w}`}>
+                    <motion.span
+                      aria-hidden="true"
+                      initial={reduceMotion ? false : { opacity: 0 }}
+                      animate={show ? { opacity: 1 } : undefined}
+                      transition={{
+                        duration: durS,
+                        ease,
+                        delay: show ? i * staggerS : 0,
+                      }}
+                      style={{ display: 'inline-block', ...glyphStyle }}
+                    >
+                      {w}
+                    </motion.span>
+                    {wi < lineWords.length - 1 ? ' ' : null}
+                  </span>
+                );
+              })}
+            </span>
+          );
+        })}
+      </h1>
+    </figure>
+  );
+}
+
 const INTRO_LINE =
   'We asked strangers to write a confession about their complex relationship with AI — artificial intelligence.';
 const BODY_LINE =
@@ -183,29 +416,12 @@ function RevealWords({
   );
 }
 
-/** Per-word underline: each word carries its own rule, but the spaces between
- *  words stay un-underlined so the line breaks at every gap. Used on the ENTER
- *  / SKIP text CTAs. */
-const WORD_UNDERLINE = {
-  textDecorationLine: 'underline',
-  textDecorationThickness: '1px',
-  textUnderlineOffset: '3px',
-};
-function UnderlineWords({ text }) {
-  return text.split(' ').map((w, i) => (
-    <span key={i}>
-      {i > 0 ? ' ' : ''}
-      <span style={WORD_UNDERLINE}>{w}</span>
-    </span>
-  ));
-}
-
 /**
  * A confession still (or the hero cube) that fades in WHILE a blur / grayscale
  * / brightness filter resolves over time — like a print developing. Driven by
  * scroll-into-view.
  */
-function RevealImage({ src, alt = '', width, maxHeight, aspectRatio, cfg = IMAGE, glow = false, serial, transcript, hold = false }) {
+function RevealImage({ src, alt = '', width, maxHeight, aspectRatio, cfg = IMAGE, glow = false, serial, transcript, hold = false, slideFrom }) {
   const ref = useRef(null);
   const inView = useInView(ref, IN_VIEW);
   const reduce = useReducedMotion();
@@ -214,13 +430,25 @@ function RevealImage({ src, alt = '', width, maxHeight, aspectRatio, cfg = IMAGE
   // image fades in once it's actually on screen, not hidden behind the loader.
   const show = inView && (decoded || reduce) && !hold;
 
-  const from = {
-    opacity: 0,
-    y: cfg.riseY ?? IMAGE.riseY,
-    scale: cfg.fromScale ?? IMAGE.fromScale,
-    filter: `blur(${cfg.fromBlur ?? IMAGE.fromBlur}px) grayscale(${cfg.fromGrayscale ?? IMAGE.fromGrayscale}) brightness(${cfg.fromBrightness ?? IMAGE.fromBrightness})`,
-  };
-  const to = { opacity: 1, y: 0, scale: 1, filter: 'blur(0px) grayscale(0) brightness(1)' };
+  // `slideFrom` swaps the develop-in-place fade for a directional slide: the
+  // note travels in from its side (x) while straightening out of a slight tilt
+  // (rotate), settling on the shared ease-out. The root clips overflow-x, so the
+  // off-side start never spawns a horizontal scrollbar.
+  const sliding = slideFrom === 'left' || slideFrom === 'right';
+  const dir = slideFrom === 'left' ? -1 : 1;
+
+  const from = sliding
+    ? { opacity: 0, x: dir * SLIDE.x, rotate: dir * SLIDE.rotate }
+    : {
+        opacity: 0,
+        y: cfg.riseY ?? IMAGE.riseY,
+        scale: cfg.fromScale ?? IMAGE.fromScale,
+        filter: `blur(${cfg.fromBlur ?? IMAGE.fromBlur}px) grayscale(${cfg.fromGrayscale ?? IMAGE.fromGrayscale}) brightness(${cfg.fromBrightness ?? IMAGE.fromBrightness})`,
+      };
+  const to = sliding
+    ? { opacity: 1, x: 0, rotate: 0 }
+    : { opacity: 1, y: 0, scale: 1, filter: 'blur(0px) grayscale(0) brightness(1)' };
+  const durS = sliding ? SLIDE.durS : (cfg.fadeS ?? IMAGE.fadeS);
 
   return (
     <figure
@@ -243,7 +471,7 @@ function RevealImage({ src, alt = '', width, maxHeight, aspectRatio, cfg = IMAGE
         onError={() => setDecoded(true)}
         initial={reduce ? false : from}
         animate={show ? to : undefined}
-        transition={{ duration: reduce ? 0 : cfg.fadeS ?? IMAGE.fadeS, ease, delay: reduce ? 0 : cfg.delayS ?? 0 }}
+        transition={{ duration: reduce ? 0 : durS, ease, delay: reduce ? 0 : cfg.delayS ?? 0 }}
         style={{
           display: 'block',
           // `maxHeight` → height-driven: contain the image within a viewport-tall
@@ -356,7 +584,7 @@ function PlaceholderBox({ width, aspectRatio = '1024 / 729', label = 'placeholde
         display: 'grid',
         placeItems: 'center',
         background: '#2a2a2a',
-        border: '1px solid rgba(255,255,255,0.08)',
+        border: '1px solid rgba(207,202,183,0.08)',
         borderRadius: 2,
       }}
     >
@@ -366,7 +594,7 @@ function PlaceholderBox({ width, aspectRatio = '1024 / 729', label = 'placeholde
           fontSize: 13,
           letterSpacing: '0.24em',
           textTransform: 'uppercase',
-          color: 'rgba(229,229,229,0.4)',
+          color: 'rgba(207,202,183,0.4)',
         }}
       >
         {label}
@@ -383,7 +611,7 @@ const TRANSCRIPT_STYLE = {
   fontSize: 13,
   lineHeight: 1.65,
   letterSpacing: '0.01em',
-  color: 'rgba(229, 229, 229, 0.72)',
+  color: 'rgba(207, 202, 183, 0.72)',
   textAlign: 'center',
 };
 
@@ -392,7 +620,7 @@ const SERIAL_STYLE = {
   fontSize: 10,
   letterSpacing: '0.24em',
   textTransform: 'uppercase',
-  color: 'rgba(229, 229, 229, 0.4)',
+  color: 'rgba(207, 202, 183, 0.4)',
 };
 
 /** A vertically-generous section so each block reveals as its own beat. */
@@ -501,7 +729,12 @@ function OpeningLoader({ onDone }) {
         position: 'fixed',
         inset: 0,
         zIndex: 200,
-        background: '#050404',
+        // Mirror the page's radial backdrop (same gradient as the root grain
+        // layer) rather than a flat black card. It's positioned identically
+        // (fixed, top-center ellipse), so when the loader crossfades out the
+        // background stays put and only the stills → hero swap underneath.
+        background:
+          'radial-gradient(ellipse 120% 80% at 50% 0%, #161515 0%, #0B0A0A 42%, #050404 74%, #010000 100%)',
         overflow: 'hidden',
         display: 'flex',
         alignItems: 'center',
@@ -589,10 +822,16 @@ function OpeningLoader({ onDone }) {
 
 export default function OnboardingReveal({
   onEnter = () => window.location.assign('/?view=grid'),
+  skipEntrance = false,
 } = {}) {
   const reduce = useReducedMotion();
+  // `skipEntrance` (main site) drops the 2s confession-still loader but KEEPS
+  // the hero title's particle fade-in. Reduced motion shows everything at rest.
+  const showLoader = !skipEntrance && !reduce;
   const rootRef = useRef(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(showLoader);
+  const [titleGate, setTitleGate] = useState(reduce);
+  const [heroTitleRevealed, setHeroTitleRevealed] = useState(reduce);
 
   // Thin top progress hairline for the whole scroll.
   const { scrollYProgress } = useScroll();
@@ -612,13 +851,28 @@ export default function OnboardingReveal({
     };
   }, [loading]);
 
+  // Start the hero title reveal: a beat after the loader lifts (onboarding
+  // route) or a shorter beat after mount (main site, no loader). Reduced motion
+  // is already at rest.
+  useEffect(() => {
+    if (reduce) return undefined;
+    if (loading) {
+      setTitleGate(false);
+      setHeroTitleRevealed(false);
+      return undefined;
+    }
+    const delay = skipEntrance ? HERO_TITLE.mountDelayMs : HERO_TITLE.postLoaderDelayMs;
+    const id = setTimeout(() => setTitleGate(true), delay);
+    return () => clearTimeout(id);
+  }, [loading, reduce, skipEntrance]);
+
   return (
     <div
       ref={rootRef}
       style={{
         position: 'relative',
         minHeight: '100vh',
-        color: '#e5e5e5',
+        color: '#CFCAB7',
         background: '#010000',
         overflowX: 'hidden',
       }}
@@ -666,7 +920,7 @@ export default function OnboardingReveal({
           height: 2,
           transformOrigin: '0% 50%',
           scaleX: progress,
-          background: 'linear-gradient(90deg, rgba(229,229,229,0.15), rgba(229,229,229,0.7))',
+          background: 'linear-gradient(90deg, rgba(207,202,183,0.15), rgba(207,202,183,0.7))',
           zIndex: 60,
         }}
       />
@@ -694,7 +948,7 @@ export default function OnboardingReveal({
           padding: '11px 20px',
           background: 'transparent',
           borderRadius: 999,
-          color: 'rgba(229,229,229,0.82)',
+          color: inkA(0.82),
           cursor: 'pointer',
           fontFamily: MONO,
           fontSize: 12.5,
@@ -707,13 +961,13 @@ export default function OnboardingReveal({
           transition: 'color 0.2s ease',
         }}
         onMouseEnter={(e) => {
-          e.currentTarget.style.color = '#fff';
+          e.currentTarget.style.color = INK;
         }}
         onMouseLeave={(e) => {
-          e.currentTarget.style.color = 'rgba(229,229,229,0.82)';
+          e.currentTarget.style.color = inkA(0.82);
         }}
       >
-        <UnderlineWords text="Skip Intro" />
+        <span>Skip Intro</span>
       </a>
 
       {/* Content column — a narrow editorial measure, centered on the page. */}
@@ -729,33 +983,22 @@ export default function OnboardingReveal({
       >
         {/* HERO */}
         <Beat minVh={100} style={{ paddingTop: 'clamp(24px, 6vh, 80px)', gap: 'clamp(26px, 5vh, 52px)' }}>
-          {/* Hero logo — the hand-lettered "What We Tell AI" outline art
-              (transparent PNG), shown as-is; soft fade / sharpen on entrance. */}
-          <RevealImage
-            src="/What%20We%20Tell%20AI.png"
-            alt="What We Tell AI"
-            maxHeight="80vh"
-            aspectRatio="2900 / 1709"
-            // Plain opacity fade, held until the opening loader lifts, then a
-            // 1s beat before it fades in — reads as arriving on the landing page.
-            hold={loading}
-            cfg={{ fadeS: 1.2, delayS: 1, riseY: 0, fromScale: 1, fromBlur: 0, fromGrayscale: 0, fromBrightness: 1 }}
+          <HeroTitleText
+            hold={loading || !titleGate}
+            reduceMotion={reduce}
+            onRevealComplete={() => setHeroTitleRevealed(true)}
           />
-          <RevealWords
-            text={OPENING_QUESTION}
-            as="p"
-            // Held until the loader lifts, then delayed to begin only after the
-            // hero logo has finished fading in (logo delay 1s + fade 1.2s).
-            hold={loading}
-            delayStart={reduce ? 0 : 2.2}
+          <HeroOpeningQuestion
+            hold={loading || !heroTitleRevealed}
+            instant={reduce}
             style={{
-              maxWidth: 460,
-              fontFamily: SERIF,
-              fontStyle: 'italic',
-              fontSize: 'clamp(17px, 2.4vw, 22px)',
+              maxWidth: 400,
+              fontFamily: "'Courier New', Courier, monospace",
+              fontSize: 'clamp(14px, 2vw, 18px)',
               lineHeight: 1.45,
               letterSpacing: '0.01em',
-              color: 'rgba(229,229,229,0.82)',
+              textTransform: 'uppercase',
+              color: 'rgba(207,202,183,0.82)',
             }}
           />
           <ScrollCue />
@@ -779,12 +1022,13 @@ export default function OnboardingReveal({
           />
         </Beat>
 
-        {/* NOTE ① */}
+        {/* NOTE ① — slides in from the right (notes alternate sides). */}
         <Beat>
           <RevealImage
             src={noteSrc(NOTES[0].id)}
             alt="Handwritten confession"
             transcript={NOTES[0].transcript}
+            slideFrom="right"
           />
         </Beat>
 
@@ -794,12 +1038,13 @@ export default function OnboardingReveal({
           <RevealWords text={BODY_LINE} as="h2" cfg={WORD_DISPLAY} style={FRAGMENT_STYLE} />
         </Beat>
 
-        {/* NOTE ② */}
+        {/* NOTE ② — slides in from the left. */}
         <Beat>
           <RevealImage
             src={noteSrc(NOTES[1].id)}
             alt="Handwritten confession"
             transcript={NOTES[1].transcript}
+            slideFrom="left"
           />
         </Beat>
 
@@ -808,12 +1053,13 @@ export default function OnboardingReveal({
           <RevealWords text="and even replacing our human relationships." as="h2" cfg={WORD_DISPLAY} style={FRAGMENT_STYLE} />
         </Beat>
 
-        {/* NOTE ③ */}
+        {/* NOTE ③ — back to the right, continuing the alternation. */}
         <Beat>
           <RevealImage
             src={noteSrc(NOTES[2].id)}
             alt="Handwritten confession"
             transcript={NOTES[2].transcript}
+            slideFrom="right"
           />
         </Beat>
 
@@ -832,12 +1078,11 @@ export default function OnboardingReveal({
             style={{
               maxWidth: 620,
               fontFamily: SERIF,
-              fontStyle: 'italic',
               fontWeight: 400,
               fontSize: 'clamp(26px, 4.4vw, 42px)',
               lineHeight: 1.28,
               letterSpacing: '0.005em',
-              color: '#f2f2f2',
+              color: INK,
             }}
           />
           <EnterButton onClick={onEnter} />
@@ -854,13 +1099,18 @@ const FRAGMENT_STYLE = {
   fontSize: 'clamp(30px, 6vw, 56px)',
   lineHeight: 1.15,
   letterSpacing: '-0.01em',
-  color: '#f2f2f2',
+  color: INK,
 };
 
 /** Bouncing ↓ cue in the hero; fades out once you start scrolling. */
+const SCROLL_CUE = {
+  noiseStrength: 0.45, // fraction of hero-title grain (lower = subtler)
+};
+
 function ScrollCue() {
   const reduce = useReducedMotion();
   const [gone, setGone] = useState(false);
+  const filterId = `scroll-cue-noise-${useId().replace(/:/g, '')}`;
   useEffect(() => {
     const onScroll = () => setGone(window.scrollY > 40);
     window.addEventListener('scroll', onScroll, { passive: true });
@@ -872,12 +1122,19 @@ function ScrollCue() {
       initial={{ opacity: 0 }}
       animate={{ opacity: gone ? 0 : 0.7 }}
       transition={{ duration: 0.9, ease, delay: reduce ? 0 : 1.6 }}
-      style={{ fontFamily: MONO, fontSize: 28, lineHeight: 1, color: 'rgba(229,229,229,0.7)' }}
+      style={{ lineHeight: 1 }}
     >
+      <HeroNoiseFilter id={filterId} reduceMotion={reduce} strength={SCROLL_CUE.noiseStrength} />
       <motion.span
         animate={reduce ? undefined : { y: [0, 9, 0] }}
         transition={{ duration: 1.6, repeat: Infinity, ease: 'easeInOut' }}
-        style={{ display: 'inline-block' }}
+        style={{
+          display: 'inline-block',
+          fontFamily: "'Courier New', Courier, monospace",
+          fontSize: 48,
+          color: 'rgba(207,202,183,0.7)',
+          filter: `url(#${filterId})`,
+        }}
       >
         &darr;
       </motion.span>
@@ -902,7 +1159,7 @@ function EnterButton({ onClick }) {
         background: 'transparent',
         border: 'none',
         borderRadius: 999,
-        color: '#fff',
+        color: '#CFCAB7',
         cursor: 'pointer',
         fontFamily: MONO,
         fontSize: 15,
@@ -910,7 +1167,7 @@ function EnterButton({ onClick }) {
         textTransform: 'uppercase',
       }}
     >
-      <UnderlineWords text="Enter the archive" />
+      <span>Enter the archive</span>
     </motion.button>
   );
 }

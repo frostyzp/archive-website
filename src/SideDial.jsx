@@ -1,11 +1,13 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { motion, useReducedMotion } from 'motion/react';
+import { useDialKit } from 'dialkit';
 import {
   CARD_FILTER_ID,
   CardNoiseFilterDefs,
   useInactiveCardParams,
 } from './noise.jsx';
-import { TRANSCRIPTION_TEXT, TRANSCRIPTION_FONT_SIZE } from './text';
+import { TRANSCRIPTION_TEXT } from './text';
 
 export const EMOTIONS = [
   { id: 'therapist', label: 'Therapist', gradient: 'linear-gradient(to left, #2a1a4a, #111 70%)' },
@@ -205,10 +207,10 @@ export function BottomCompassDial({
       const p = fadeProgressRef.current.get(emo.id) ?? (emo.id === active ? 1 : 0);
       const fontSize = baseFontSize + fontSizeBoost * p;
       const fontWeight = p > 0.5 ? 600 : 400;
-      // Inactive: rgba(255,255,255,0.28). Active: #e5e5e5 = rgb(229,229,229).
-      const r = Math.round(255 + (229 - 255) * p);
-      const g = Math.round(255 + (229 - 255) * p);
-      const b = Math.round(255 + (229 - 255) * p);
+      // Inactive: ink at 28% alpha. Active: full ink rgb(207,202,183).
+      const r = 207;
+      const g = 202;
+      const b = 183;
       const alpha = 0.28 + (1 - 0.28) * p;
       const inactiveAmt = 1 - p;
       ctx.save();
@@ -251,7 +253,7 @@ export function BottomCompassDial({
         const subPx = Math.max(10, Math.round(size * 0.021));
         const subY = fontSize * 0.5 + 6;
         ctx.font = `500 ${subPx}px "Courier New", Courier, monospace`;
-        ctx.fillStyle = `rgba(190,190,190,${0.38 + 0.4 * p})`;
+        ctx.fillStyle = `rgba(207,202,183,${0.38 + 0.4 * p})`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'top';
         ctx.fillText(sub, 0, subY);
@@ -614,6 +616,28 @@ export function getCategoryBreadcrumbInfo(confessions, activeConfession) {
   };
 }
 
+/**
+ * Which category the active note is in, out of ALL distinct categories in the
+ * set (ordered by first appearance) — drives the "n / total" CATEGORY counter
+ * on the stack page. (This counter used to live on the dial; it now sits with
+ * the note-index breadcrumb under the transcript instead.) Returns null when
+ * there's a single category, i.e. nothing to count against.
+ */
+export function getCategorySlotInfo(confessions, activeConfession) {
+  if (!activeConfession) return null;
+  const order = [];
+  const seen = new Set();
+  confessions.forEach((c) => {
+    if (seen.has(c.category)) return;
+    seen.add(c.category);
+    order.push(c.category);
+  });
+  const position = order.indexOf(activeConfession.category);
+  const total = order.length;
+  if (total <= 1 || position < 0) return null;
+  return { position, total, category: activeConfession.category };
+}
+
 /* ── Category slot counter (dial label) ──────────── */
 
 /* ── Horizontal Cards Stack ────────────────────── */
@@ -632,6 +656,9 @@ const EASE_OUT = [0.165, 0.84, 0.44, 1];
 const COPY_COUNT = 3;
 const MIDDLE_COPY = Math.floor(COPY_COUNT / 2);
 const INACTIVE_CARD_TOOLTIP = 'SCROLL OR CLICK TO VIEW';
+// Shown next to the cursor over the ACTIVE (centered) card, whose image click
+// opens the full note — the counterpart to the inactive "scroll or click" hint.
+const ACTIVE_CARD_TOOLTIP = 'VIEW NOTE';
 const INACTIVE_TOOLTIP_GAP = 12;
 // Conservative width so we flip before the label clips off-screen.
 const INACTIVE_TOOLTIP_EST_WIDTH = 220;
@@ -667,8 +694,8 @@ const TRANSCRIPT_REVEAL = {
  * Kept faint so the focus stays firmly on the centered note; neighbours are
  * just a hint of what's on either side. */
 const INACTIVE_OPACITY = {
-  near: 0.18, // directly left/right of the active note (ring 1)
-  far: 0.07, // two or more notes out (ring 2+)
+  near: 0.14, // directly left/right of the active note (ring 1)
+  far: 0.06, // two or more notes out (ring 2+)
 };
 
 // The active note's image is emphasised with a CSS transform scale. Because
@@ -715,6 +742,141 @@ const V_STACK_PAD_VH = (100 - CARD_HEIGHT_VH_MOBILE) / 2;
 // pure-black backdrop.
 const V_INACTIVE_OPACITY = { near: 0.46, far: 0.14 };
 
+const HOVER_EASE = 'cubic-bezier(0.17, 0.84, 0.44, 1)';
+
+// All chrome text in the confession stack (legend, DATE / LOCATION, transcript,
+// counters, tooltip) is set in Courier New — small + minimal — so the page reads
+// as a plain typewritten index. Kept local to this component; the dial canvas
+// and the rest of the site keep their own type. Falls back to the mono stack.
+const COURIER = '"Courier New", Courier, ui-monospace, SFMono-Regular, Menlo, monospace';
+
+// Keyboard-navigation mini guide for the confession stack.
+// Top-of-view keyboard legend for the dial. Each item is a label above a dark
+// key box: EXIT sits apart from the LEFT/RIGHT pair. The boxes show plain Courier
+// glyphs for the physical key — ESC for exit, A / D for left/right (A/D or the
+// arrow keys both flip through notes). Pressing the physical key — or clicking a
+// box — darkens that box (see `pressedKey` → `keyPressed`).
+const DIAL_NAV_ITEMS = [
+  { id: 'esc', label: 'EXIT', kind: 'exit', aria: 'Exit view (Esc)' },
+  { id: 'left', label: 'LEFT', kind: 'arrow', dir: 'left', aria: 'Previous note (A key)' },
+  { id: 'right', label: 'RIGHT', kind: 'arrow', dir: 'right', aria: 'Next note (D key)' },
+];
+
+export function DialNavHint({ pressedKey, onPress, onRelease, style }) {
+  return (
+    <div style={{ ...dialNavHintStyles.wrap, ...style }} aria-label="Keyboard navigation guide">
+      {DIAL_NAV_ITEMS.map((item) => {
+        const pressed = pressedKey === item.id;
+        return (
+          <div
+            key={item.id}
+            style={{
+              ...dialNavHintStyles.item,
+              // EXIT is set apart from the LEFT / RIGHT pair.
+              ...(item.id === 'left' ? dialNavHintStyles.itemPairStart : null),
+            }}
+          >
+            <span style={dialNavHintStyles.label}>{item.label}</span>
+            <button
+              type="button"
+              aria-label={item.aria}
+              onPointerDown={(e) => {
+                e.preventDefault();
+                onPress(item.id);
+              }}
+              onPointerUp={() => onRelease(item.id)}
+              onPointerLeave={() => onRelease(item.id)}
+              onPointerCancel={() => onRelease(item.id)}
+              style={{
+                ...dialNavHintStyles.key,
+                ...(item.kind === 'exit'
+                  ? dialNavHintStyles.keyExit
+                  : dialNavHintStyles.keyArrow),
+                ...(pressed ? dialNavHintStyles.keyPressed : null),
+              }}
+            >
+              <span style={dialNavHintStyles.keyGlyph}>
+                {item.kind === 'exit' ? 'ESC' : item.dir === 'left' ? 'A' : 'D'}
+              </span>
+            </button>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+const dialNavHintStyles = {
+  wrap: {
+    position: 'absolute',
+    // Sit in the header band just ABOVE the note area (anchored to this box's
+    // top edge, so it doesn't depend on the exact header inset) — clear of the
+    // DATE / LOCATION frame below and the wordmark / tabs to either side.
+    bottom: 'calc(100% + 10px)',
+    left: '50%',
+    transform: 'translateX(-50%)',
+    zIndex: 6,
+    display: 'flex',
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    // Gap within the LEFT / RIGHT pair; EXIT gets extra space (itemPairStart).
+    gap: 10,
+    pointerEvents: 'auto',
+    userSelect: 'none',
+  },
+  item: {
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'flex-start',
+    gap: 5,
+  },
+  itemPairStart: {
+    // Push the LEFT / RIGHT group away from EXIT so EXIT reads as separate.
+    marginLeft: 24,
+  },
+  label: {
+    fontFamily: COURIER,
+    fontSize: 8.5,
+    letterSpacing: '0.16em',
+    lineHeight: 1,
+    textTransform: 'uppercase',
+    color: 'rgba(207, 202, 183, 0.55)',
+    paddingLeft: 1,
+  },
+  key: {
+    height: 26,
+    padding: 0,
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 4,
+    background: 'rgba(210, 206, 190, 0.10)',
+    border: '1px solid rgba(207, 202, 183, 0.10)',
+    cursor: 'pointer',
+    WebkitTapHighlightColor: 'transparent',
+    transition:
+      `background 120ms ${HOVER_EASE}, transform 120ms ${HOVER_EASE}, border-color 120ms ${HOVER_EASE}, box-shadow 120ms ${HOVER_EASE}`,
+  },
+  keyExit: { width: 46 },
+  keyArrow: { width: 46 },
+  keyPressed: {
+    // Darken the box toward black on press, with a slight inset + sink.
+    background: 'rgba(0, 0, 0, 0.45)',
+    borderColor: 'rgba(207, 202, 183, 0.06)',
+    boxShadow: 'inset 0 1px 3px rgba(0, 0, 0, 0.55)',
+    transform: 'translateY(1px)',
+  },
+  keyGlyph: {
+    // ESC / <- / -> as plain Courier glyphs (typewriter arrows) so the legend
+    // reads as monospaced text rather than drawn icons.
+    fontFamily: COURIER,
+    fontSize: 12,
+    letterSpacing: '0.04em',
+    lineHeight: 1,
+    color: 'rgba(207, 202, 183, 0.82)',
+  },
+};
+
 export function HorizontalConfessionStack({
   confessions,
   activeIndex,
@@ -734,10 +896,23 @@ export function HorizontalConfessionStack({
   // note's transcript is suppressed, so a parent can place it elsewhere (the
   // note-open view pins it to the bottom of the screen instead).
   showInlineCounter = true,
+  // Desktop dial view: show the NAVIGATION ESC ← → pill inside this stack and
+  // wire ←/→ to step notes (Esc exits via onReturnToIntro). Off by default so
+  // other consumers (e.g. NoteOpenView) aren't affected.
+  showNavHint = false,
+  onReturnToIntro,
+  // When true, keyboard + chip nav is suppressed (about modal / note drawer).
+  navDisabled = false,
 }) {
   const scrollRef = useRef(null);
   const reduceMotion = useReducedMotion();
   const inactive = useInactiveCardParams();
+  // Live-tunable coverflow depth (Z recession on inactive cards). The per-side
+  // x-tilt (rotateY turn) was removed — side notes recede but stay flat / facing
+  // forward. Reveal with `?dial=1`; ramp range + ease are fixed.
+  const warp = useDialKit('Coverflow', {
+    depth: [110, 0, 260, 5], // px — translateZ recession at the screen edge
+  });
   const noiseEnabled = inactive.noise?.enabled ?? true;
   const inactiveFilter = [
     inactive.blur > 0 ? `blur(${inactive.blur}px)` : '',
@@ -756,8 +931,14 @@ export function HorizontalConfessionStack({
   // under the note) — same source as the dial's NOTES sub-label, so the two
   // agree. Null when the category has a single note, which hides the counter.
   const categoryInfo = getCategoryBreadcrumbInfo(confessions, confessions[activeIndex]);
+  // Which category (out of all distinct categories) the active note belongs to —
+  // the CATEGORY counter that used to sit on the dial now rides here, above the
+  // note-index breadcrumb. Null when there's only one category.
+  const categorySlot = getCategorySlotInfo(confessions, confessions[activeIndex]);
   const nRef = useRef(n);
   nRef.current = n;
+  // Cursor-following hint over a card: { x, y, label }. Inactive cards show the
+  // "scroll or click" hint; the active card shows "VIEW NOTE" over its image.
   const [inactiveTipPos, setInactiveTipPos] = useState(null);
   // Width (px) of the active image *as displayed* — its layout width times the
   // active scale transform. The meta/transcription block is pinned to this so
@@ -793,6 +974,56 @@ export function HorizontalConfessionStack({
     },
     []
   );
+  // Widest displayed note width across the whole set (px). The DATE / LOCATION
+  // frame above the active note is pinned to *this* (not the active note's own
+  // width) so the titles + the divider under them never reflow as you step
+  // between notes — the frame is sized once to "the longest a note could be"
+  // and only the values inside it change. We measure each image's natural
+  // aspect ratio once (cached) and mirror the `cardImageBox`/`cardImg`
+  // constraints: a height-capped box (min(46vh, 512px)) with object-fit
+  // contain, width capped at min(84vw, 560px), then the active scale + the same
+  // 0.8 inset `contentW` uses.
+  const [maxContentW, setMaxContentW] = useState(null);
+  const noteDimsRef = useRef(new Map());
+  useEffect(() => {
+    if (typeof window === 'undefined' || !confessions?.length) return undefined;
+    let cancelled = false;
+    const dims = noteDimsRef.current;
+    const recompute = () => {
+      if (cancelled) return;
+      const boxH = Math.min(
+        window.innerHeight * (CARD_HEIGHT_VH / 100),
+        CARD_HEIGHT_MAX
+      );
+      const boxMaxW = Math.min(
+        window.innerWidth * (CARD_WIDTH_VW / 100),
+        CARD_WIDTH_MAX
+      );
+      let widest = 0;
+      confessions.forEach((c) => {
+        const d = c.image && dims.get(c.image);
+        if (!d || !d.w || !d.h) return;
+        const layoutW = Math.min(boxH * (d.w / d.h), boxMaxW);
+        if (layoutW > widest) widest = layoutW;
+      });
+      if (widest > 0) setMaxContentW(Math.round(widest * ACTIVE_IMG_SCALE * 0.8));
+    };
+    confessions.forEach((c) => {
+      if (!c.image || dims.has(c.image)) return;
+      const img = new Image();
+      img.onload = () => {
+        dims.set(c.image, { w: img.naturalWidth, h: img.naturalHeight });
+        recompute();
+      };
+      img.src = c.image;
+    });
+    recompute();
+    window.addEventListener('resize', recompute);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('resize', recompute);
+    };
+  }, [confessions]);
   // Grain-hold: whenever the active note changes, keep the newly-active card's
   // grain for GRAIN_HOLD_MS, then clear it. useLayoutEffect (not useEffect) so
   // the "held" flag is set before paint — otherwise the first painted frame of
@@ -846,10 +1077,19 @@ export function HorizontalConfessionStack({
   const copyWidthRef = useRef(0);
   // Has the initial scroll into the middle copy happened yet?
   const hasInitialScrolledRef = useRef(false);
-  // Scroll-linked micro-rotation (deg) on card images; decays via rAF when idle.
+  // Scroll-linked micro-rotation (deg) on card images; decays via the tilt loop.
   const lastScrollLeftForRotateRef = useRef(null);
   const scrollRotateDegRef = useRef(0);
-  const scrollTiltDecayRafRef = useRef(null);
+  // Coverflow depth smoothing: a single rAF loop eases each card's depth (tz)
+  // toward its live geometric target instead of snapping per scroll event, so
+  // the recede glides on both drags and note changes. `tiltCurrentRef` holds each
+  // card's eased values keyed by its tilt-target node; `warpRef` mirrors the
+  // (dial-tunable) params so a loop frame captured on an earlier render still
+  // reads the latest targets.
+  const tiltRafRef = useRef(null);
+  const tiltLastTsRef = useRef(0);
+  const tiltCurrentRef = useRef(new WeakMap());
+  const warpRef = useRef({ depth: 0 });
   const updateCardTiltsRef = useRef(() => {});
 
   // Keep ref aligned with props on every render so useLayoutEffect (mount)
@@ -866,6 +1106,78 @@ export function HorizontalConfessionStack({
     activeIndexSourceRef.current = 'external';
     onActiveChange(i);
   };
+
+  // ── Keyboard navigation (desktop dial view) ─────────────────
+  const [pressedNavKey, setPressedNavKey] = useState(null);
+  const navRef = useRef({});
+  navRef.current = {
+    activeIndex,
+    count: n,
+    navDisabled,
+    onActiveChange,
+    onReturnToIntro,
+  };
+
+  const runNav = useCallback((id) => {
+    const {
+      activeIndex: i,
+      count,
+      navDisabled: blocked,
+      onActiveChange: setIdx,
+      onReturnToIntro: exit,
+    } = navRef.current;
+    if (blocked) return;
+    if (id === 'left') {
+      if (i > 0) setIdx(i - 1);
+    } else if (id === 'right') {
+      if (i < count - 1) setIdx(i + 1);
+    } else if (id === 'esc') {
+      exit?.();
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!showNavHint) return undefined;
+    // A / D flip through notes alongside the arrow keys (the legend shows A / D).
+    const keyToId = {
+      ArrowLeft: 'left', a: 'left', A: 'left',
+      ArrowRight: 'right', d: 'right', D: 'right',
+      Escape: 'esc',
+    };
+    const onKeyDown = (e) => {
+      const id = keyToId[e.key];
+      if (!id) return;
+      // Don't hijack A / D (or arrows) while typing in a field.
+      const t = e.target;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+      if (navRef.current.navDisabled) return;
+      if (id !== 'esc') e.preventDefault();
+      setPressedNavKey(id);
+      runNav(id);
+    };
+    const onKeyUp = (e) => {
+      const id = keyToId[e.key];
+      if (!id) return;
+      setPressedNavKey((cur) => (cur === id ? null : cur));
+    };
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+    };
+  }, [showNavHint, runNav]);
+
+  const handleNavPress = useCallback(
+    (id) => {
+      setPressedNavKey(id);
+      runNav(id);
+    },
+    [runNav]
+  );
+  const handleNavRelease = useCallback((id) => {
+    setPressedNavKey((cur) => (cur === id ? null : cur));
+  }, []);
 
   // ── Helpers ────────────────────────────────────────────────
 
@@ -906,7 +1218,7 @@ export function HorizontalConfessionStack({
   // center. Cards trace the TOP of a large semi-circle: the active
   // (centered) card sits at the apex; cards on the sides slide down along
   // the upper arc as they move outward. A subtle scroll-linked `rotate()` is
-  // applied on the image wrapper (see updateCardTilts). Done via direct DOM
+  // applied on the image wrapper (see applyTiltPass). Done via direct DOM
   // writes (not React state) so the transform tracks the user's scroll exactly
   // without an extra render per frame.
   const ARC_RADIUS = 2400;         // semi-circle radius in px — bigger = gentler arc
@@ -917,63 +1229,125 @@ export function HorizontalConfessionStack({
   // (each side ≥ 0.06 × maxCardHeight + ARC_DROP_MAX) so dropped cards
   // don't get clipped by the scroll container's overflow:hidden.
   const ARC_DROP_MAX = 0;
-  // 3D coverflow warp (cards turning to face a shared vanishing point) is
-  // temporarily disabled. To restore: re-add the WARP_* constants below and the
-  // rotateY/translateZ terms in the transform.
-  //   const WARP_MAX_ROTY = 32;     // deg a card reaches at the screen edge
-  //   const WARP_DEPTH = 96;        // px a card is pushed back at the screen edge
-  //   const WARP_RANGE_FRAC = 0.62; // viewport-width fraction the turn ramps over
-  const updateCardTilts = () => {
+  // 3D coverflow depth: side (inactive) cards recede in Z by distance from the
+  // viewport centre, so the flat strip gains a little depth toward the edges.
+  // (The per-side x-tilt / rotateY turn was removed — notes stay flat.) Depth is
+  // live-tunable via DialKit; ramp range and ease are fixed constants below.
+  const WARP_RANGE_FRAC = 0.62; // viewport-width fraction the recede ramps over
+  const WARP_EASE = 0.85; // ramp exponent (<1 = flat centre, steep edges)
+  // Frame-rate-independent easing time constants (seconds). TILT_TAU sets how
+  // quickly a card's depth chases its geometric target as the strip
+  // scrolls (smaller = snappier); ROT_TAU decays the scroll-momentum lean.
+  const TILT_TAU = 0.075;
+  const ROT_TAU = 0.11;
+  // Mirror the (dial-tunable) warp params so a running rAF frame — whose closure
+  // was captured on an earlier render — always eases toward the current targets.
+  warpRef.current = { depth: warp.depth };
+
+  // One tilt pass. `k` is the per-frame lerp fraction (0..1); k >= 1 snaps to
+  // target (immediate applies on mount / resize / dial change). Returns the
+  // largest remaining tilt delta so the loop can tell when it has settled.
+  const applyTiltPass = (k) => {
     const el = scrollRef.current;
-    if (!el) return;
+    if (!el) return 0;
     const cards = el.querySelectorAll('[data-card]');
-    if (cards.length === 0) return;
+    if (cards.length === 0) return 0;
+    const rm = reduceMotion;
+    const { depth } = warpRef.current;
     const containerCenter = el.scrollLeft + el.offsetWidth / 2;
-    const rot = reduceMotion ? 0 : scrollRotateDegRef.current;
+    const rot = rm ? 0 : scrollRotateDegRef.current;
+    const halfRange = Math.max(1, el.offsetWidth * WARP_RANGE_FRAC);
+    const r2 = ARC_RADIUS * ARC_RADIUS;
+    const store = tiltCurrentRef.current;
+    let maxDelta = 0;
     cards.forEach((card) => {
+      const tiltTarget = card.querySelector('[data-tilt-target]');
+      if (!tiltTarget) return;
       const cardCenter = card.offsetLeft + card.offsetWidth / 2;
       const distPx = cardCenter - containerCenter;
 
       // Vertical drop along the upper arc of a circle of radius ARC_RADIUS.
-      // y = R - sqrt(R² - x²) — the classic "rise over run" of a circle's
-      // arc relative to its peak. Capped so cards far past the viewport
-      // edges don't free-fall.
-      const r2 = ARC_RADIUS * ARC_RADIUS;
+      // y = R - sqrt(R² - x²) — the classic "rise over run" of a circle's arc
+      // relative to its peak. Capped so far cards don't free-fall.
       const dropRaw = ARC_RADIUS - Math.sqrt(Math.max(0, r2 - distPx * distPx));
-      const drop = Math.min(ARC_DROP_MAX, dropRaw);
+      const dropT = Math.min(ARC_DROP_MAX, dropRaw);
 
-      // 3D coverflow warp (rotateY/translateZ) temporarily disabled:
-      //   const halfRange = Math.max(1, el.offsetWidth * WARP_RANGE_FRAC);
-      //   const tRaw = Math.max(-1, Math.min(1, distPx / halfRange));
-      //   const tEased = Math.sign(tRaw) * Math.pow(Math.abs(tRaw), 0.85);
-      //   const rotY = reduceMotion ? 0 : -tEased * WARP_MAX_ROTY;
-      //   const tz = reduceMotion ? 0 : -Math.abs(tEased) * WARP_DEPTH;
+      // Coverflow depth: side cards recede in Z by distance from centre (no
+      // rotateY turn — tilt-x removed). pow(<1) keeps the centre near-flat and
+      // steepens the recession toward the edges.
+      const tRaw = Math.max(-1, Math.min(1, distPx / halfRange));
+      const tEased = Math.sign(tRaw) * Math.pow(Math.abs(tRaw), WARP_EASE);
+      const tzT = rm ? 0 : -Math.abs(tEased) * depth;
 
-      const tiltTarget = card.querySelector('[data-tilt-target]');
-      if (tiltTarget) {
-        tiltTarget.style.transform =
-          `translateY(${drop.toFixed(2)}px) rotate(${rot.toFixed(2)}deg)`;
+      let cur = store.get(tiltTarget);
+      if (!cur) {
+        // First sighting of this card: start already on target (no glide-in).
+        cur = { tz: tzT, drop: dropT };
+        store.set(tiltTarget, cur);
       }
+      if (k >= 1) {
+        cur.tz = tzT;
+        cur.drop = dropT;
+      } else {
+        const dZ = tzT - cur.tz;
+        const dD = dropT - cur.drop;
+        cur.tz += dZ * k;
+        cur.drop += dD * k;
+        // Depth (tz) drives the settle test; it's large-valued so scale its
+        // contribution down, drop is tiny so counts as-is.
+        const d = Math.max(Math.abs(dZ) * 0.1, Math.abs(dD));
+        if (d > maxDelta) maxDelta = d;
+      }
+      // translateZ (push back) = the coverflow depth; translateY/rotate carry the
+      // arc-drop + scroll-momentum spin. No rotateY — the notes stay flat.
+      tiltTarget.style.transform =
+        `translateY(${cur.drop.toFixed(2)}px) translateZ(${cur.tz.toFixed(2)}px) rotate(${rot.toFixed(2)}deg)`;
     });
+    return maxDelta;
   };
-  updateCardTiltsRef.current = updateCardTilts;
 
-  /** After a scroll impulse, ease `scrollRotateDegRef` back to 0 so the strip settles straight. */
-  const startScrollTiltDecay = () => {
-    if (reduceMotion) return;
-    if (scrollTiltDecayRafRef.current != null) return;
-    const tick = () => {
-      if (Math.abs(scrollRotateDegRef.current) < 0.04) {
-        scrollRotateDegRef.current = 0;
-        updateCardTiltsRef.current();
-        scrollTiltDecayRafRef.current = null;
-        return;
-      }
-      scrollRotateDegRef.current *= 0.88;
-      updateCardTiltsRef.current();
-      scrollTiltDecayRafRef.current = requestAnimationFrame(tick);
-    };
-    scrollTiltDecayRafRef.current = requestAnimationFrame(tick);
+  // Immediate (un-eased) apply — mount / resize / dial change want the tilt to
+  // be correct on the very next paint, not glide in from wherever it was.
+  const applyTiltsImmediate = () => {
+    applyTiltPass(1);
+  };
+  updateCardTiltsRef.current = applyTiltsImmediate;
+
+  const tiltLoop = (ts) => {
+    let dt = (ts - (tiltLastTsRef.current || ts)) / 1000;
+    tiltLastTsRef.current = ts;
+    if (!(dt > 0)) dt = 1 / 60;
+    if (dt > 0.1) dt = 0.1; // clamp long gaps (tab away) so nothing lurches
+    // Decay the scroll-momentum lean back toward straight.
+    if (!reduceMotion && Math.abs(scrollRotateDegRef.current) >= 0.02) {
+      scrollRotateDegRef.current *= Math.exp(-dt / ROT_TAU);
+      if (Math.abs(scrollRotateDegRef.current) < 0.02) scrollRotateDegRef.current = 0;
+    } else {
+      scrollRotateDegRef.current = 0;
+    }
+    const k = 1 - Math.exp(-dt / TILT_TAU);
+    const maxDelta = applyTiltPass(k);
+    const rotActive = Math.abs(scrollRotateDegRef.current) > 0.02;
+    if (maxDelta > 0.02 || rotActive) {
+      tiltRafRef.current = requestAnimationFrame(tiltLoop);
+    } else {
+      applyTiltPass(1); // land exactly on target, then rest
+      tiltRafRef.current = null;
+      tiltLastTsRef.current = 0;
+    }
+  };
+
+  // Kick the smoothing loop (idempotent). Called on every scroll event so the
+  // tilt keeps easing while the strip moves — user drags AND programmatic
+  // smooth-scrolls (card click / arrow keys / dial). Reduced-motion snaps.
+  const ensureTiltLoop = () => {
+    if (reduceMotion) {
+      applyTiltPass(1);
+      return;
+    }
+    if (tiltRafRef.current != null) return;
+    tiltLastTsRef.current = 0;
+    tiltRafRef.current = requestAnimationFrame(tiltLoop);
   };
 
   // ── Initial scroll: drop into middle copy at activeIndex ──
@@ -1007,7 +1381,7 @@ export function HorizontalConfessionStack({
       progScrollTargetRef.current = target;
       el.scrollLeft = target;
       hasInitialScrolledRef.current = true;
-      updateCardTilts();
+      updateCardTiltsRef.current();
     };
     tryInit();
     return () => {
@@ -1017,6 +1391,13 @@ export function HorizontalConfessionStack({
     // is handled by the dedicated effect below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Re-apply the coverflow warp the instant a "Coverflow" dial changes. The
+  // per-card transforms are otherwise only rewritten on scroll / resize, so
+  // without this the panel wouldn't visibly update until the next scroll event.
+  useLayoutEffect(() => {
+    updateCardTiltsRef.current();
+  }, [warp.depth]);
 
   // Mark layout as settled after a generous post-mount wait so the
   // snap-to-center logic doesn't fight image loads. 800ms covers most
@@ -1053,7 +1434,7 @@ export function HorizontalConfessionStack({
           });
         }
       }
-      updateCardTilts();
+      updateCardTiltsRef.current();
     }, 800);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1101,9 +1482,9 @@ export function HorizontalConfessionStack({
     return () => {
       if (progScrollSafetyTimerRef.current) clearTimeout(progScrollSafetyTimerRef.current);
       if (snapSettleTimerRef.current) clearTimeout(snapSettleTimerRef.current);
-      if (scrollTiltDecayRafRef.current != null) {
-        cancelAnimationFrame(scrollTiltDecayRafRef.current);
-        scrollTiltDecayRafRef.current = null;
+      if (tiltRafRef.current != null) {
+        cancelAnimationFrame(tiltRafRef.current);
+        tiltRafRef.current = null;
       }
     };
   }, []);
@@ -1169,15 +1550,14 @@ export function HorizontalConfessionStack({
           -4.2,
           Math.min(4.2, scrollRotateDegRef.current * 0.93 - delta * 0.0095)
         );
-        startScrollTiltDecay();
       }
     }
     lastScrollLeftForRotateRef.current = sl;
 
-    // Tilts follow scroll position regardless of source (user or
-    // programmatic) — so smooth-snaps and dial-driven scrolls also see
-    // the cards rotate as they move.
-    updateCardTilts();
+    // Tilts follow scroll position regardless of source (user or programmatic)
+    // — smooth-snaps and dial-driven scrolls rotate the cards too. The loop
+    // eases each card's tilt toward its live target and self-stops when settled.
+    ensureTiltLoop();
 
     // Programmatic-scroll suppression: ignore events fired by our own
     // scrollTo / scrollLeft assignments. Clear once we've reached the
@@ -1260,13 +1640,24 @@ export function HorizontalConfessionStack({
       (typeof window !== 'undefined' ? window.innerWidth : 0) - 8;
 
   return (
-    <div
-      ref={scrollRef}
-      onScroll={handleScroll}
-      onMouseLeave={() => setInactiveTipPos(null)}
-      style={st.scrollContainer}
-    >
-      <CardNoiseFilterDefs params={inactive} />
+    // Non-scrolling viewport wrapper. The horizontal filmstrip scrolls inside
+    // it, but the nav legend is pinned to this box (which never scrolls) so it
+    // stays at top-center instead of riding off-screen with the cards.
+    <div style={st.stackViewport}>
+      {showNavHint ? (
+        <DialNavHint
+          pressedKey={pressedNavKey}
+          onPress={handleNavPress}
+          onRelease={handleNavRelease}
+        />
+      ) : null}
+      <div
+        ref={scrollRef}
+        onScroll={handleScroll}
+        onMouseLeave={() => setInactiveTipPos(null)}
+        style={st.scrollContainer}
+      >
+        <CardNoiseFilterDefs params={inactive} />
       {renderItems.map((item, renderIdx) => {
         const isActive = item.logicalIndex === activeIndex;
         // Visual proximity to the centered note using global render position
@@ -1311,10 +1702,12 @@ export function HorizontalConfessionStack({
             }
             onClick={() => setActiveFromClick(item.logicalIndex)}
             onMouseEnter={(e) => {
-              if (!isActive) setInactiveTipPos({ x: e.clientX, y: e.clientY });
+              if (!isActive)
+                setInactiveTipPos({ x: e.clientX, y: e.clientY, label: INACTIVE_CARD_TOOLTIP });
             }}
             onMouseMove={(e) => {
-              if (!isActive) setInactiveTipPos({ x: e.clientX, y: e.clientY });
+              if (!isActive)
+                setInactiveTipPos({ x: e.clientX, y: e.clientY, label: INACTIVE_CARD_TOOLTIP });
             }}
             onMouseLeave={() => setInactiveTipPos(null)}
             style={{
@@ -1324,11 +1717,16 @@ export function HorizontalConfessionStack({
             }}
           >
             {isActive && item.copy === MIDDLE_COPY ? (
-              <NoteMeta
-                confession={item.confession}
-                reduceMotion={reduceMotion}
-                columnWidth={contentW || '80%'}
-              />
+              // Anchored OUT OF FLOW just above the image so the metadata never
+              // pushes the image down when a note goes active — the image box
+              // stays the card's only in-flow element and holds its level.
+              <div style={st.metaAboveAnchor}>
+                <NoteMeta
+                  confession={item.confession}
+                  reduceMotion={reduceMotion}
+                  columnWidth={maxContentW || contentW || '80%'}
+                />
+              </div>
             ) : null}
             <div
               data-tilt-target
@@ -1344,6 +1742,22 @@ export function HorizontalConfessionStack({
                     }
                   : undefined
               }
+              // Active card only: trail a "VIEW NOTE" hint by the cursor since
+              // clicking the image opens the full note (mirrors the inactive
+              // cards' "scroll or click" hint).
+              onMouseEnter={
+                canEnlargeImage
+                  ? (e) =>
+                      setInactiveTipPos({ x: e.clientX, y: e.clientY, label: ACTIVE_CARD_TOOLTIP })
+                  : undefined
+              }
+              onMouseMove={
+                canEnlargeImage
+                  ? (e) =>
+                      setInactiveTipPos({ x: e.clientX, y: e.clientY, label: ACTIVE_CARD_TOOLTIP })
+                  : undefined
+              }
+              onMouseLeave={canEnlargeImage ? () => setInactiveTipPos(null) : undefined}
             >
               <img
                 ref={
@@ -1376,10 +1790,16 @@ export function HorizontalConfessionStack({
 
             {isActive &&
             item.copy === MIDDLE_COPY &&
-            (item.confession.transcription || (showInlineCounter && categoryInfo)) ? (
+            (item.confession.transcription ||
+              (showInlineCounter && (categorySlot || categoryInfo))) ? (
               <div
                 style={{
                   ...st.metaBlock,
+                  // Desktop: drop metaBlock's in-flow top margin so the transcript
+                  // (already absolute via belowImageStack) contributes zero flow
+                  // height and the image can't shift. The gap below the image now
+                  // lives on belowImageStack's offset instead.
+                  marginTop: 0,
                   ...(contentW ? { width: contentW, maxWidth: contentW } : null),
                 }}
                 aria-live="polite"
@@ -1395,9 +1815,13 @@ export function HorizontalConfessionStack({
                       reduceMotion={reduceMotion}
                     />
                   ) : null}
-                  {showInlineCounter && categoryInfo ? (
+                  {showInlineCounter && (categorySlot || categoryInfo) ? (
+                    // Breadcrumb footer: CATEGORY (which theme out of all themes)
+                    // above NOTE (slot within this theme). Labeled + aligned as a
+                    // two-column table so the two "n / total" fractions can't be
+                    // confused. The CATEGORY row is what moved off the dial.
                     <motion.div
-                      style={st.noteIndex}
+                      style={st.indexTable}
                       initial={reduceMotion ? false : { opacity: 0 }}
                       animate={{ opacity: 1 }}
                       transition={{
@@ -1405,10 +1829,31 @@ export function HorizontalConfessionStack({
                         ease: EASE_OUT,
                         delay: reduceMotion ? 0 : META_TIMING.metaRow / 1000,
                       }}
-                      aria-label={`Note ${categoryInfo.position + 1} of ${categoryInfo.total} in this category`}
                     >
-                      <span style={st.noteIndexCurrent}>{categoryInfo.position + 1}</span>
-                      <span style={st.noteIndexTotal}>{` / ${categoryInfo.total}`}</span>
+                      {categorySlot ? (
+                        <div
+                          style={st.indexRow}
+                          aria-label={`Category ${categorySlot.position + 1} of ${categorySlot.total}`}
+                        >
+                          <span style={st.indexLabel}>CATEGORY</span>
+                          <span style={st.noteIndex}>
+                            <span style={st.noteIndexCurrent}>{categorySlot.position + 1}</span>
+                            <span style={st.noteIndexTotal}>{` / ${categorySlot.total}`}</span>
+                          </span>
+                        </div>
+                      ) : null}
+                      {categoryInfo ? (
+                        <div
+                          style={st.indexRow}
+                          aria-label={`Note ${categoryInfo.position + 1} of ${categoryInfo.total} in this category`}
+                        >
+                          <span style={st.indexLabel}>NOTE</span>
+                          <span style={st.noteIndex}>
+                            <span style={st.noteIndexCurrent}>{categoryInfo.position + 1}</span>
+                            <span style={st.noteIndexTotal}>{` / ${categoryInfo.total}`}</span>
+                          </span>
+                        </div>
+                      ) : null}
                     </motion.div>
                   ) : null}
                 </div>
@@ -1417,31 +1862,40 @@ export function HorizontalConfessionStack({
           </motion.div>
         );
       })}
-      {inactiveTipPos ? (
-        <div
-          role="tooltip"
-          style={{
-            ...st.inactiveCardTooltip,
-            top: inactiveTipPos.y + INACTIVE_TOOLTIP_GAP,
-            ...(inactiveTipFlipLeft
-              ? {
-                  left: inactiveTipPos.x - INACTIVE_TOOLTIP_GAP,
-                  transform: 'translateX(-100%)',
-                }
-              : { left: inactiveTipPos.x + INACTIVE_TOOLTIP_GAP }),
-          }}
-        >
-          {INACTIVE_CARD_TOOLTIP}
-        </div>
-      ) : null}
+      {/* Portaled to <body>: the tooltip is `position: fixed` (viewport coords
+          from the cursor), but the scroll container sets `perspective`, which —
+          like `transform` — makes it the containing block for fixed descendants.
+          Rendered here it would resolve against the scrolled strip and fly
+          thousands of px off-screen; the portal keeps it anchored to the cursor. */}
+      {inactiveTipPos && typeof document !== 'undefined'
+        ? createPortal(
+            <div
+              role="tooltip"
+              style={{
+                ...st.inactiveCardTooltip,
+                top: inactiveTipPos.y + INACTIVE_TOOLTIP_GAP,
+                ...(inactiveTipFlipLeft
+                  ? {
+                      left: inactiveTipPos.x - INACTIVE_TOOLTIP_GAP,
+                      transform: 'translateX(-100%)',
+                    }
+                  : { left: inactiveTipPos.x + INACTIVE_TOOLTIP_GAP }),
+              }}
+            >
+              {inactiveTipPos.label || INACTIVE_CARD_TOOLTIP}
+            </div>,
+            document.body
+          )
+        : null}
+      </div>
     </div>
   );
 }
 
 /**
  * Date + Location shown above the note image as a two-row labelled key/value
- * block: a DATE row and a LOCATION row, each with the label pinned to the left
- * edge and the value to the right (space-between), matching the Figma spec.
+ * block: a DATE row and a LOCATION row, each split 50/50 — the label fills the
+ * left half and the value is left-aligned from the horizontal midpoint.
  * Sourced from sheet columns P (Date) and Q (Location). Rows with no value are
  * dropped. The whole block fades in together (no stagger).
  */
@@ -1450,30 +1904,40 @@ function NoteMeta({ confession, reduceMotion, columnWidth = '100%' }) {
   const location = confession?.metadata?.location || '';
   if (!date && !location) return null;
 
+  // Always render BOTH labels (even if a value is blank) so the scaffold's
+  // height never changes note-to-note — a missing value must not drop a row and
+  // shift the divider up. Only the values differ.
   const rows = [
     ['DATE', date],
     ['LOCATION', location],
-  ].filter(([, value]) => Boolean(value));
+  ];
 
   return (
-    <motion.div
-      key={`meta-${confession.id}`}
-      style={{ ...st.metaAboveRow, width: columnWidth }}
-      initial={reduceMotion ? false : { opacity: 0 }}
-      animate={{ opacity: 1 }}
-      transition={{
-        duration: reduceMotion ? 0 : TRANSCRIPT_FADE_S,
-        ease: EASE_OUT,
-        delay: reduceMotion ? 0 : META_TIMING.metaRow / 1000,
-      }}
-    >
+    // The DATE / LOCATION scaffold — labels + divider — is identical for every
+    // note (fixed width via `columnWidth`, fixed row count), so it stays put and
+    // reads as a fixed frame anchored over the active card. Only the *values*
+    // fade as the active note changes; each value is keyed to its text so
+    // switching notes re-fades it in.
+    <div style={{ ...st.metaAboveRow, width: columnWidth }}>
       {rows.map(([label, value]) => (
         <div key={label} style={st.metaAboveItem}>
           <span style={st.sideMetaLabel}>{label}</span>
-          <span style={st.sideMetaValue}>{value}</span>
+          <motion.span
+            key={value || `${label}-empty`}
+            style={st.sideMetaValue}
+            initial={reduceMotion ? false : { opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{
+              duration: reduceMotion ? 0 : TRANSCRIPT_FADE_S,
+              ease: EASE_OUT,
+              delay: reduceMotion ? 0 : META_TIMING.metaRow / 1000,
+            }}
+          >
+            {value}
+          </motion.span>
         </div>
       ))}
-    </motion.div>
+    </div>
   );
 }
 
@@ -1756,6 +2220,19 @@ export function VerticalConfessionStack({
 }
 
 const st = {
+  stackViewport: {
+    // Non-scrolling frame that fills the dial's note area. The scrollContainer
+    // (horizontal filmstrip) scrolls inside it; the nav legend is a direct
+    // child pinned here so `left: 50%` resolves against the viewport, not the
+    // scroll content — keeping the legend at top-center as the cards scroll.
+    position: 'relative',
+    width: '100%',
+    height: '100%',
+    overflow: 'visible',
+    // Courier New for every bit of chrome text rendered inside the stack (catch-
+    // all; individual styles still set it explicitly where they need a size).
+    fontFamily: COURIER,
+  },
   scrollContainer: {
     position: 'relative',
     display: 'flex',
@@ -1832,7 +2309,7 @@ const st = {
     alignSelf: 'center',
     maxHeight: '100%',
     // Preserve the container's 3D context through the wrapper so the
-    // rotateY/translateZ on the inner tilt-target render against the shared
+    // translateZ depth on the inner tilt-target renders against the shared
     // perspective rather than flattening here.
     transformStyle: 'preserve-3d',
   },
@@ -1840,7 +2317,7 @@ const st = {
     position: 'fixed',
     zIndex: 200,
     pointerEvents: 'none',
-    fontFamily: 'var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace)',
+    fontFamily: COURIER,
     fontSize: 8,
     fontWeight: 400,
     lineHeight: 1.35,
@@ -1850,7 +2327,7 @@ const st = {
     whiteSpace: 'nowrap',
     padding: '5px 8px',
     background: 'rgba(0, 0, 0, 0.82)',
-    border: '1px solid rgba(255, 255, 255, 0.14)',
+    border: '1px solid rgba(207, 202, 183, 0.14)',
     borderRadius: 3,
   },
   cardImageBox: {
@@ -1865,12 +2342,11 @@ const st = {
     // width: auto — settles to the image's intrinsic width after load
     display: 'block',
     // Rotation pivot at the card's center so cards "tilt away" symmetrically
-    // around their own midpoint. The `transform` itself is written from JS
-    // on each scroll event (see updateCardTilts) — a short transition
-    // smooths over the gaps between scroll events without lagging behind
-    // an active drag.
+    // around their own midpoint. The `transform` (coverflow warp) is written
+    // from JS every animation frame by the rAF tilt loop (see applyTiltPass),
+    // which eases each card toward its live target — so NO CSS transition here
+    // (a transition would double-damp the loop and make the warp lag/rubber-band).
     transformOrigin: '50% 50%',
-    transition: 'transform 120ms cubic-bezier(0.22, 1, 0.36, 1)',
     willChange: 'transform',
   },
   metaBlock: {
@@ -1897,10 +2373,10 @@ const st = {
     transition: 'opacity 0.18s cubic-bezier(0.4, 0, 0.2, 1)',
   },
   metaPill: {
-    fontFamily: 'var(--font-mono, ui-monospace, monospace)',
+    fontFamily: COURIER,
     fontSize: 10,
     letterSpacing: '0.08em',
-    color: 'rgba(255,255,255,0.85)',
+    color: 'rgba(207,202,183,0.85)',
     whiteSpace: 'nowrap',
     overflow: 'hidden',
     textOverflow: 'ellipsis',
@@ -1910,6 +2386,19 @@ const st = {
     // longer than the available right-hand width.
     maxWidth: '60%',
     textAlign: 'right',
+  },
+  metaAboveAnchor: {
+    // Desktop only: out-of-flow wrapper that pins NoteMeta just above the image
+    // (bottom:100% of the card, i.e. the image's top edge) and centres it, so the
+    // metadata never displaces the image. Flex (not block) so NoteMeta's
+    // marginBottom can't margin-collapse through the anchor and lose the gap.
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: '100%',
+    display: 'flex',
+    justifyContent: 'center',
+    pointerEvents: 'none',
   },
   metaAboveRow: {
     // Two stacked label/value rows (DATE, LOCATION) above the note image. The
@@ -1921,32 +2410,63 @@ const st = {
     // Subtle grey divider under the block (i.e. below the LOCATION row), with a
     // little breathing room above the line before the note image.
     paddingBottom: 12,
-    borderBottom: '1px solid rgba(229, 229, 229, 0.18)',
+    borderBottom: '1px solid rgba(207, 202, 183, 0.18)',
     marginBottom: 24,
   },
   metaAboveItem: {
-    // One metadata row: label pinned to the left edge, value to the right.
-    display: 'flex',
-    justifyContent: 'space-between',
+    // One metadata row split 50/50: the label fills the left half; the value is
+    // left-aligned starting at the horizontal midpoint (rather than pinned to the
+    // far-right edge), so the values line up in a column at 50% of the width.
+    display: 'grid',
+    gridTemplateColumns: '1fr 1fr',
     alignItems: 'baseline',
-    columnGap: 24,
+    columnGap: 0,
     width: '100%',
   },
   sideMetaLabel: {
-    fontFamily: 'var(--font-mono, ui-monospace, monospace)',
-    fontSize: TRANSCRIPTION_FONT_SIZE,
-    letterSpacing: '0.08em',
-    lineHeight: 1.45,
+    fontFamily: COURIER,
+    fontSize: 10,
+    letterSpacing: '0.14em',
+    lineHeight: 1.5,
     textTransform: 'uppercase',
-    color: 'rgba(229,229,229,0.5)',
+    color: 'rgba(207,202,183,0.45)',
     whiteSpace: 'nowrap',
   },
   sideMetaValue: {
-    fontFamily: 'var(--font-mono, ui-monospace, monospace)',
-    fontSize: TRANSCRIPTION_FONT_SIZE,
-    letterSpacing: '0.02em',
-    lineHeight: 1.45,
-    color: 'rgba(229,229,229,0.85)',
+    fontFamily: COURIER,
+    fontSize: 10,
+    letterSpacing: '0.04em',
+    lineHeight: 1.5,
+    color: 'rgba(207,202,183,0.8)',
+    whiteSpace: 'nowrap',
+  },
+  indexTable: {
+    // Two-column breadcrumb table (label | "n / total") under the transcript.
+    // Rows: CATEGORY (which theme, moved off the dial) then NOTE (slot within
+    // the theme). `auto auto` columns keep every label and every fraction in its
+    // own aligned column so the two fractions can't be misread as one another.
+    display: 'grid',
+    gridTemplateColumns: 'auto auto',
+    columnGap: 12,
+    rowGap: 3,
+    alignItems: 'baseline',
+    justifyItems: 'start',
+    userSelect: 'none',
+    pointerEvents: 'none',
+  },
+  indexRow: {
+    // Row groups exist only to carry an aria-label; `display: contents` drops the
+    // wrapper box so the label + fraction become direct cells of `indexTable`
+    // (and thus align column-to-column with the other row).
+    display: 'contents',
+  },
+  indexLabel: {
+    // Dim uppercase tag right-aligned against the gap, e.g. CATEGORY / NOTE.
+    justifySelf: 'end',
+    fontFamily: COURIER,
+    fontSize: 9.5,
+    letterSpacing: '0.18em',
+    color: 'rgba(207,202,183,0.5)',
     whiteSpace: 'nowrap',
   },
   noteIndex: {
@@ -1954,7 +2474,7 @@ const st = {
     // stack) — the note's position within its category (mirrors the dial's NOTES
     // sub-label). Spacing from the transcript is owned by `belowImageStack`.
     marginTop: 0,
-    fontFamily: '"Courier New", Courier, var(--font-mono, ui-monospace, monospace)',
+    fontFamily: COURIER,
     fontSize: 11,
     letterSpacing: '0.12em',
     fontVariantNumeric: 'tabular-nums',
@@ -1963,18 +2483,19 @@ const st = {
     pointerEvents: 'none',
   },
   noteIndexCurrent: {
-    color: 'rgba(229,229,229,0.85)',
+    color: 'rgba(207,202,183,0.85)',
   },
   noteIndexTotal: {
-    color: 'rgba(190,190,190,0.42)',
+    color: 'rgba(207,202,183,0.42)',
   },
   belowImageStack: {
     // Transcript + note-index, taken OUT OF FLOW (absolute) so their (variable)
     // height never contributes to the card's measured height — the card is sized
-    // by the image + date rows alone and stays put as you scroll between notes.
-    // Anchored just below the date row; stacks the transcript then the index.
+    // by the image alone, so the image holds the exact same vertical level whether
+    // the note is active or inactive. Anchored 14px below the image (that gap used
+    // to live on metaBlock's now-zeroed marginTop); stacks transcript then index.
     position: 'absolute',
-    top: '100%',
+    top: 'calc(100% + 14px)',
     left: 0,
     width: '100%',
     display: 'flex',
@@ -1984,10 +2505,16 @@ const st = {
   },
   transcriptReveal: {
     ...TRANSCRIPTION_TEXT,
+    // Courier New, a touch smaller than the site transcript — keeps this page
+    // minimal + typewritten (overrides TRANSCRIPTION_TEXT's shared mono stack).
+    fontFamily: COURIER,
+    fontSize: 12.5,
+    letterSpacing: '0.02em',
     // Scrollable transcript column inside `belowImageStack`. Height is capped so
     // a long confession scrolls (under a top/bottom fade mask) instead of
     // pushing the note-index down / growing the card.
     textAlign: 'center',
+    textWrap: 'pretty', // avoid orphan/short last lines in the transcript
     width: '100%',
     maxHeight: 'min(9em, 26vh)',
     overflowY: 'auto',

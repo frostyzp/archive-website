@@ -14,7 +14,7 @@ import {
 import { TunableGrainBackground } from './noise';
 import { NOISE_GRADIENT } from './NoiseGradient';
 import { NoiseDisplaceFilter } from './NoiseDisplaceFilter';
-import { HorizontalConfessionStack, VerticalConfessionStack } from './SideDial';
+import { HorizontalConfessionStack, VerticalConfessionStack, DialNavHint } from './SideDial';
 import { themeStats, sortConfessionsByEmotions } from './themes';
 
 /* ─────────────────────────────────────────────────────────
@@ -126,10 +126,13 @@ function containBox(box, aspect) {
  * position counter (NN/MM) rides just above the active wordmark. Clicking a
  * neighbour spins the wheel to that category.
  *
- * The wheel is a *linear* (non-wrapping) list in dial order — it mirrors the
- * stack, which clusters notes by category in the same order, so scrolling walks
- * the wheel one notch at a time. Each label springs to a new arc slot when the
- * active category changes, which reads as the wheel rotating.
+ * The wheel *loops*: each category is placed by its shortest signed distance
+ * around the ring (see `wheelOffset`), so it wraps endlessly like the bottom
+ * compass dial — past the last category the first swings back into view (and
+ * vice-versa), never a dead end. It still mirrors the stack, which clusters
+ * notes by category in the same order, so scrolling walks the wheel one notch
+ * at a time. Each label springs to a new arc slot when the active category
+ * changes, which reads as the wheel rotating.
  */
 const WHEEL = {
   baseX: 128, //     px — active wordmark's horizontal centre (from column left)
@@ -143,14 +146,29 @@ const WHEEL = {
 
 // Arc transform for a label `k` steps from the active one (k<0 above, k>0
 // below). x is always ≤ 0 so labels drift left toward the pivot as they recede.
-function wheelSlot(k) {
+// `vis` caps how many neighbours stay lit; past it the label is fully
+// transparent — parked off the back of the wheel, which is where the wrap seam
+// hides so the loop never flashes a label swinging across the face.
+function wheelSlot(k, vis = WHEEL.visible) {
   const rad = (k * WHEEL.stepDeg * Math.PI) / 180;
+  const ak = Math.abs(k);
   return {
     x: WHEEL.radius * (Math.cos(rad) - 1),
     y: WHEEL.radius * Math.sin(rad),
     rotate: k * WHEEL.stepDeg,
-    opacity: WHEEL.opacity[Math.abs(k)] ?? 0,
+    opacity: ak <= vis ? WHEEL.opacity[ak] ?? 0 : 0,
   };
+}
+
+// Shortest signed distance from the active category (`idx`) to label `i` around
+// a ring of `n` categories. Folding into (-n/2, n/2] means every label rotates
+// the *short* way to its next slot and the wheel loops endlessly; the label
+// crossing the back seam does so while parked off-wheel (opacity 0), so the
+// wrap is invisible.
+function wheelOffset(i, idx, n) {
+  let k = (((i - idx) % n) + n) % n; // 0 … n-1
+  if (k > n / 2) k -= n; //             fold into (-n/2, n/2]
+  return k;
 }
 
 /** A category label as spaced letters ("B R A I N R O T"), matching the Figma
@@ -174,6 +192,12 @@ function CategoryWord({ text }) {
 function LeftThemeDial({ emotions, activeId, onChange, reduceMotion, delay }) {
   const idx = Math.max(0, emotions.findIndex((e) => e.id === activeId));
   const active = emotions[idx];
+  const n = emotions.length;
+  // Keep the lit band narrow enough that at least the back slot stays hidden —
+  // that hidden gap is where the wrap seam lives, so looping never flashes a
+  // label sweeping across the wheel's face. Full `visible` for the real 7-way
+  // dial; degrades gracefully if fewer categories are present.
+  const vis = Math.max(1, Math.min(WHEEL.visible, Math.floor((n - 3) / 2)));
   if (!active) return null;
 
   // Each label springs to its new slot when `idx` changes → the wheel rotates.
@@ -188,14 +212,15 @@ function LeftThemeDial({ emotions, activeId, onChange, reduceMotion, delay }) {
       transition={{ duration: 0.5, ease: EASE_OUT, delay }}
       style={st.dialColumn}
     >
-      {/* Rotary wheel: every category positioned on the arc by its distance from
-          the active one. `initial={false}` so labels mount at their slot and
-          only animate on subsequent category changes. */}
+      {/* Rotary wheel: every category positioned on the arc by its shortest
+          signed distance from the active one, so the wheel wraps endlessly.
+          `initial={false}` so labels mount at their slot and only animate on
+          subsequent category changes. */}
       {emotions.map((emo, i) => {
-        const k = i - idx;
-        const slot = wheelSlot(k);
+        const k = wheelOffset(i, idx, n);
+        const slot = wheelSlot(k, vis);
         const isActive = k === 0;
-        const clickable = !isActive && Math.abs(k) <= WHEEL.visible;
+        const clickable = !isActive && Math.abs(k) <= vis;
         return (
           <motion.div
             key={emo.id}
@@ -278,6 +303,7 @@ export default function NoteOpenView({
   originRect,
   onExit,
   onAbout,
+  onIndex,
 }) {
   const reduceMotion = useReducedMotion();
   const isMobile = useIsMobile();
@@ -542,6 +568,28 @@ export default function NoteOpenView({
     [themed.length]
   );
 
+  // Drives the top nav legend's pressed-key highlight (see DialNavHint). Set on
+  // keydown / button press, cleared on keyup / release.
+  const [pressedNavKey, setPressedNavKey] = useState(null);
+  const runNav = useCallback(
+    (id) => {
+      if (id === 'esc') onExit?.();
+      else if (id === 'left') step(-1);
+      else if (id === 'right') step(1);
+    },
+    [onExit, step]
+  );
+  const handleNavPress = useCallback(
+    (id) => {
+      setPressedNavKey(id);
+      runNav(id);
+    },
+    [runNav]
+  );
+  const handleNavRelease = useCallback((id) => {
+    setPressedNavKey((cur) => (cur === id ? null : cur));
+  }, []);
+
   // Click empty space to go back: any click that doesn't land on a note card
   // or an interactive control (dial label, nav link, EXIT) dismisses the view.
   // The stack's card taps still navigate and the chrome buttons keep their own
@@ -558,14 +606,32 @@ export default function NoteOpenView({
   );
 
   useEffect(() => {
-    const onKey = (e) => {
-      if (e.key === 'Escape') onExit?.();
-      else if (e.key === 'ArrowLeft') step(-1);
-      else if (e.key === 'ArrowRight') step(1);
+    // A / D flip through notes alongside the arrow keys (the legend shows A / D).
+    const keyToId = {
+      Escape: 'esc',
+      ArrowLeft: 'left', a: 'left', A: 'left',
+      ArrowRight: 'right', d: 'right', D: 'right',
     };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onExit, step]);
+    const onKeyDown = (e) => {
+      const id = keyToId[e.key];
+      if (!id) return;
+      // Don't hijack A / D (or arrows) while typing in a field.
+      const t = e.target;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+      setPressedNavKey(id);
+      runNav(id);
+    };
+    const onKeyUp = (e) => {
+      const id = keyToId[e.key];
+      if (id) setPressedNavKey((cur) => (cur === id ? null : cur));
+    };
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+    };
+  }, [runNav]);
 
   return (
     <motion.div
@@ -577,7 +643,12 @@ export default function NoteOpenView({
       // fill of its own. Without a morph the whole overlay still fades in gently.
       initial={reduceMotion || wantMorph ? false : { opacity: 0 }}
       animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
+      // On exit (click-out / Esc / INDEX) the note image is CUT immediately —
+      // no fade-out of the open note. The overlay unmounts on the same frame,
+      // revealing the index underneath, whose tiles fade back in on their own
+      // (see GRID EXIT in App.jsx). Overriding just the exit transition keeps
+      // the gentle entrance fade intact.
+      exit={{ opacity: 0, transition: { duration: 0 } }}
       transition={{ duration: reduceMotion ? 0 : 0.3, ease: EASE_OUT }}
       style={st.root}
     >
@@ -672,11 +743,34 @@ export default function NoteOpenView({
                 style={st.dCounter}
                 aria-label={`Note ${indexInCategory + 1} of ${total} in this category`}
               >
-                <span style={st.dCounterCurrent}>{indexInCategory + 1}</span>
-                <span style={st.dCounterTotal}>{` / ${total}`}</span>
+                <span style={st.dCounterCurrent}>
+                  {String(indexInCategory + 1).padStart(2, '0')}
+                </span>
+                <span style={st.dCounterTotal}>{` / ${String(total).padStart(2, '0')}`}</span>
               </div>
             </motion.div>
           ) : null}
+
+          {/* Top-centre keyboard legend (desktop) — EXIT (Esc) apart from the
+              LEFT / RIGHT (← / →) note-step pair. Same guide the dial page shows;
+              here EXIT returns to the index. Pinned to the top of the view (the
+              dial-page variant sits above its note area, which would be off-screen
+              over this full-screen stage — so it's flowed into a top-centred wrap). */}
+          {!isMobile && (
+            <motion.div
+              initial={reduceMotion ? false : { opacity: 0 }}
+              animate={{ opacity: 1 }}
+              transition={{ duration: reduceMotion ? 0 : 0.4, ease: EASE_OUT, delay: reduceMotion ? 0 : 0.04 }}
+              style={st.navHintWrap}
+            >
+              <DialNavHint
+                pressedKey={pressedNavKey}
+                onPress={handleNavPress}
+                onRelease={handleNavRelease}
+                style={st.navHintInner}
+              />
+            </motion.div>
+          )}
 
           <motion.div
             initial={{ opacity: 0 }}
@@ -684,9 +778,24 @@ export default function NoteOpenView({
             transition={{ duration: 0.4, ease: EASE_OUT, delay: reduceMotion ? 0 : 0.04 }}
             style={st.chrome}
           >
-            {/* Only ABOUT, styled to match the main index screen's nav bar.
-                INTRO/INDEX and the EXIT button are intentionally hidden — the
-                view is dismissed with Esc or a backdrop click. */}
+            {/* INDEX (returns to the grid) + ABOUT, styled to match the main
+                index screen's nav bar. INTRO/DIAL and the EXIT button are
+                intentionally hidden — the view is also dismissed with Esc or a
+                backdrop click. */}
+            <button
+              type="button"
+              style={st.navAbout}
+              aria-label="Return to index"
+              onClick={() => onIndex?.()}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.opacity = '0.8';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.opacity = '0.5';
+              }}
+            >
+              INDEX
+            </button>
             <button
               type="button"
               style={st.navAbout}
@@ -795,6 +904,28 @@ const st = {
     willChange: 'transform, opacity',
   },
 
+  // Top-centre keyboard legend wrap. Full-width flex row so the legend centres
+  // over the note; pointer-events none so it never eats a backdrop click (the
+  // legend's own buttons re-enable pointer events for themselves).
+  navHintWrap: {
+    position: 'absolute',
+    top: 24,
+    left: 0,
+    right: 0,
+    zIndex: 40,
+    display: 'flex',
+    justifyContent: 'center',
+    pointerEvents: 'none',
+  },
+  // Override DialNavHint's dial-page positioning (absolute, pinned above the note
+  // area): flow it statically inside the centred wrap so it sits at the top here.
+  navHintInner: {
+    position: 'static',
+    bottom: 'auto',
+    left: 'auto',
+    transform: 'none',
+  },
+
   // Matches the main index screen's top-right nav chrome (App.jsx AboutHeader):
   // fixed to the top-right at the same inset, holding a single ABOUT button.
   chrome: {
@@ -820,7 +951,7 @@ const st = {
     fontWeight: 400,
     lineHeight: 1.5,
     letterSpacing: '0',
-    color: '#fff',
+    color: '#CFCAB7',
     opacity: 0.5,
     cursor: 'pointer',
     transition: 'opacity 0.2s ease',
@@ -901,7 +1032,7 @@ const st = {
     fontSize: 13,
     letterSpacing: '0.16em',
     textTransform: 'uppercase',
-    color: 'rgba(255,255,255,0.72)',
+    color: 'rgba(207,202,183,0.72)',
   },
   // Bottom-centre: the NN/MM note counter.
   mCounterWrap: {
@@ -919,7 +1050,7 @@ const st = {
     fontStyle: 'italic',
     fontSize: 16,
     letterSpacing: '-0.02em',
-    color: 'rgba(255,255,255,0.58)',
+    color: 'rgba(207,202,183,0.58)',
   },
   // ── Desktop bottom-centre note counter ────────────────────
   // The active note's "n / total" position within its category, pinned to the
@@ -937,12 +1068,12 @@ const st = {
   },
   dCounter: {
     fontFamily: '"Courier New", Courier, var(--font-mono, ui-monospace, monospace)',
-    fontSize: 12,
+    fontSize: 14,
     letterSpacing: '0.12em',
     fontVariantNumeric: 'tabular-nums',
     whiteSpace: 'nowrap',
     userSelect: 'none',
   },
-  dCounterCurrent: { color: 'rgba(229,229,229,0.85)' },
-  dCounterTotal: { color: 'rgba(190,190,190,0.42)' },
+  dCounterCurrent: { color: 'rgba(207,202,183,0.85)' },
+  dCounterTotal: { color: 'rgba(207,202,183,0.42)' },
 };

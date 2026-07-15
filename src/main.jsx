@@ -5,6 +5,7 @@ import 'dialkit/styles.css';
 import App from './App';
 import DialDemoShell from './DialDemoShell';
 import OnboardingReveal from './OnboardingReveal';
+import TestPage from './TestPage';
 
 const path = window.location.pathname;
 const Root =
@@ -12,6 +13,8 @@ const Root =
     ? OnboardingReveal
     : path === '/dial-demo'
     ? DialDemoShell
+    : path === '/test'
+    ? TestPage
     : App;
 
 // DialKit panels (Grain, Inactive Cards) are hidden by default so visitors

@@ -138,7 +138,7 @@ export function CategoryDial({ onCategoryChange }) {
             inset: 0,
             borderRadius: '50%',
             background: 'radial-gradient(ellipse at center bottom, rgba(40,36,30,0.95) 0%, rgba(20,18,15,0.98) 70%)',
-            border: '1px solid rgba(255,255,255,0.08)',
+            border: '1px solid rgba(207,202,183,0.08)',
           }}
         />
 
@@ -190,7 +190,7 @@ export function CategoryDial({ onCategoryChange }) {
             transform: 'translateX(-50%)',
             width: 2,
             height: 20,
-            background: 'rgba(255,255,255,0.3)',
+            background: 'rgba(207,202,183,0.3)',
             borderRadius: 1,
           }}
         />
@@ -205,7 +205,7 @@ export function CategoryDial({ onCategoryChange }) {
           transform: 'translateX(-50%)',
           width: 2,
           height: 16,
-          background: locked ? 'rgba(255,255,255,0.8)' : 'rgba(255,255,255,0.3)',
+          background: locked ? 'rgba(207,202,183,0.8)' : 'rgba(207,202,183,0.3)',
           borderRadius: 1,
           transition: 'background 0.3s',
           zIndex: 10,

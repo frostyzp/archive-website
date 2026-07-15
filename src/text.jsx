@@ -1,3 +1,5 @@
+import { INK, inkA } from './colors';
+
 const VARIANTS = {
   display: {
     fontSize: 48,
@@ -73,7 +75,7 @@ export const TRANSCRIPTION_TEXT = {
   fontSize: TRANSCRIPTION_FONT_SIZE,
   lineHeight: 1.55,
   letterSpacing: '0.01em',
-  color: 'rgba(229, 229, 229, 0.85)',
+  color: inkA(0.85),
 };
 
 export function Text({
