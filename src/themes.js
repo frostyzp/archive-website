@@ -85,6 +85,13 @@ export function deriveEmotions(confessions) {
  * `deriveEmotions` so it can be recomputed cheaply as the confession set
  * changes without rebuilding the whole emotion list.
  */
+/** Display format for a theme/category label — e.g. `[ THERAPIST ]`. */
+export function formatCategoryLabel(label) {
+  const s = String(label ?? '').trim();
+  if (!s) return '';
+  return `[ ${s.toUpperCase()} ]`;
+}
+
 export function themeStats(confessions, label) {
   const count = confessions.reduce(
     (n, c) => (c.category === label ? n + 1 : n),

@@ -30,6 +30,17 @@ const ease = [0.22, 1, 0.36, 1];
 const SERIF = "'Faktory', Georgia, serif";
 const MONO = 'var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace)';
 
+// Dotted hyperlink underline — matches the archive nav (ARCHIVE_LINK_UNDERLINE in
+// App.jsx) so the Skip Intro / Enter the archive links read as the same kind of
+// text link. Applied to the label <span> (not the flex anchor) so it underlines
+// only the word, not the icon gap.
+const ONBOARDING_LINK_UNDERLINE = {
+  textDecorationLine: 'underline',
+  textDecorationStyle: 'dotted',
+  textDecorationThickness: '1px',
+  textUnderlineOffset: '3px',
+};
+
 /** How words fade in (per-word cascade — opacity only, no rise/blur). One place
  *  for all text timing. */
 const WORD = {
@@ -314,7 +325,7 @@ function HeroTitleText({ hold = false, onRevealComplete, reduceMotion = false })
 }
 
 const INTRO_LINE =
-  'We asked strangers to write a confession about their complex relationship with AI — artificial intelligence.';
+  'We asked strangers to write a confession about their relationship with AI — artificial intelligence.';
 const BODY_LINE =
   'It is quietly entering the most intimate parts of our lives, changing our habits...';
 const CLOSING_LINE =
@@ -967,7 +978,7 @@ export default function OnboardingReveal({
           e.currentTarget.style.color = inkA(0.82);
         }}
       >
-        <span>Skip Intro</span>
+        <span style={ONBOARDING_LINK_UNDERLINE}>Skip Intro</span>
       </a>
 
       {/* Content column — a narrow editorial measure, centered on the page. */}
@@ -1167,7 +1178,7 @@ function EnterButton({ onClick }) {
         textTransform: 'uppercase',
       }}
     >
-      <span>Enter the archive</span>
+      <span style={ONBOARDING_LINK_UNDERLINE}>Enter the archive</span>
     </motion.button>
   );
 }

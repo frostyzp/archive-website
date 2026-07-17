@@ -1,6 +1,7 @@
 import {
   useState,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useCallback,
   useRef,
@@ -14,8 +15,8 @@ import {
 import { TunableGrainBackground } from './noise';
 import { NOISE_GRADIENT } from './NoiseGradient';
 import { NoiseDisplaceFilter } from './NoiseDisplaceFilter';
-import { HorizontalConfessionStack, VerticalConfessionStack, DialNavHint } from './SideDial';
-import { themeStats, sortConfessionsByEmotions } from './themes';
+import { HorizontalConfessionStack, VerticalConfessionStack, DialNavHint, NavGrainFilter } from './SideDial';
+import { themeStats, sortConfessionsByEmotions, formatCategoryLabel } from './themes';
 
 /* ─────────────────────────────────────────────────────────
  * NOTE-OPEN VIEW
@@ -39,6 +40,12 @@ import { themeStats, sortConfessionsByEmotions } from './themes';
 
 const EASE_OUT = [0.165, 0.84, 0.44, 1];
 const GRADIENT_EASE = [0.22, 1, 0.36, 1];
+
+// Background (non-active) note opacity for THIS view only — much dimmer than the
+// dial page's shared filmstrip (0.14 / 0.06) so neighbours sink further into the
+// black backdrop and the centred note owns the frame. Still non-zero so there's
+// a faint sense of the row continuing on either side.
+const STACK_INACTIVE_OPACITY = { near: 0.06, far: 0.025 };
 
 // Shared-element entrance: the clicked grid image flies + scales from its tile
 // into the stack's centered active card, then crossfades to the real card.
@@ -81,6 +88,9 @@ const BRIDGE_FILTER = `url(#${BRIDGE_FILTER_ID})`;
 // neighbours, so the stack rotates to a vertical carousel (see mobile branch).
 // Matches App.jsx's ARCHIVE_NAV_COMPACT_MQ so chrome + layout switch together.
 const MOBILE_MQ = '(max-width: 760px)';
+
+/** Grain filter id for mobile explore/lightbox-style chevrons. */
+const MOBILE_NAV_GRAIN_ID = 'explore-mobile-arrow-grain';
 
 /** True on phone-width viewports; live-updates on resize/rotate. */
 function useIsMobile() {
@@ -171,27 +181,48 @@ function wheelOffset(i, idx, n) {
   return k;
 }
 
-/** A category label as spaced letters ("B R A I N R O T"), matching the Figma
- *  wordmark. One <span> per glyph so glyph gaps are even and real spaces widen. */
-function CategoryWord({ text }) {
-  return (
-    <span style={st.word}>
-      {text.split('').map((ch, i) =>
-        ch === ' ' ? (
-          <span key={i} style={st.wordSpace} />
-        ) : (
-          <span key={i} style={st.wordChar}>
-            {ch}
-          </span>
-        )
-      )}
-    </span>
-  );
-}
+// Gap (px) between a spoke's inner end and its wordmark's left edge.
+const DIAL_CONNECTOR_GAP = 16;
+// Shortest a spoke can get (guards against zero/negative for very wide labels).
+const DIAL_CONNECTOR_MIN = 14;
 
 function LeftThemeDial({ emotions, activeId, onChange, reduceMotion, delay }) {
   const idx = Math.max(0, emotions.findIndex((e) => e.id === activeId));
   const active = emotions[idx];
+
+  // Measure every category wordmark (labels vary a lot: HARM vs COMPANIONSHIP)
+  // so each spoke can start just left of its own word. Widths are constant per
+  // label, so we cache them by id and only re-measure on font load / resize.
+  const wordElsRef = useRef(new Map());
+  const [wordWidths, setWordWidths] = useState({});
+  const setWordEl = useCallback(
+    (id) => (el) => {
+      const map = wordElsRef.current;
+      if (el) map.set(id, el);
+      else map.delete(id);
+    },
+    []
+  );
+  useLayoutEffect(() => {
+    if (typeof ResizeObserver === 'undefined') return undefined;
+    const measure = () => {
+      const next = {};
+      wordElsRef.current.forEach((el, id) => {
+        if (el) next[id] = el.getBoundingClientRect().width;
+      });
+      setWordWidths((prev) => {
+        const keys = Object.keys(next);
+        const same =
+          keys.length === Object.keys(prev).length &&
+          keys.every((key) => prev[key] === next[key]);
+        return same ? prev : next;
+      });
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    wordElsRef.current.forEach((el) => el && ro.observe(el));
+    return () => ro.disconnect();
+  }, [emotions]);
   const n = emotions.length;
   // Keep the lit band narrow enough that at least the back slot stays hidden —
   // that hidden gap is where the wrap seam lives, so looping never flashes a
@@ -236,16 +267,48 @@ function LeftThemeDial({ emotions, activeId, onChange, reduceMotion, delay }) {
                 aria-label={`Show ${emo.label}`}
                 style={st.slotButton}
               >
-                <CategoryWord text={emo.label} />
+                <span ref={setWordEl(emo.id)} style={st.word}>
+                  {formatCategoryLabel(emo.label)}
+                </span>
               </button>
             ) : (
               <span style={st.slotStatic}>
-                <CategoryWord text={emo.label} />
+                <span ref={setWordEl(emo.id)} style={st.word}>
+                  {formatCategoryLabel(emo.label)}
+                </span>
               </span>
             )}
           </motion.div>
         );
       })}
+      {/* Dashed spokes — ONE per theme. Each hairline runs from just left of its
+          wordmark inward to the wheel's (off-screen) pivot, so every line is a
+          true radius and they all fan out from the dial's centre. Each rides the
+          arc with its label via the same slot transform. No node — just the line. */}
+      <div aria-hidden="true" style={st.dialSpokeLayer}>
+        {emotions.map((emo, i) => {
+          const k = wheelOffset(i, idx, n);
+          const slot = wheelSlot(k, vis);
+          const half = (wordWidths[emo.id] ?? 0) / 2;
+          // Labels sit `radius` from the pivot, so a line this long from the
+          // word's edge lands its far end exactly at the dial's centre.
+          const len = Math.max(DIAL_CONNECTOR_MIN, WHEEL.radius - half - DIAL_CONNECTOR_GAP);
+          return (
+            <motion.div
+              key={emo.id}
+              initial={false}
+              animate={{ x: slot.x, y: slot.y, rotate: slot.rotate, opacity: slot.opacity }}
+              transition={spin}
+              style={st.slot}
+            >
+              <span
+                style={{ ...st.dialSpokeLine, right: half + DIAL_CONNECTOR_GAP, width: len }}
+              />
+            </motion.div>
+          );
+        })}
+      </div>
+
       {/* The note's position within its category is shown once, below the note
           in the stack (see HorizontalConfessionStack). No counter rides above
           the wordmark here — it was a duplicate of that one. */}
@@ -278,7 +341,7 @@ function MobileThemeCaption({ label, position, total, reduceMotion }) {
       >
         <AnimatePresence mode="wait">
           <motion.div key={label} {...fade}>
-            <div style={st.mCategory}>{label}</div>
+            <div style={st.mCategory}>{formatCategoryLabel(label)}</div>
           </motion.div>
         </AnimatePresence>
       </motion.div>
@@ -304,6 +367,12 @@ export default function NoteOpenView({
   onExit,
   onAbout,
   onIndex,
+  // When true, this renders as a persistent top-level view (the EXPLORE tab)
+  // rather than a grid-click overlay: no shared-element morph, it opens on the
+  // first note, sits BELOW the app's nav chrome (so the tab bar shows through),
+  // hides its own INDEX/ABOUT cluster (the nav bar already provides those), and
+  // an empty-space click no longer dismisses it. Esc still steps out via onExit.
+  standalone = false,
 }) {
   const reduceMotion = useReducedMotion();
   const isMobile = useIsMobile();
@@ -598,11 +667,13 @@ export default function NoteOpenView({
   // visitor straight back out.
   const handleBackdropClick = useCallback(
     (e) => {
-      if (!revealed) return;
+      // As a persistent tab, empty-space clicks must NOT navigate away — the
+      // visitor leaves via the nav bar. Only the overlay dismisses on click-out.
+      if (standalone || !revealed) return;
       if (e.target.closest('[data-card],[data-vcard],button,a')) return;
       onExit?.();
     },
-    [revealed, onExit]
+    [standalone, revealed, onExit]
   );
 
   useEffect(() => {
@@ -650,7 +721,10 @@ export default function NoteOpenView({
       // the gentle entrance fade intact.
       exit={{ opacity: 0, transition: { duration: 0 } }}
       transition={{ duration: reduceMotion ? 0 : 0.3, ease: EASE_OUT }}
-      style={st.root}
+      // As a tab, sit beneath the app's fixed nav chrome (z 200) so the
+      // INDEX · EXPLORE · DIAL · ABOUT bar stays visible + clickable on top; as
+      // an overlay it covers everything (z 800).
+      style={standalone ? { ...st.root, zIndex: 1 } : st.root}
     >
       {/* The dark gradient + grain backdrop. During a morph it starts transparent
           and veils in a beat later, so the clicked note lifts off while the index
@@ -688,6 +762,8 @@ export default function NoteOpenView({
             onActiveChange={setActiveIndex}
             mountEntrance={!reduceMotion}
             entranceDelay={reduceMotion ? 0 : 0.08}
+            metaBlockCrossfade
+            transcriptInstantWords
           />
         ) : (
           <HorizontalConfessionStack
@@ -697,6 +773,12 @@ export default function NoteOpenView({
             mountEntrance={!reduceMotion && !wantMorph}
             entranceDelay={reduceMotion ? 0 : 0.08}
             showInlineCounter={false}
+            // The full-screen note view leans harder on the centred note — drop
+            // the neighbours much further than the dial page's filmstrip so the
+            // background reads as a faint whisper, not a competing row of images.
+            inactiveOpacity={STACK_INACTIVE_OPACITY}
+            metaBlockCrossfade
+            transcriptInstantWords
           />
         )}
       </motion.div>
@@ -751,6 +833,61 @@ export default function NoteOpenView({
             </motion.div>
           ) : null}
 
+          {/* Mobile: side chevrons with grain (no top A/D legend). */}
+          {isMobile && total > 1 ? (
+            <>
+              <NavGrainFilter id={MOBILE_NAV_GRAIN_ID} reduceMotion={reduceMotion} />
+              <button
+                type="button"
+                aria-label="Previous note"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  step(-1);
+                }}
+                style={st.mobileNavBtnLeft}
+              >
+                <svg
+                  width="22"
+                  height="22"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                  style={{ position: 'relative', zIndex: 1, filter: `url(#${MOBILE_NAV_GRAIN_ID})` }}
+                >
+                  <polyline points="15 18 9 12 15 6" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                aria-label="Next note"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  step(1);
+                }}
+                style={st.mobileNavBtnRight}
+              >
+                <svg
+                  width="22"
+                  height="22"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                  style={{ position: 'relative', zIndex: 1, filter: `url(#${MOBILE_NAV_GRAIN_ID})` }}
+                >
+                  <polyline points="9 18 15 12 9 6" />
+                </svg>
+              </button>
+            </>
+          ) : null}
+
           {/* Top-centre keyboard legend (desktop) — EXIT (Esc) apart from the
               LEFT / RIGHT (← / →) note-step pair. Same guide the dial page shows;
               here EXIT returns to the index. Pinned to the top of the view (the
@@ -768,49 +905,56 @@ export default function NoteOpenView({
                 onPress={handleNavPress}
                 onRelease={handleNavRelease}
                 style={st.navHintInner}
+                grainArrows
+                showExit={false}
               />
             </motion.div>
           )}
 
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ duration: 0.4, ease: EASE_OUT, delay: reduceMotion ? 0 : 0.04 }}
-            style={st.chrome}
-          >
-            {/* INDEX (returns to the grid) + ABOUT, styled to match the main
-                index screen's nav bar. INTRO/DIAL and the EXIT button are
-                intentionally hidden — the view is also dismissed with Esc or a
-                backdrop click. */}
-            <button
-              type="button"
-              style={st.navAbout}
-              aria-label="Return to index"
-              onClick={() => onIndex?.()}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.opacity = '0.8';
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.opacity = '0.5';
-              }}
+          {/* INDEX + ABOUT cluster — only for the grid-click OVERLAY. As the
+              EXPLORE tab, the app's own nav bar (INDEX · EXPLORE · DIAL · ABOUT)
+              renders above this view, so a second cluster here would duplicate it. */}
+          {!standalone && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              transition={{ duration: 0.4, ease: EASE_OUT, delay: reduceMotion ? 0 : 0.04 }}
+              style={st.chrome}
             >
-              INDEX
-            </button>
-            <button
-              type="button"
-              style={st.navAbout}
-              aria-label="Open about panel"
-              onClick={() => onAbout?.()}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.opacity = '0.8';
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.opacity = '0.5';
-              }}
-            >
-              ABOUT
-            </button>
-          </motion.div>
+              {/* INDEX (returns to the grid) + ABOUT, styled to match the main
+                  index screen's nav bar. INTRO/DIAL and the EXIT button are
+                  intentionally hidden — the view is also dismissed with Esc or a
+                  backdrop click. */}
+              <button
+                type="button"
+                style={st.navAbout}
+                aria-label="Return to index"
+                onClick={() => onIndex?.()}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.opacity = '0.8';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.opacity = '0.5';
+                }}
+              >
+                INDEX
+              </button>
+              <button
+                type="button"
+                style={st.navAbout}
+                aria-label="Open about panel"
+                onClick={() => onAbout?.()}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.opacity = '0.8';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.opacity = '0.5';
+                }}
+              >
+                ABOUT
+              </button>
+            </motion.div>
+          )}
         </>
       )}
 
@@ -926,6 +1070,49 @@ const st = {
     transform: 'none',
   },
 
+  // Mobile explore: fixed side chevrons (grain-filtered), matching the lightbox
+  // nav arrows but without the top A/D legend.
+  mobileNavBtnLeft: {
+    position: 'fixed',
+    top: '50%',
+    transform: 'translateY(-50%)',
+    zIndex: 45,
+    width: 44,
+    height: 44,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 0,
+    border: 'none',
+    borderRadius: '50%',
+    background: 'transparent',
+    color: '#CFCAB7',
+    opacity: 0.85,
+    cursor: 'pointer',
+    WebkitTapHighlightColor: 'transparent',
+    left: 'max(8px, 2vw)',
+  },
+  mobileNavBtnRight: {
+    position: 'fixed',
+    top: '50%',
+    transform: 'translateY(-50%)',
+    zIndex: 45,
+    width: 44,
+    height: 44,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 0,
+    border: 'none',
+    borderRadius: '50%',
+    background: 'transparent',
+    color: '#CFCAB7',
+    opacity: 0.85,
+    cursor: 'pointer',
+    WebkitTapHighlightColor: 'transparent',
+    right: 'max(8px, 2vw)',
+  },
+
   // Matches the main index screen's top-right nav chrome (App.jsx AboutHeader):
   // fixed to the top-right at the same inset, holding a single ABOUT button.
   chrome: {
@@ -955,8 +1142,9 @@ const st = {
     opacity: 0.5,
     cursor: 'pointer',
     transition: 'opacity 0.2s ease',
-    // Reads as a hyperlink → persistent underline, matching the index nav.
+    // Reads as a hyperlink → persistent dotted underline, matching the index nav.
     textDecorationLine: 'underline',
+    textDecorationStyle: 'dotted',
     textDecorationThickness: '1px',
     textUnderlineOffset: '3px',
   },
@@ -971,6 +1159,23 @@ const st = {
     width: 420,
     zIndex: 20,
     pointerEvents: 'none',
+  },
+  // Dashed spokes — one per theme, fanning out from the wheel's pivot. A
+  // full-height layer holds them; each spoke reuses the label's `slot` anchor
+  // (same left/top + motion transform) so it tracks its wordmark on the arc.
+  dialSpokeLayer: {
+    position: 'absolute',
+    inset: 0,
+    zIndex: 2,
+    pointerEvents: 'none',
+  },
+  // The hairline itself: pinned to the slot anchor's vertical centre, its right
+  // edge held `right` px left of the anchor (just past the word) and running
+  // `width` px further inward toward the pivot. Rotates with the parent slot.
+  dialSpokeLine: {
+    position: 'absolute',
+    top: 0,
+    borderTop: '1px dashed rgba(207, 202, 183, 0.35)',
   },
   // One wheel label. A 0-size anchor at (baseX, vertical centre); motion writes
   // the arc translate + rotate. The inner word centres itself on the anchor.
@@ -1015,8 +1220,7 @@ const st = {
     // Categories render all-caps to match the dial + wordmark style elsewhere.
     textTransform: 'uppercase',
   },
-  wordChar: {},
-  wordSpace: { display: 'inline-block', width: '0.42em' },
+
   // ── Mobile theme caption ──────────────────────────────────
   // Top-left: category label. Sits above the top peek's dimmed note.
   mCaption: {

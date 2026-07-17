@@ -12,12 +12,19 @@ import { Sidebar, SIDEBAR_WIDTH } from './Sidebar';
 import {
   BOTTOM_DIAL_SIZE,
   BottomCompassDial,
+  DialNavHint,
   getCategoryBreadcrumbInfo,
   HorizontalConfessionStack,
   INTRO_SPIN_EASE_BEZIER,
+  NavGrainFilter,
 } from './SideDial';
 import { CONFESSIONS as FALLBACK_CONFESSIONS } from './confessions';
-import { deriveEmotions, sortConfessionsByEmotions, NEUTRAL_GRADIENT } from './themes';
+import {
+  deriveEmotions,
+  sortConfessionsByEmotions,
+  NEUTRAL_GRADIENT,
+  formatCategoryLabel,
+} from './themes';
 import { useConfessions } from './useConfessions';
 import {
   TunableGrainBackground,
@@ -51,10 +58,17 @@ function useArchiveNavCompact() {
   return compact;
 }
 
-// Single-column phones. Together with ARCHIVE_NAV_COMPACT_MQ this mirrors the
-// grid's responsive column count exactly (see .confession-grid media queries):
-// 3 columns by default, 2 at ≤760px, 1 at ≤460px.
+// Single-column phones. Together with ARCHIVE_NAV_COMPACT_MQ (and the wide
+// tiers below) this mirrors the grid's responsive column count exactly (see
+// .confession-grid media queries): 1 at ≤460px, 2 at ≤760px, 3 by default,
+// 4 at ≥1640px, 5 at ≥2040px.
 const GRID_ONE_COL_MQ = '(max-width: 460px)';
+// Wider desktops pack more columns so the contact sheet fills large monitors
+// instead of floating in a fixed 1100px column — while keeping the square
+// tiles from ballooning. Thresholds account for the ~320px of left rail +
+// gutters, so each breakpoint keeps cells roughly in the 330–440px band.
+const GRID_FOUR_COL_MQ = '(min-width: 1640px)';
+const GRID_FIVE_COL_MQ = '(min-width: 2040px)';
 
 /** Live column count of the contact-sheet grid, so the lattice overlay can pin
  *  its hairlines to the right cell edges (percentage-positioned to the cols×rows
@@ -64,6 +78,9 @@ function useGridColumns() {
     if (typeof window === 'undefined') return 3;
     if (window.matchMedia(GRID_ONE_COL_MQ).matches) return 1;
     if (window.matchMedia(ARCHIVE_NAV_COMPACT_MQ).matches) return 2;
+    // Widest match wins: a 2040px screen also matches the 1640px query.
+    if (window.matchMedia(GRID_FIVE_COL_MQ).matches) return 5;
+    if (window.matchMedia(GRID_FOUR_COL_MQ).matches) return 4;
     return 3;
   };
   const [cols, setCols] = useState(read);
@@ -71,6 +88,8 @@ function useGridColumns() {
     const mqs = [
       window.matchMedia(GRID_ONE_COL_MQ),
       window.matchMedia(ARCHIVE_NAV_COMPACT_MQ),
+      window.matchMedia(GRID_FOUR_COL_MQ),
+      window.matchMedia(GRID_FIVE_COL_MQ),
     ];
     const onChange = () => setCols(read());
     mqs.forEach((mq) => mq.addEventListener('change', onChange));
@@ -127,54 +146,16 @@ const ARCHIVE_NAV_TEXT = {
   color: INK,
 };
 
-// Plain-text nav items read as hyperlinks, so they carry a persistent underline
-// (kept consistent with the About contact links + onboarding skip link). Pill /
-// icon CTAs stay undecorated so they still read as buttons.
+// Plain-text nav items read as hyperlinks, so they carry a persistent dotted
+// underline (kept consistent with the About contact links + the onboarding
+// Skip Intro / Enter the archive links). Pill / icon CTAs stay undecorated so
+// they still read as buttons.
 const ARCHIVE_LINK_UNDERLINE = {
   textDecorationLine: 'underline',
+  textDecorationStyle: 'dotted',
   textDecorationThickness: '1px',
   textUnderlineOffset: '3px',
 };
-
-const ARCHIVE_BRAND_MARK_STYLE = {
-  fontFamily: 'var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace)',
-  fontSize: 10,
-  fontWeight: 500,
-  lineHeight: 1.35,
-  letterSpacing: '0.1em',
-  textTransform: 'uppercase',
-  color: inkA(0.4),
-};
-
-/** Bottom-left wordmark + © on archive views (dial + grid). */
-function ArchiveBrandMark({ sidebarInset = 0, entranceDelay = 0.35 }) {
-  // Hidden on compact/mobile to keep the dial unobstructed.
-  const compact = useArchiveNavCompact();
-  if (compact) return null;
-  return (
-    <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      transition={{ duration: 0.55, ease, delay: entranceDelay }}
-      aria-label="What We Tell AI"
-      style={{
-        position: 'fixed',
-        left: sidebarInset + 24,
-        bottom: 24,
-        zIndex: 180,
-        pointerEvents: 'none',
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'flex-start',
-        gap: 4,
-        ...ARCHIVE_BRAND_MARK_STYLE,
-      }}
-    >
-      <span>What We Tell AI</span>
-      <span>© 2026</span>
-    </motion.div>
-  );
-}
 
 function ArchiveNavGradientWash() {
   return (
@@ -241,17 +222,11 @@ function ViewToggle({
         flexShrink: 0,
       }}
     >
-      {/* INTRO — leaves the archive for the onboarding intro (first screen). */}
-      <ToggleButton active={false} onClick={() => window.location.assign('/onboarding')}>
-        INTRO
-      </ToggleButton>
       <ToggleButton active={view === 'grid'} onClick={() => onChange('grid')}>
         INDEX
       </ToggleButton>
-      {/* WALL tab hidden — WallView + the `view === 'wall'` branch are kept so it
-          can be restored by re-adding this ToggleButton. */}
-      <ToggleButton active={view === 'theme'} onClick={() => onChange('theme')}>
-        DIAL
+      <ToggleButton active={view === 'explore'} onClick={() => onChange('explore')}>
+        EXPLORE
       </ToggleButton>
     </motion.div>
   );
@@ -424,13 +399,12 @@ function AboutHoverNote({ children }) {
 }
 
 function AboutHeader({ onClick, open, view, onChange, stacked = false, entranceDelay = 0.2 }) {
-  // Desktop top-right chrome is a small nav cluster: INTRO · INDEX · ABOUT.
+  // Desktop top-right chrome: INDEX (2×2 note grid on hover) · EXPLORE (3-card fan) · ABOUT.
   // In the stacked (compact) top bar the view tabs already live on the left,
-  // so there we render only the ABOUT button to avoid duplicating them.
-  // The view tabs are also hidden on the grid (INDEX) view to keep it clean;
-  // ABOUT still shows. `view` is only passed to the desktop (non-stacked)
-  // cluster, which is the only place these tabs render anyway.
-  const showTabs = !stacked && view !== 'grid';
+  // so there we render only the standalone INDEX + ABOUT to avoid duplicating
+  // them. `view` is only passed to the desktop (non-stacked) cluster, which is
+  // the only place these tabs render anyway.
+  const showTabs = !stacked;
 
   // ABOUT opens the panel. On desktop it's wrapped in the grainy sketch hover
   // note (see AboutHoverNote); the compact/touch top bar keeps the plain button
@@ -484,31 +458,16 @@ function AboutHeader({ onClick, open, view, onChange, stacked = false, entranceD
     >
       {showTabs && (
         <>
-          {/* INTRO — leaves the archive for the onboarding intro. */}
-          <ToggleButton active={false} onClick={() => window.location.assign('/onboarding')}>
-            INTRO
-          </ToggleButton>
-          <ToggleButton active={view === 'grid'} onClick={() => onChange?.('grid')}>
-            INDEX
-          </ToggleButton>
-          <ToggleButton active={view === 'theme'} onClick={() => onChange?.('theme')}>
-            DIAL
-          </ToggleButton>
+          <IndexMenu view={view} onChange={onChange} />
+          <ExploreMenu view={view} onChange={onChange} />
         </>
       )}
-      {/* When the full tab cluster is hidden (grid/INDEX view or the compact top
-          bar), keep a standalone INDEX next to ABOUT so it stays reachable.
-          Desktop upgrades it to a hover "deck of cards" that deals out the
-          section links (the tabs are hidden here); the compact/touch top bar
-          keeps the plain button since there's no hover. Both jump to the grid. */}
-      {!showTabs &&
-        (stacked ? (
-          <ToggleButton active={view === 'grid'} onClick={() => onChange?.('grid')}>
-            INDEX
-          </ToggleButton>
-        ) : (
-          <IndexMenu view={view} onChange={onChange} />
-        ))}
+      {/* Compact top bar: standalone INDEX next to ABOUT (no deck hover). */}
+      {!showTabs && (
+        <ToggleButton active={view === 'grid'} onClick={() => onChange?.('grid')}>
+          INDEX
+        </ToggleButton>
+      )}
       {/* Desktop reveals the torn-paper "?" hover note; the compact/touch top
           bar keeps the plain ABOUT button (no hover). */}
       {stacked ? aboutButton : <AboutHoverNote>{aboutButton}</AboutHoverNote>}
@@ -738,7 +697,8 @@ function AboutModal({ open, onClose }) {
             .about-close:active { transform: scale(0.9); }
             .about-contact-link {
               display: inline-block; color: rgba(207,202,183,0.72);
-              text-decoration: underline; text-decoration-thickness: 1px;
+              text-decoration: underline; text-decoration-style: dotted;
+              text-decoration-thickness: 1px;
               text-underline-offset: 3px; transition: color 0.18s ${HOVER_EASE};
             }
             .about-contact-link:hover { color: #CFCAB7; }
@@ -1112,71 +1072,26 @@ function ToggleButton({ active, onClick, children }) {
 }
 
 /* ─────────────────────────────────────────────────────────
- * INDEX MENU — "fan open the deck" storyboard
+ * INDEX HOVER — 2×2 note grid
  *
- * Hovering INDEX fans a small hand of grainy paper cards open
- * below the button (per the provided design — /index-card-*.png).
- * At rest the cards sit stacked square under the button's right
- * edge; on hover they splay into a fan — pinned up near the
- * button, bottoms spreading down-and-left — each swinging to its
- * fan slot (x / y / rotate) + fading in, staggered like a dealer
- * spreading a deck. Quick + springy. Anchored right so the fan
- * never runs off the right edge of the viewport.
- *
- *   hover in ▸ fan open (button side → out)
- *      0ms   DIAL  card swings to its slot + fades in
- *     50ms   INDEX card  …  (stagger 50ms)
- *    100ms   INTRO card  …
- *   hover out ▸ cards collapse back into the stack (fast, reverse)
- *
- * Reduced motion: cards appear in their fanned slots — no travel.
+ * Hovering INDEX reveals four small note images in a tight grid
+ * beneath the tab (inactive blur / grain pass). EXPLORE uses the
+ * older 3-card fan deck (see ExploreMenu below).
  * ───────────────────────────────────────────────────────── */
-const INDEX_MENU = {
-  gap: 12, //           px below the INDEX button the fan hangs
-  cardW: 56, //         px — paper-card width (matched to the INDEX word so the
-  cardH: 62, //         px — deck reads as small notes centered under the text)
-  stagger: 0.05, //     s between cards fanning out
-  exitStagger: 0.035, // s between cards collapsing back (reverse)
-  // Flick the fan open on a springy back-out ease — overshoots past the slot,
-  // then settles (the 1.27 control point is what gives the little bounce).
-  open: { duration: 0.42, ease: [0.18, 0.89, 0.32, 1.27] },
-  exit: { duration: 0.15, ease: [0.4, 0, 1, 1] },
-  closeDelayMs: 100, // grace period so button→card travel never flickers
-  // Collapsed stack (rest / hidden) — all cards share this, squared up under
-  // the button and centered on the text; the fan animates out from here.
-  collapsed: { opacity: 0, x: 0, y: -8, rotate: -3, scale: 0.9 },
+const INDEX_HOVER_GRID = {
+  belowGap: 10, // px between the INDEX label and the grid
+  cellW: 34,
+  cellH: 40,
+  gridGap: 5,
+  closeDelayMs: 100, // grace so pointer travel never flickers closed
 };
 
-// The archive's three views, rendered as the fanned paper cards (assets in
-// /public). `fan` is each card's resting slot { x, y, rotate } relative to the
-// fan's top-right anchor (INDEX's right edge); the fan opens down-and-left so it
-// stays on screen. INTRO leaves for the onboarding intro; the others switch view.
-const INDEX_MENU_ITEMS = [
-  { id: 'intro', label: 'INTRO', img: '/index-card-1.png', fan: { x: -40, y: 14, rotate: -18 } },
-  { id: 'grid', label: 'INDEX', img: '/index-card-2.png', fan: { x: 0, y: 0, rotate: -2 } },
-  { id: 'theme', label: 'DIAL', img: '/index-card-3.png', fan: { x: 38, y: 14, rotate: 16 } },
+const INDEX_HOVER_IMAGES = [
+  '/index-card-2.png',
+  '/index-card-1.png',
+  '/index-card-3.png',
+  '/index-card-2.png',
 ];
-
-/* ─────────────────────────────────────────────────────────
- * INDEX NOTE HOVER — 3D card tilt
- *
- *   rest   →  card sits flat in its fanned slot
- *   hover  →  card leans toward the cursor + lifts a touch
- *             · cursor x  →  rotateY  (turn left / right)
- *             · cursor y  →  rotateX  (tip top back / forward)
- *   leave  →  spring settles it back to flat
- *
- *   Kept slight (a peek of depth, not a flip). A per-card
- *   `transformPerspective` keeps the 3D self-contained so the
- *   fan's own 2D transform / drop-shadow can't flatten it.
- * ───────────────────────────────────────────────────────── */
-const INDEX_CARD_TILT = {
-  maxYaw: 15, //       deg — rotateY at the card's left / right edge
-  maxPitch: 12, //     deg — rotateX at the card's top / bottom edge
-  perspective: 460, // px  — smaller reads as stronger 3D
-  lift: 1.06, //       scale pop that sells the "toward you" lean
-  spring: { stiffness: 260, damping: 20, mass: 0.5 },
-};
 
 /** Boost over the shared inactive-card dial defaults for nav hover peeks.
  *  Tune here for About + INDEX hover images. Base inactive-card values
@@ -1232,16 +1147,46 @@ function useHoverPeekInactiveStyle() {
   return { filter, opacity, inactive: boostedParams };
 }
 
-/**
- * One fanned "deck" card in the INDEX menu. Owns its own tilt springs so the
- * card can lean toward the cursor in 3D on hover. The image wears a boosted
- * inactive-card blur / grayscale / grain pass (see useHoverPeekInactiveStyle).
- */
-function IndexMenuCard({ item, i, count, reduceMotion, active, onSelect, peekStyle }) {
-  const yaw = useMotionValue(0); //   rotateY (raw target from cursor x)
-  const pitch = useMotionValue(0); // rotateX (raw target from cursor y)
-  const rotateY = useSpring(yaw, INDEX_CARD_TILT.spring);
-  const rotateX = useSpring(pitch, INDEX_CARD_TILT.spring);
+/* ─────────────────────────────────────────────────────────
+ * EXPLORE HOVER — 3-card fan deck
+ *
+ * The fan INDEX used to show: three small note images splay
+ * beneath the tab on hover, with a springy back-out open and
+ * a slight 3D tilt toward the cursor. Decorative peek only —
+ * clicking EXPLORE still opens the explore view.
+ * ───────────────────────────────────────────────────────── */
+const EXPLORE_HOVER_FAN = {
+  gap: 12, //           px below the EXPLORE button the fan hangs
+  cardW: 56, //         px — paper-card width
+  cardH: 62, //         px — paper-card height
+  stagger: 0.05, //     s between cards fanning out
+  exitStagger: 0.035, // s between cards collapsing back (reverse)
+  open: { duration: 0.42, ease: [0.18, 0.89, 0.32, 1.27] },
+  exit: { duration: 0.15, ease: [0.4, 0, 1, 1] },
+  closeDelayMs: 100, // grace so pointer travel never flickers closed
+  collapsed: { opacity: 0, x: 0, y: -8, rotate: -3, scale: 0.9 },
+};
+
+const EXPLORE_HOVER_ITEMS = [
+  { img: '/index-card-1.png', fan: { x: -40, y: 14, rotate: -18 } },
+  { img: '/index-card-2.png', fan: { x: 0, y: 0, rotate: -2 } },
+  { img: '/index-card-3.png', fan: { x: 38, y: 14, rotate: 16 } },
+];
+
+const EXPLORE_FAN_TILT = {
+  maxYaw: 15,
+  maxPitch: 12,
+  perspective: 460,
+  lift: 1.06,
+  spring: { stiffness: 260, damping: 20, mass: 0.5 },
+};
+
+/** One decorative card in the EXPLORE hover fan. */
+function ExploreHoverFanCard({ item, i, count, reduceMotion, peekStyle }) {
+  const yaw = useMotionValue(0);
+  const pitch = useMotionValue(0);
+  const rotateY = useSpring(yaw, EXPLORE_FAN_TILT.spring);
+  const rotateX = useSpring(pitch, EXPLORE_FAN_TILT.spring);
 
   const fanned = {
     opacity: 1,
@@ -1255,11 +1200,10 @@ function IndexMenuCard({ item, i, count, reduceMotion, active, onSelect, peekSty
     (e) => {
       if (reduceMotion) return;
       const r = e.currentTarget.getBoundingClientRect();
-      // -0.5..0.5 across the card; leans toward the cursor.
       const nx = (e.clientX - r.left) / r.width - 0.5;
       const ny = (e.clientY - r.top) / r.height - 0.5;
-      yaw.set(nx * (INDEX_CARD_TILT.maxYaw * 2));
-      pitch.set(-ny * (INDEX_CARD_TILT.maxPitch * 2));
+      yaw.set(nx * (EXPLORE_FAN_TILT.maxYaw * 2));
+      pitch.set(-ny * (EXPLORE_FAN_TILT.maxPitch * 2));
     },
     [reduceMotion, yaw, pitch]
   );
@@ -1269,58 +1213,49 @@ function IndexMenuCard({ item, i, count, reduceMotion, active, onSelect, peekSty
   }, [yaw, pitch]);
 
   return (
-    <motion.button
-      type="button"
-      role="menuitem"
-      aria-label={item.label}
-      onClick={() => onSelect(item.id)}
+    <motion.div
+      aria-hidden="true"
       onMouseMove={handleTilt}
       onMouseLeave={resetTilt}
-      onBlur={resetTilt}
-      whileHover={reduceMotion ? undefined : { scale: INDEX_CARD_TILT.lift }}
-      initial={reduceMotion ? { ...fanned, opacity: 0 } : INDEX_MENU.collapsed}
+      initial={reduceMotion ? { ...fanned, opacity: 0 } : EXPLORE_HOVER_FAN.collapsed}
       animate={fanned}
       exit={
         reduceMotion
           ? { opacity: 0, transition: { duration: 0.12 } }
           : {
-              ...INDEX_MENU.collapsed,
+              ...EXPLORE_HOVER_FAN.collapsed,
               transition: {
-                ...INDEX_MENU.exit,
-                delay: i * INDEX_MENU.exitStagger,
+                ...EXPLORE_HOVER_FAN.exit,
+                delay: i * EXPLORE_HOVER_FAN.exitStagger,
               },
             }
       }
       transition={
         reduceMotion
           ? { duration: 0.16 }
-          : { ...INDEX_MENU.open, delay: (count - 1 - i) * INDEX_MENU.stagger }
+          : { ...EXPLORE_HOVER_FAN.open, delay: (count - 1 - i) * EXPLORE_HOVER_FAN.stagger }
       }
+      whileHover={reduceMotion ? undefined : { scale: EXPLORE_FAN_TILT.lift }}
       style={{
         position: 'absolute',
-        top: INDEX_MENU.gap,
-        right: 0,
-        width: INDEX_MENU.cardW,
-        height: INDEX_MENU.cardH,
-        padding: 0,
-        border: 'none',
-        background: 'none',
-        cursor: 'pointer',
+        top: EXPLORE_HOVER_FAN.gap,
+        left: '50%',
+        marginLeft: -EXPLORE_HOVER_FAN.cardW / 2,
+        width: EXPLORE_HOVER_FAN.cardW,
+        height: EXPLORE_HOVER_FAN.cardH,
         transformOrigin: 'top center',
-        zIndex: active ? 3 : 2,
+        zIndex: 2,
         filter: 'drop-shadow(0 10px 16px rgba(0,0,0,0.4))',
+        pointerEvents: 'auto',
       }}
     >
-      {/* Inner tilt layer: cursor-tracked 3D lean around the card's own center,
-          with a self-contained perspective (unaffected by the button's fan
-          transform / drop-shadow). */}
       <motion.div
         style={{
           width: '100%',
           height: '100%',
           rotateX,
           rotateY,
-          transformPerspective: INDEX_CARD_TILT.perspective,
+          transformPerspective: EXPLORE_FAN_TILT.perspective,
         }}
       >
         <img
@@ -1335,18 +1270,99 @@ function IndexMenuCard({ item, i, count, reduceMotion, active, onSelect, peekSty
             height: '100%',
             objectFit: 'contain',
             display: 'block',
+            // Same blur + grayscale + animated-grain peek as the INDEX grid /
+            // ABOUT hover note, so the fanned notes read as degraded peeks.
             opacity: peekStyle.opacity,
             filter: peekStyle.filter,
           }}
         />
       </motion.div>
-    </motion.button>
+    </motion.div>
   );
 }
 
 /**
- * INDEX with a hover-revealed "deck of cards" menu of the archive's views.
- * Desktop only (hover/focus); the trigger still clicks through to the grid.
+ * EXPLORE tab with a hover-revealed 3-card fan (the old INDEX deck).
+ * Decorative peek only — the tab click still opens explore.
+ */
+function ExploreMenu({ view, onChange }) {
+  const reduceMotion = useReducedMotion();
+  const [open, setOpen] = useState(false);
+  const closeTimer = useRef(null);
+  const peekStyle = useHoverPeekInactiveStyle();
+  const count = EXPLORE_HOVER_ITEMS.length;
+
+  const cancelClose = useCallback(() => {
+    if (closeTimer.current) {
+      clearTimeout(closeTimer.current);
+      closeTimer.current = null;
+    }
+  }, []);
+  const openNow = useCallback(() => {
+    cancelClose();
+    setOpen(true);
+  }, [cancelClose]);
+  const scheduleClose = useCallback(() => {
+    cancelClose();
+    closeTimer.current = setTimeout(() => setOpen(false), EXPLORE_HOVER_FAN.closeDelayMs);
+  }, [cancelClose]);
+  useEffect(() => cancelClose, [cancelClose]);
+
+  const fanW = EXPLORE_HOVER_FAN.cardW + Math.abs(EXPLORE_HOVER_ITEMS[0].fan.x) + EXPLORE_HOVER_ITEMS[2].fan.x;
+  const fanH = EXPLORE_HOVER_FAN.gap + EXPLORE_HOVER_FAN.cardH + 18;
+
+  return (
+    <div
+      style={{ position: 'relative', display: 'inline-flex' }}
+      onMouseEnter={openNow}
+      onMouseLeave={scheduleClose}
+      onFocusCapture={openNow}
+      onBlurCapture={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget)) scheduleClose();
+      }}
+    >
+      <ToggleButton active={view === 'explore'} onClick={() => onChange?.('explore')}>
+        EXPLORE
+      </ToggleButton>
+
+      {/* Fan hangs BELOW the button (top: 100%) so this hover-bridge layer never
+          covers the EXPLORE label — otherwise it would intercept the tab click. */}
+      <div
+        aria-hidden={!open}
+        style={{
+          position: 'absolute',
+          top: '100%',
+          left: '50%',
+          transform: 'translateX(-50%)',
+          width: fanW,
+          height: fanH,
+          zIndex: 220,
+          pointerEvents: open ? 'auto' : 'none',
+        }}
+      >
+        <CardNoiseFilterDefs params={peekStyle.inactive} />
+        <AnimatePresence>
+          {open
+            ? EXPLORE_HOVER_ITEMS.map((item, i) => (
+                <ExploreHoverFanCard
+                  key={item.img}
+                  item={item}
+                  i={i}
+                  count={count}
+                  reduceMotion={reduceMotion}
+                  peekStyle={peekStyle}
+                />
+              ))
+            : null}
+        </AnimatePresence>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * INDEX tab with a hover-revealed 2×2 grid of small note images.
+ * Decorative peek only — the tab click still opens the grid.
  */
 function IndexMenu({ view, onChange }) {
   const reduceMotion = useReducedMotion();
@@ -1366,20 +1382,12 @@ function IndexMenu({ view, onChange }) {
   }, [cancelClose]);
   const scheduleClose = useCallback(() => {
     cancelClose();
-    closeTimer.current = setTimeout(() => setOpen(false), INDEX_MENU.closeDelayMs);
+    closeTimer.current = setTimeout(() => setOpen(false), INDEX_HOVER_GRID.closeDelayMs);
   }, [cancelClose]);
   useEffect(() => cancelClose, [cancelClose]);
 
-  const go = useCallback(
-    (id) => {
-      setOpen(false);
-      if (id === 'intro') window.location.assign('/onboarding');
-      else onChange?.(id);
-    },
-    [onChange]
-  );
-
-  const count = INDEX_MENU_ITEMS.length;
+  const gridW = INDEX_HOVER_GRID.cellW * 2 + INDEX_HOVER_GRID.gridGap;
+  const gridH = INDEX_HOVER_GRID.cellH * 2 + INDEX_HOVER_GRID.gridGap;
 
   return (
     <div
@@ -1391,43 +1399,75 @@ function IndexMenu({ view, onChange }) {
         if (!e.currentTarget.contains(e.relatedTarget)) scheduleClose();
       }}
     >
-      {/* Trigger — visually the same INDEX toggle; still jumps to the grid. */}
       <ToggleButton active={view === 'grid'} onClick={() => onChange?.('grid')}>
         INDEX
       </ToggleButton>
 
-      {/* Fan anchor — a box pinned under the button's right edge that also
-          bridges the gap (hoverable while open, so travelling from the button
-          onto a card never crosses a dead zone). Cards are absolutely stacked
-          at its top-right and fan out via transform. */}
       <div
-        role="menu"
-        aria-label="Sections"
+        aria-hidden={!open}
         style={{
           position: 'absolute',
-          top: '100%',
-          right: 0,
-          width: 200,
-          height: 160,
+          top: `calc(100% + ${INDEX_HOVER_GRID.belowGap}px)`,
+          left: 0,
+          width: gridW,
+          height: gridH,
           zIndex: 220,
-          pointerEvents: open ? 'auto' : 'none',
+          pointerEvents: 'none',
         }}
       >
         <CardNoiseFilterDefs params={peekStyle.inactive} />
         <AnimatePresence>
-          {open &&
-            INDEX_MENU_ITEMS.map((item, i) => (
-              <IndexMenuCard
-                key={item.id}
-                item={item}
-                i={i}
-                count={count}
-                reduceMotion={reduceMotion}
-                active={item.id === view}
-                onSelect={go}
-                peekStyle={peekStyle}
-              />
-            ))}
+          {open ? (
+            <motion.div
+              key="index-hover-grid"
+              initial={reduceMotion ? false : { opacity: 0, scale: 0.94 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={reduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.96 }}
+              transition={{ duration: reduceMotion ? 0.12 : 0.22, ease: HOVER_EASE }}
+              style={{
+                display: 'grid',
+                gridTemplateColumns: `repeat(2, ${INDEX_HOVER_GRID.cellW}px)`,
+                gridTemplateRows: `repeat(2, ${INDEX_HOVER_GRID.cellH}px)`,
+                gap: INDEX_HOVER_GRID.gridGap,
+                transformOrigin: 'top left',
+              }}
+            >
+              {INDEX_HOVER_IMAGES.map((src, i) => (
+                <motion.div
+                  key={`index-hover-${i}`}
+                  initial={reduceMotion ? false : { opacity: 0, y: 5 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, transition: { duration: 0.1 } }}
+                  transition={{
+                    duration: reduceMotion ? 0.12 : 0.2,
+                    ease: HOVER_EASE,
+                    delay: reduceMotion ? 0 : i * 0.04,
+                  }}
+                  style={{
+                    width: INDEX_HOVER_GRID.cellW,
+                    height: INDEX_HOVER_GRID.cellH,
+                    overflow: 'hidden',
+                    filter: 'drop-shadow(0 6px 10px rgba(0,0,0,0.35))',
+                  }}
+                >
+                  <img
+                    src={src}
+                    alt=""
+                    aria-hidden="true"
+                    draggable={false}
+                    style={{
+                      width: '100%',
+                      height: '100%',
+                      objectFit: 'contain',
+                      display: 'block',
+                      opacity: peekStyle.opacity,
+                      filter: peekStyle.filter,
+                    }}
+                  />
+                </motion.div>
+              ))}
+            </motion.div>
+          ) : null}
         </AnimatePresence>
       </div>
     </div>
@@ -1496,11 +1536,12 @@ const facetMenuButtonStyle = {
   transition: `border-color 0.2s ${HOVER_EASE}, background 0.2s ${HOVER_EASE}`,
 };
 
-/** Floating dropdown surface for the facet menu (see 2nd reference shot).
-    Opens upward since the filter bar is pinned to the bottom of the view. */
+/** Floating dropdown surface for the facet menu (compact/phone bar only —
+    desktop uses the sidebar accordions). Opens downward below the button since
+    the phone filter bar docks at the top of the view. */
 const facetMenuPanelStyle = {
   position: 'absolute',
-  bottom: 'calc(100% + 8px)',
+  top: 'calc(100% + 8px)',
   left: 0,
   minWidth: 208,
   zIndex: 20,
@@ -1533,6 +1574,20 @@ const facetMenuItemStyle = (current) => ({
   textTransform: 'uppercase',
   cursor: 'pointer',
 });
+
+/** Desktop grid filter rail — a left sidebar (search on top, then Category and
+    Location accordions with checkbox lists). Phone widths keep the docked bar
+    instead. Geometry lives here so the sidebar and the grid's matching left pad
+    stay in sync. */
+const FILTER_SIDEBAR_W = 200; //    px — rail width
+const FILTER_SIDEBAR_LEFT = 32; //  px — inset from the view's left edge
+const FILTER_SIDEBAR_TOP = 112; //  px — starts below the wordmark chrome
+const FILTER_SIDEBAR_GAP = 40; //   px — clearance between rail and grid
+// Entrance: the rail's rows (search → Category → Location) slide in one after
+// another, starting just after the nav chrome has landed (see
+// ARCHIVE_NAV_CHROME_DELAY_GRID) so the sidebar reads as a follow-on beat.
+const FILTER_SIDEBAR_ENTER_DELAY = ARCHIVE_NAV_CHROME_DELAY_GRID + 0.15;
+const FILTER_SIDEBAR_ENTER_STAGGER = 0.1;
 
 /** "M/D/YYYY" → epoch ms for recency sort. NaN when missing/unparseable. */
 function parseNoteDate(s) {
@@ -1869,7 +1924,7 @@ function WallView({ confessions, sidebarInset = SIDEBAR_WIDTH }) {
                         marginBottom: 3,
                       }}
                     >
-                      {c.category}
+                      {formatCategoryLabel(c.category)}
                     </div>
                   ) : null}
                   <div
@@ -1915,18 +1970,20 @@ function WallView({ confessions, sidebarInset = SIDEBAR_WIDTH }) {
  *
  *  measuring   measure each tile, choose its nearest edge
  *      ↓       (runs pre-paint, so nothing flashes at rest first)
- *   parked     tiles parked just off their nearest edge (hidden)
- *      ↓
- *   flying     +80ms · fly to home, ease-out, 45ms stagger (row-by-row;
- *      ↓                columns alternate per row — see gridColumnOrder)
+ *   parked     tiles parked just off their nearest edge (hidden),
+ *      ↓        pre-tilted a few degrees toward their travel direction
+ *   flying     +80ms · fly to home, ease-out, 75ms stagger (row-by-row;
+ *      ↓                columns alternate per row — see gridColumnOrder),
+ *      ↓                each tile untilts (rotate → 0) as it settles
  *  settled     native scrolling restored
  * ───────────────────────────────────────────────────────── */
 const GRID_ENTRANCE = {
   startDelay: 80, // ms before the first tile leaves its edge
-  stagger: 0.045, // s between tiles, in reveal order (see gridColumnOrder)
-  duration: 0.72, // s per tile fly-in
+  stagger: 0.075, // s between tiles, in reveal order (see gridColumnOrder)
+  duration: 0.8, // s per tile fly-in
   ease: [0.16, 1, 0.3, 1], // ease-out (expo-ish): fast launch, soft landing
   offscreenPad: 64, // px past the nearest edge so a tile parks fully hidden
+  rotate: 8, // deg — parked tilt (signed by travel dir); unwinds to 0 on landing
 };
 
 /* Per-row reveal order for the entrance stagger. Rows fly in top→bottom, but the
@@ -1943,20 +2000,21 @@ function gridColumnOrder(cols, parity) {
 }
 
 // Rest transform for tiles that don't participate (below the fold at mount).
-const GRID_TILE_REST = { x: 0, y: 0, delay: 0 };
+const GRID_TILE_REST = { x: 0, y: 0, rot: 0, delay: 0 };
 
 // Each target carries its own transition, so measuring→parked is instant
-// (no fly-out) while parked→flying eases in. `custom` = { x, y, delay } per tile.
+// (no fly-out) while parked→flying eases in. `custom` = { x, y, rot, delay } per tile.
 const gridTileVariants = {
-  measuring: { opacity: 0, x: 0, y: 0, transition: { duration: 0 } },
-  parked: (d) => ({ opacity: 1, x: d.x, y: d.y, transition: { duration: 0 } }),
+  measuring: { opacity: 0, x: 0, y: 0, rotate: 0, transition: { duration: 0 } },
+  parked: (d) => ({ opacity: 1, x: d.x, y: d.y, rotate: d.rot, transition: { duration: 0 } }),
   flying: (d) => ({
     opacity: 1,
     x: 0,
     y: 0,
+    rotate: 0,
     transition: { duration: GRID_ENTRANCE.duration, ease: GRID_ENTRANCE.ease, delay: d.delay },
   }),
-  settled: { opacity: 1, x: 0, y: 0, transition: { duration: 0 } },
+  settled: { opacity: 1, x: 0, y: 0, rotate: 0, transition: { duration: 0 } },
 };
 
 /* ─────────────────────────────────────────────────────────
@@ -2011,6 +2069,9 @@ function GridView({
   confessions,
   sidebarInset = SIDEBAR_WIDTH,
   onOpenNote,
+  /** Notifies the parent when the Lightbox opens/closes (so App can dim the top
+   *  chrome to match the grid's own inactive-state recession). */
+  onLightboxOpenChange,
   noteOpen = false,
   /** When true, skip the fly-in entrance (e.g. returning from dial → grid). */
   skipEntrance = false,
@@ -2040,6 +2101,24 @@ function GridView({
   // (Category / Location / Recency) opens a menu of its own selectable values.
   const [openFacet, setOpenFacet] = useState(null); // null | 'category' | 'location' | 'recency'
   const facetMenuRef = useRef(null); // anchor for outside-click / Escape dismissal
+  // Desktop sidebar accordions (Category / Location). Independent open/close,
+  // collapsed by default so the rail stays compact until a facet is expanded.
+  const [openSections, setOpenSections] = useState(() => new Set());
+  const toggleSection = useCallback((id) => {
+    setOpenSections((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+  // Sidebar entrance stagger — skipped when returning dial→grid (already
+  // settled) or when the visitor prefers reduced motion; otherwise each row
+  // (search, then the accordions) fades/slides in a beat after the nav chrome.
+  const sidebarSkipEnter = reduceMotion || skipEntrance;
+  const sidebarItemInitial = sidebarSkipEnter ? false : { opacity: 0, x: -10 };
+  const sidebarEnterDelay = sidebarSkipEnter ? 0 : FILTER_SIDEBAR_ENTER_DELAY;
+  const sidebarStagger = sidebarSkipEnter ? 0 : FILTER_SIDEBAR_ENTER_STAGGER;
 
   const withImages = useMemo(
     () => confessions.filter((c) => c.image && !failedIds.has(c.id)),
@@ -2116,7 +2195,9 @@ function GridView({
     const ro = new ResizeObserver(update);
     ro.observe(el);
     return () => ro.disconnect();
-  }, []);
+    // Re-run across the compact↔desktop switch: the docked bar only mounts in
+    // compact mode now, so barRef attaches (or detaches) when `compact` flips.
+  }, [compact]);
 
   // ── Grid entrance — see GRID ENTRANCE STORYBOARD above. Measure every tile
   //    that's on screen at mount, park it just off its nearest viewport edge,
@@ -2208,9 +2289,13 @@ function GridView({
       gridColumnOrder(cols.length, rowIdx % 2).forEach((colIdx) => {
         const t = cols[colIdx];
         if (!t) return;
+        // Tilt is signed by travel direction so a tile swings in from its edge:
+        // side-entering tiles lean off their x, top/bottom off their y.
+        const dir = t.x !== 0 ? Math.sign(t.x) : t.y !== 0 ? Math.sign(t.y) : 1;
         offsets.set(t.id, {
           x: t.x,
           y: t.y,
+          rot: dir * GRID_ENTRANCE.rotate,
           delay: GRID_ENTRANCE.startDelay / 1000 + order * GRID_ENTRANCE.stagger,
         });
         order += 1;
@@ -2364,6 +2449,17 @@ function GridView({
   // in the last row; the bottom edge is as wide as the last row is full. The far
   // right/bottom edge lines are pulled in 1px so the whole stroke stays inside.
   const noteCount = visible.length;
+  // When the Lightbox is open, the grid + chrome behind it recede into a muted
+  // backdrop: the grid drops to its "inactive" image state (desaturated +
+  // softened) and the surrounding chrome fades down. See the scroll container /
+  // sidebar / count treatments below.
+  const lightboxOpen = !!selected;
+  // Bubble the open/close up so App can dim the top chrome in step; clear it on
+  // unmount (e.g. switching views) so the chrome never stays stuck dimmed.
+  useEffect(() => {
+    onLightboxOpenChange?.(lightboxOpen);
+    return () => onLightboxOpenChange?.(false);
+  }, [lightboxOpen, onLightboxOpenChange]);
   const latticeRows = Math.max(1, Math.ceil(noteCount / gridCols));
   const latticeLastRow = noteCount - (latticeRows - 1) * gridCols; // cells in last row
   const latticeLines = useMemo(() => {
@@ -2456,7 +2552,11 @@ function GridView({
            1px <div> lines (see GridView / latticeLines) positioned by percentage
            onto the square-cell grid, so every line pins to a cell edge and draws
            on by scaling from one end — solid strokes, never dashed. */
-        .grid-stack { position: relative; max-width: 1100px; margin: 0 auto; }
+        /* Fills the available width (rail + gutters aside) up to a generous cap,
+           so wide monitors get a denser sheet rather than a fixed 1100px column
+           floating with dead space. Column count steps up with the min-width
+           queries below (kept in lockstep with useGridColumns for the lattice). */
+        .grid-stack { position: relative; max-width: 2200px; margin: 0 auto; }
         .confession-grid {
           position: relative;
           z-index: 1;
@@ -2491,6 +2591,15 @@ function GridView({
         @media (max-width: 460px) {
           .confession-grid { grid-template-columns: 1fr; }
         }
+        /* Wide desktops: more columns so tiles fill the sheet without ballooning.
+           Ordered widest-last so the 2040px rule wins when both match — mirrors
+           useGridColumns() so the lattice hairlines stay pinned to cell edges. */
+        @media (min-width: 1640px) {
+          .confession-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+        }
+        @media (min-width: 2040px) {
+          .confession-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+        }
         .grid-search-input::placeholder { color: rgba(207,202,183,0.4); }
         .grid-search-input:focus { border-color: rgba(207,202,183,0.5); }
         /* The native search "clear" (✕) renders as a near-invisible dark glyph
@@ -2508,6 +2617,12 @@ function GridView({
         .grid-chip:not(.is-active):hover { border-color: rgba(207,202,183,0.45); color: #CFCAB7; }
         .facet-menu-btn:hover { border-color: rgba(207,202,183,0.4); background: rgba(207,202,183,0.14); }
         .facet-menu-item:hover { background: rgba(207,202,183,0.09); color: #CFCAB7; }
+        /* Desktop filter sidebar (search + Category/Location accordions). */
+        .facet-accordion-btn:hover { color: #EDE7D6; }
+        .facet-checkbox-row:hover { color: #CFCAB7 !important; }
+        .facet-checkbox-row:hover .facet-checkbox-box { border-color: rgba(207,202,183,0.7); }
+        .filter-sidebar { scrollbar-width: none; }
+        .filter-sidebar::-webkit-scrollbar { width: 0; height: 0; }
         /* Metadata: note number top-left, category bottom-right only. Grey at
            rest, ink on hover. Fades in once the grid entrance settles. */
         .grid-tile-num,
@@ -2542,15 +2657,17 @@ function GridView({
         }
       `}</style>
 
-      {/* Filter bar is pinned to the bottom: transcript search + a row of filter
-          tabs (Category · Location · Recency), each opening a dropdown of its own
+      {/* Compact (phone) filter bar docked at the top: transcript search + a row
+          of filter tabs (Category · Location), each opening a dropdown of its own
           selectable values. The gradient masks tiles scrolling underneath;
           pointerEvents pass through the empty areas so the list still scrolls.
-          Fades out with the tiles when a note opens (see GRID EXIT storyboard). */}
+          Fades out with the tiles when a note opens (see GRID EXIT storyboard).
+          Desktop routes these same controls into the left sidebar below. */}
+      {compact ? (
       <motion.div
         ref={barRef}
         initial={false}
-        animate={{ opacity: noteOpen ? 0 : 1 }}
+        animate={{ opacity: noteOpen ? 0 : lightboxOpen ? 0.12 : 1 }}
         transition={{
           duration: reduceMotion ? 0 : GRID_EXIT.barFade,
           ease: noteOpen ? GRID_EXIT.exitEase : GRID_EXIT.enterEase,
@@ -2653,9 +2770,9 @@ function GridView({
                       {isOpen ? (
                         <motion.div
                           role="menu"
-                          initial={{ opacity: 0, y: 6 }}
+                          initial={{ opacity: 0, y: -6 }}
                           animate={{ opacity: 1, y: 0 }}
-                          exit={{ opacity: 0, y: 6 }}
+                          exit={{ opacity: 0, y: -6 }}
                           transition={{ duration: 0.16, ease }}
                           style={{ ...facetMenuPanelStyle, maxHeight: 340, overflowY: 'auto' }}
                         >
@@ -2706,7 +2823,7 @@ function GridView({
               type="search"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search transcripts…"
+              placeholder="SEARCH CONFESSIONS"
               aria-label="Search note transcripts"
               style={{
                 pointerEvents: 'auto',
@@ -2729,6 +2846,190 @@ function GridView({
           </div>
         </div>
       </motion.div>
+      ) : (
+        /* Desktop: left filter rail — search on top, then Category and Location
+           accordions, each expanding to a checkbox list of its values. Fixed
+           beside the scrolling grid; fades out with the tiles on note-open. */
+        <motion.aside
+          aria-label="Filter notes"
+          initial={false}
+          animate={{ opacity: noteOpen ? 0 : lightboxOpen ? 0.12 : 1 }}
+          transition={{
+            duration: reduceMotion ? 0 : GRID_EXIT.barFade,
+            ease: noteOpen ? GRID_EXIT.exitEase : GRID_EXIT.enterEase,
+          }}
+          className="filter-sidebar"
+          style={{
+            position: 'absolute',
+            top: FILTER_SIDEBAR_TOP,
+            left: FILTER_SIDEBAR_LEFT,
+            bottom: 32,
+            width: FILTER_SIDEBAR_W,
+            zIndex: 6,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 18,
+            pointerEvents: noteOpen ? 'none' : 'auto',
+            overflowY: 'auto',
+            overflowX: 'hidden',
+          }}
+        >
+          <motion.input
+            className="grid-search-input"
+            type="search"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search confessions..."
+            aria-label="Search note transcripts"
+            initial={sidebarItemInitial}
+            animate={{ opacity: 1, x: 0 }}
+            transition={{ duration: reduceMotion ? 0 : 0.5, ease, delay: sidebarEnterDelay }}
+            style={{
+              flex: '0 0 auto',
+              width: '100%',
+              background: 'transparent',
+              border: '1px dashed rgba(207,202,183,0.3)',
+              borderRadius: 0,
+              padding: '9px 16px',
+              color: '#CFCAB7',
+              fontFamily: 'var(--font-mono)',
+              fontSize: 13,
+              letterSpacing: '0.04em',
+              outline: 'none',
+              transition: `border-color 0.2s ${HOVER_EASE}`,
+            }}
+          />
+
+          {[
+            { id: 'category', label: 'Category' },
+            { id: 'location', label: 'Location' },
+          ].map((f, idx) => {
+            const isOpen = openSections.has(f.id);
+            // Reuse the facet value rows; drop the "All …" reset — an empty
+            // checkbox set already means "show everything".
+            const opts = facetValues(f.id).filter((o) => o.key !== '__all');
+            const activeCount = f.id === 'category' ? selectedCats.size : selectedLocs.size;
+            return (
+              <motion.div
+                key={f.id}
+                initial={sidebarItemInitial}
+                animate={{ opacity: 1, x: 0 }}
+                transition={{
+                  duration: reduceMotion ? 0 : 0.5,
+                  ease,
+                  delay: sidebarEnterDelay + (idx + 1) * sidebarStagger,
+                }}
+                style={{ flex: '0 0 auto', display: 'flex', flexDirection: 'column' }}
+              >
+                <button
+                  type="button"
+                  className="facet-accordion-btn"
+                  aria-expanded={isOpen}
+                  onClick={() => toggleSection(f.id)}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: 8,
+                    width: '100%',
+                    padding: '6px 2px 8px',
+                    background: 'none',
+                    border: 'none',
+                    borderBottom: '1px solid rgba(207,202,183,0.14)',
+                    color: '#CFCAB7',
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: 13,
+                    fontWeight: 400,
+                    letterSpacing: '0.12em',
+                    textTransform: 'uppercase',
+                    cursor: 'pointer',
+                  }}
+                >
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                    {f.label}
+                    {activeCount > 0 ? (
+                      <span style={{ fontSize: 10, color: 'rgba(207,202,183,0.5)' }}>({activeCount})</span>
+                    ) : null}
+                  </span>
+                  <span
+                    aria-hidden="true"
+                    style={{
+                      fontSize: 9,
+                      opacity: 0.7,
+                      transform: isOpen ? 'none' : 'rotate(-90deg)',
+                      transition: 'transform 0.18s ease',
+                    }}
+                  >
+                    ▼
+                  </span>
+                </button>
+
+                {isOpen ? (
+                  <div
+                    role="group"
+                    aria-label={f.label}
+                    style={{ display: 'flex', flexDirection: 'column', gap: 1, marginTop: 6 }}
+                  >
+                    {opts.map((opt) => (
+                      <button
+                        key={opt.key}
+                        type="button"
+                        role="menuitemcheckbox"
+                        aria-checked={opt.on}
+                        className="facet-checkbox-row"
+                        onClick={opt.onClick}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 12,
+                          width: '100%',
+                          padding: '7px 2px',
+                          background: 'none',
+                          border: 'none',
+                          color: opt.on ? INK : inkA(0.7),
+                          fontFamily: 'var(--font-mono)',
+                          fontSize: 12,
+                          letterSpacing: '0.1em',
+                          textTransform: 'uppercase',
+                          cursor: 'pointer',
+                          textAlign: 'left',
+                        }}
+                      >
+                        <span
+                          aria-hidden="true"
+                          className="facet-checkbox-box"
+                          style={{
+                            width: 13,
+                            height: 13,
+                            flex: '0 0 auto',
+                            borderRadius: 2,
+                            border: `1px solid ${
+                              opt.on ? 'rgba(207,202,183,0.9)' : 'rgba(207,202,183,0.4)'
+                            }`,
+                            background: opt.on ? '#CFCAB7' : 'transparent',
+                            transition: `border-color 0.18s ${HOVER_EASE}, background 0.18s ${HOVER_EASE}`,
+                          }}
+                        />
+                        <span
+                          style={{
+                            flex: 1,
+                            minWidth: 0,
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
+                          {opt.label}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </motion.div>
+            );
+          })}
+        </motion.aside>
+      )}
 
       <div
         style={{
@@ -2741,8 +3042,17 @@ function GridView({
           overflowX: 'hidden',
           scrollbarGutter: 'stable',
           // Mobile: bar is docked at the top, so pad the top by its height and
-          // leave the bottom light. Desktop: pad the bottom for the docked bar.
-          padding: compact ? `${barH + 16}px 16px 56px` : `112px 32px ${barH + 24}px`,
+          // leave the bottom light. Desktop: clear the left filter rail so tiles
+          // never sit under it, and mirror it with a matching right gutter.
+          padding: compact
+            ? `${barH + 16}px 16px 56px`
+            : `112px 48px 64px ${FILTER_SIDEBAR_LEFT + FILTER_SIDEBAR_W + FILTER_SIDEBAR_GAP}px`,
+          // Lightbox open → the whole grid recedes into its inactive image
+          // state (desaturated + softened + dimmed) so the focused note reads
+          // as the only live thing. Eased so it settles as the Lightbox fades in.
+          filter: lightboxOpen ? 'grayscale(1) blur(3px)' : 'none',
+          opacity: lightboxOpen ? 0.5 : 1,
+          transition: `filter 0.32s ${HOVER_EASE}, opacity 0.32s ${HOVER_EASE}`,
         }}
       >
         {visible.length === 0 ? (
@@ -2802,6 +3112,7 @@ function GridView({
                   letterSpacing: '0.1em',
                   textTransform: 'uppercase',
                   textDecoration: 'underline',
+                  textDecorationStyle: 'dotted',
                   textUnderlineOffset: 3,
                   cursor: 'pointer',
                 }}
@@ -2812,6 +3123,41 @@ function GridView({
           </div>
         ) : (
           <div className="grid-stack">
+            {/* Count header — "N Confessions" pinned to the grid's top-left,
+                floating in the band just above the first row. Absolutely placed
+                inside grid-stack (bottom: calc(100% + …)) so it locks to the
+                grid's left edge on every breakpoint and never shifts the tiles.
+                Fades in with the tile labels once the entrance settles, and out
+                with the grid when a note opens. Desktop only — the mobile bar is
+                docked at the top, so there's no room for a header there. */}
+            {!compact && (
+              <motion.div
+                className="grid-count"
+                initial={false}
+                animate={{ opacity: noteOpen ? 0 : entranceStage === 'settled' ? 1 : 0 }}
+                transition={{
+                  duration: reduceMotion ? 0 : noteOpen ? GRID_EXIT.fadeOut : 0.5,
+                  ease: noteOpen ? GRID_EXIT.exitEase : GRID_EXIT.enterEase,
+                }}
+                style={{
+                  position: 'absolute',
+                  left: 0,
+                  bottom: 'calc(100% + 14px)',
+                  zIndex: 2,
+                  fontFamily: 'var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace)',
+                  fontSize: 13,
+                  letterSpacing: '0.16em',
+                  textTransform: 'uppercase',
+                  whiteSpace: 'nowrap',
+                  pointerEvents: 'none',
+                }}
+              >
+                <span style={{ color: 'rgba(255,255,255,0.92)' }}>{noteCount}</span>
+                <span style={{ color: 'rgba(255,255,255,0.92)' }}>
+                  {` ${noteCount === 1 ? 'Confession' : 'Confessions'}`}
+                </span>
+              </motion.div>
+            )}
             {/* Lattice layer — the hairline grid drawn on independently of the
                 tiles. Each line is a solid 1px <div> pinned to a cell edge by
                 percentage; it "draws on" by scaling from one end (top→down for
@@ -2964,7 +3310,7 @@ function GridView({
                 </span>
                 {c.category ? (
                   <span className="grid-tile-cat" style={{ opacity: settled ? 1 : 0 }}>
-                    {c.category}
+                    {formatCategoryLabel(c.category)}
                   </span>
                 ) : null}
               </motion.div>
@@ -2996,32 +3342,78 @@ function GridView({
  *  - Backdrop and image share timing/easing (paired-elements rule).
  *  - prefers-reduced-motion disables motion entirely.
  */
+// Shared <filter> id for the Lightbox nav arrows' animated grain "boil" (same
+// feTurbulence + feDisplacementMap as the note-stack A / D glyphs). Only one
+// Lightbox is ever mounted, so a constant id is safe (no clobbering).
+const LB_ARROW_GRAIN_ID = 'lb-arrow-grain';
+
 function Lightbox({ confession, onClose, onPrev, onNext }) {
   const reduceMotion = useReducedMotion();
+  const compact = useArchiveNavCompact();
   const open = !!confession;
   const canNav = !!(onPrev || onNext);
 
-  // ESC to close; ←/→ to step through notes.
+  // Drives the top nav legend's pressed-key highlight (see DialNavHint). Set on
+  // keydown / button press, cleared on keyup / release — same wiring as the
+  // full-screen note-open view so the two surfaces feel identical.
+  const [pressedNavKey, setPressedNavKey] = useState(null);
+  const runNav = useCallback(
+    (id) => {
+      if (id === 'esc') onClose?.();
+      else if (id === 'left') onPrev?.();
+      else if (id === 'right') onNext?.();
+    },
+    [onClose, onPrev, onNext]
+  );
+  const handleNavPress = useCallback(
+    (id) => {
+      setPressedNavKey(id);
+      runNav(id);
+    },
+    [runNav]
+  );
+  const handleNavRelease = useCallback((id) => {
+    setPressedNavKey((cur) => (cur === id ? null : cur));
+  }, []);
+
+  // ESC closes; ← / → and A / D step through notes (the legend shows A / D).
   useEffect(() => {
     if (!open) return;
-    const onKey = (e) => {
-      if (e.key === 'Escape') onClose();
-      else if (e.key === 'ArrowLeft') onPrev?.();
-      else if (e.key === 'ArrowRight') onNext?.();
+    const keyToId = {
+      Escape: 'esc',
+      ArrowLeft: 'left', a: 'left', A: 'left',
+      ArrowRight: 'right', d: 'right', D: 'right',
     };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [open, onClose, onPrev, onNext]);
+    const onKeyDown = (e) => {
+      const id = keyToId[e.key];
+      if (!id) return;
+      // Don't hijack A / D (or arrows) while typing in a field.
+      const t = e.target;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+      setPressedNavKey(id);
+      runNav(id);
+    };
+    const onKeyUp = (e) => {
+      const id = keyToId[e.key];
+      if (id) setPressedNavKey((cur) => (cur === id ? null : cur));
+    };
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+    };
+  }, [open, runNav]);
 
   const easeOut = [0.165, 0.84, 0.44, 1];
 
-  const backdropMotion = reduceMotion
-    ? { initial: { opacity: 0 }, animate: { opacity: 1 }, exit: { opacity: 0 } }
-    : {
-        initial: { opacity: 0, backdropFilter: 'blur(0px)' },
-        animate: { opacity: 1, backdropFilter: 'blur(12px)' },
-        exit: { opacity: 0, backdropFilter: 'blur(0px)' },
-      };
+  // Backdrop just fades — the veil is textured with film grain (below) rather
+  // than blurred, so there's no backdropFilter to animate.
+  const backdropMotion = {
+    initial: { opacity: 0 },
+    animate: { opacity: 1 },
+    exit: { opacity: 0 },
+  };
 
   const imageMotion = reduceMotion
     ? { initial: { opacity: 0 }, animate: { opacity: 1 }, exit: { opacity: 0 } }
@@ -3040,7 +3432,7 @@ function Lightbox({ confession, onClose, onPrev, onNext }) {
   const metaRows = [
     ['DATE', meta.date],
     ['LOCATION', meta.location],
-    ['THEME', confession?.category],
+    ['THEME', confession?.category ? confession.category.toUpperCase() : null],
   ].filter(([, v]) => v);
 
   return (
@@ -3049,20 +3441,17 @@ function Lightbox({ confession, onClose, onPrev, onNext }) {
         <motion.div
           key="lightbox-backdrop"
           {...backdropMotion}
-          transition={{
-            duration: 0.24,
-            ease: easeOut,
-            backdropFilter: { duration: 0.24, ease: easeOut },
-          }}
+          transition={{ duration: 0.24, ease: easeOut }}
           onClick={onClose}
           style={{
             position: 'fixed',
             inset: 0,
             zIndex: 1000,
-            background: 'rgba(8, 8, 10, 0.78)',
-            // backdropFilter is animated above; this fallback ensures the
-            // animation has something to interpolate from when the layer mounts.
-            WebkitBackdropFilter: 'blur(0px)',
+            // Dark veil over the (already desaturated + softened) grid so the
+            // focused note preview pops. `isolation` scopes the film-grain's
+            // mix-blend to this layer.
+            background: 'rgba(8, 8, 10, 0.72)',
+            isolation: 'isolate',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
@@ -3071,13 +3460,55 @@ function Lightbox({ confession, onClose, onPrev, onNext }) {
             overflowY: 'auto',
           }}
         >
+          {/* Film grain over the veil — same DialKit "Grain" as the rest of the
+              site, standing in for the removed backdrop blur. */}
+          <TunableGrainBackground />
+
+          {/* Top-centre keyboard legend — the same A / D flip keys as the
+              full-screen note view. Only shown when there's more than one note
+              to page through. pointer-events are none on the wrap (so blank-area
+              clicks still dismiss); the legend's own buttons opt back in, and we
+              stop their clicks from bubbling to the backdrop's close handler. */}
+          {canNav && !compact && (
+            <motion.div
+              initial={reduceMotion ? false : { opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: reduceMotion ? 0 : 0.4, ease: easeOut, delay: reduceMotion ? 0 : 0.06 }}
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                position: 'absolute',
+                top: 24,
+                left: 0,
+                right: 0,
+                zIndex: 2,
+                display: 'flex',
+                justifyContent: 'center',
+                pointerEvents: 'none',
+              }}
+            >
+              <DialNavHint
+                pressedKey={pressedNavKey}
+                onPress={handleNavPress}
+                onRelease={handleNavRelease}
+                style={{ position: 'static', bottom: 'auto', left: 'auto', transform: 'none' }}
+                grainArrows
+                showExit={false}
+              />
+            </motion.div>
+          )}
+
           <div
             style={{
+              position: 'relative',
+              zIndex: 1,
               display: 'flex',
               flexDirection: 'column',
               alignItems: 'center',
               justifyContent: 'center',
-              gap: 20,
+              // Tight gap between the metadata (above) / transcription (below)
+              // and the image so the note reads as one grouped unit.
+              gap: 10,
               width: '100%',
               maxWidth: 'min(94vw, 900px)',
               margin: 'auto',
@@ -3099,17 +3530,23 @@ function Lightbox({ confession, onClose, onPrev, onNext }) {
                   flexDirection: 'column',
                   rowGap: 4,
                   width: '100%',
-                  maxWidth: 'min(90vw, 360px)',
+                  // Match the transcription block's width below.
+                  maxWidth: 'min(88vw, 560px)',
                 }}
               >
                 {metaRows.map(([label, value]) => (
                   <div
                     key={label}
                     style={{
-                      display: 'flex',
-                      justifyContent: 'space-between',
+                      // Match the confession stack's NoteMeta: each row is split
+                      // 50/50 (label fills the left half, value left-aligned from
+                      // the horizontal midpoint) rather than pushed to opposite
+                      // edges — so DATE / LOCATION / THEME values line up in a
+                      // column at 50% width, left-aligned.
+                      display: 'grid',
+                      gridTemplateColumns: '1fr 1fr',
                       alignItems: 'baseline',
-                      columnGap: 24,
+                      columnGap: 0,
                       width: '100%',
                     }}
                   >
@@ -3133,7 +3570,6 @@ function Lightbox({ confession, onClose, onPrev, onNext }) {
                         letterSpacing: '0.02em',
                         lineHeight: 1.45,
                         color: 'rgba(207,202,183,0.85)',
-                        textAlign: 'right',
                       }}
                     >
                       {value}
@@ -3193,6 +3629,10 @@ function Lightbox({ confession, onClose, onPrev, onNext }) {
 
           {canNav && (
             <>
+              {/* Animated grain "boil" for the arrow strokes — the same
+                  feTurbulence + feDisplacementMap filter the note-stack A / D
+                  glyphs use, so the arrows dissolve into noise the same way. */}
+              <NavGrainFilter id={LB_ARROW_GRAIN_ID} reduceMotion={reduceMotion} />
               <style>{`
                 .lb-nav {
                   position: fixed;
@@ -3208,6 +3648,7 @@ function Lightbox({ confession, onClose, onPrev, onNext }) {
                   border: none;
                   border-radius: 50%;
                   background: transparent;
+                  overflow: hidden;
                   color: #CFCAB7;
                   opacity: 0.8;
                   cursor: pointer;
@@ -3237,6 +3678,7 @@ function Lightbox({ confession, onClose, onPrev, onNext }) {
                   strokeLinecap="round"
                   strokeLinejoin="round"
                   aria-hidden="true"
+                  style={{ position: 'relative', zIndex: 1, filter: `url(#${LB_ARROW_GRAIN_ID})` }}
                 >
                   <polyline points="15 18 9 12 15 6" />
                 </svg>
@@ -3260,6 +3702,7 @@ function Lightbox({ confession, onClose, onPrev, onNext }) {
                   strokeLinecap="round"
                   strokeLinejoin="round"
                   aria-hidden="true"
+                  style={{ position: 'relative', zIndex: 1, filter: `url(#${LB_ARROW_GRAIN_ID})` }}
                 >
                   <polyline points="9 18 15 12 9 6" />
                 </svg>
@@ -3300,7 +3743,7 @@ function NoteDrawer({ confession, onClose, onPrev, onNext }) {
   // fallback carry different subsets). Order: theme → location → collected.
   const meta = confession?.metadata || {};
   const metaEntries = [
-    ['Theme', confession?.category],
+    ['Theme', confession?.category ? formatCategoryLabel(confession.category) : null],
     ['Location', meta.location],
     ['Collected', meta.collected],
   ].filter(([, v]) => v);
@@ -3802,8 +4245,10 @@ function ArchivePage({ confessionQuery, initialEmotion = null, initialView = 'th
   // Top-right "ABOUT" header → modal. Independent of the sidebar's About
   // panel so it works regardless of sidebar state.
   const [aboutOpen, setAboutOpen] = useState(false);
-  // The note opened from the (unfiltered) grid → full-screen note-open view.
-  const [openNote, setOpenNote] = useState(null);
+  // Mirrors GridView's Lightbox open state so the top chrome (wordmark + nav)
+  // can recede while a note is focused in the Lightbox — the grid itself dims
+  // via GridView, and this dims the surrounding chrome to match.
+  const [gridLightboxOpen, setGridLightboxOpen] = useState(false);
   // Grid fly-in runs once per session; returning from dial → grid stays settled.
   const gridEntranceDoneRef = useRef(false);
   const compactNav = useArchiveNavCompact();
@@ -3915,6 +4360,14 @@ function ArchivePage({ confessionQuery, initialEmotion = null, initialView = 'th
       style={{ height: '100vh', position: 'relative', overflow: 'hidden', background: '#111' }}
     >
       <ArchiveNavGradientWash />
+      {/* Top chrome (wordmark + INDEX/ABOUT nav). Recedes while the grid's
+          Lightbox is open so the focused note owns the frame — opacity on this
+          wrapper dims its fixed-position children together. */}
+      <motion.div
+        initial={false}
+        animate={{ opacity: gridLightboxOpen ? 0.22 : 1 }}
+        transition={{ duration: 0.32, ease }}
+      >
       <SiteTitle entranceDelay={navChromeEntranceDelay} onReturnToIntro={onReturnToIntro} />
       {compactNav ? (
         <div
@@ -3969,15 +4422,8 @@ function ArchivePage({ confessionQuery, initialEmotion = null, initialView = 'th
           entranceDelay={navChromeEntranceDelay}
         />
       )}
+      </motion.div>
       <AboutModal open={aboutOpen} onClose={() => setAboutOpen(false)} />
-      {/* Bottom-left wordmark + © — hidden on the grid/index, where SiteTitle
-          already shows the wordmark top-left (the bottom mark was redundant). */}
-      {view !== 'grid' ? (
-        <ArchiveBrandMark
-          sidebarInset={sidebarInset}
-          entranceDelay={view === 'theme' ? navChromeEntranceDelay : 0.2}
-        />
-      ) : null}
 
       <AnimatePresence mode="wait">
         {view === 'theme' ? (
@@ -3999,6 +4445,22 @@ function ArchivePage({ confessionQuery, initialEmotion = null, initialView = 'th
             dialEntranceDelay={dialEntranceDelay}
             dialSpinDelayMs={dialSpinDelayMs}
           />
+        ) : view === 'explore' ? (
+          /* EXPLORE tab — the immersive note browser (horizontal coverflow +
+             left theme dial + A/D flip + date/location + transcription), the
+             same experience NoteOpenView renders as a grid-click overlay, but
+             promoted to a persistent top-level view. `standalone` opens it on
+             the first note, sits it below the nav chrome, and hides its own
+             INDEX/ABOUT cluster (the nav bar provides those). */
+          <NoteOpenView
+            key="explore"
+            standalone
+            confessions={confessions}
+            emotions={emotions}
+            onExit={() => setView('grid')}
+            onAbout={() => setAboutOpen(true)}
+            onIndex={() => setView('grid')}
+          />
         ) : view === 'wall' ? (
           <WallView key="wall" confessions={confessions} sidebarInset={sidebarInset} />
         ) : (
@@ -4006,32 +4468,10 @@ function ArchivePage({ confessionQuery, initialEmotion = null, initialView = 'th
             key="grid"
             confessions={confessions}
             sidebarInset={sidebarInset}
-            onOpenNote={(c, rect) => setOpenNote({ confession: c, rect })}
-            noteOpen={!!openNote}
+            onLightboxOpenChange={setGridLightboxOpen}
             skipEntrance={gridEntranceDoneRef.current}
             onEntranceSettled={() => {
               gridEntranceDoneRef.current = true;
-            }}
-          />
-        )}
-      </AnimatePresence>
-
-      {/* Full-screen note-open view — opened by clicking an unfiltered grid
-          note (see NoteOpenView.jsx + docs/note-open-view-handoff.md). Sits
-          above the grid, which stays mounted + blurred behind it. */}
-      <AnimatePresence>
-        {openNote && (
-          <NoteOpenView
-            key={openNote.confession.id}
-            confession={openNote.confession}
-            originRect={openNote.rect}
-            confessions={confessions}
-            emotions={emotions}
-            onExit={() => setOpenNote(null)}
-            onAbout={() => setAboutOpen(true)}
-            onIndex={() => {
-              setOpenNote(null);
-              setView('grid');
             }}
           />
         )}
@@ -4043,14 +4483,17 @@ function ArchivePage({ confessionQuery, initialEmotion = null, initialView = 'th
 }
 
 export default function App() {
-  // Deep link: `/?view=grid` (also `theme` | `wall`) opens straight into the
-  // archive on that view — e.g. the onboarding "Enter the archive" CTA. Any
-  // other load starts on the landing page as usual.
+  // Deep link: `/?view=grid` (also `theme` | `explore` | `wall`) opens straight
+  // into the archive on that view — e.g. the onboarding "Enter the archive" CTA.
+  // Any other load starts on the landing page as usual.
   const deepLinkView = new URLSearchParams(
     typeof window !== 'undefined' ? window.location.search : ''
   ).get('view');
   const deepLinkArchive =
-    deepLinkView === 'grid' || deepLinkView === 'theme' || deepLinkView === 'wall';
+    deepLinkView === 'grid' ||
+    deepLinkView === 'theme' ||
+    deepLinkView === 'explore' ||
+    deepLinkView === 'wall';
 
   const [page, setPage] = useState(deepLinkArchive ? 'archive' : 'landing');
   // Which view the archive opens on. The onboarding's ENTER lands on the grid

@@ -1,6 +1,6 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, useCallback } from 'react';
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { motion, useReducedMotion } from 'motion/react';
+import { motion, AnimatePresence, useReducedMotion } from 'motion/react';
 import { useDialKit } from 'dialkit';
 import {
   CARD_FILTER_ID,
@@ -8,6 +8,7 @@ import {
   useInactiveCardParams,
 } from './noise.jsx';
 import { TRANSCRIPTION_TEXT } from './text';
+import { formatCategoryLabel } from './themes';
 
 export const EMOTIONS = [
   { id: 'therapist', label: 'Therapist', gradient: 'linear-gradient(to left, #2a1a4a, #111 70%)' },
@@ -234,7 +235,7 @@ export function BottomCompassDial({
       ctx.textBaseline = 'middle';
       // Display-only uppercase — the underlying `emo.label` (Title Case) still
       // drives filtering, gradient keys, and the label/category comparison below.
-      ctx.fillText(emo.label.toUpperCase(), 0, 0);
+      ctx.fillText(formatCategoryLabel(emo.label), 0, 0);
       ctx.filter = 'none';
 
       const cat = bc?.category;
@@ -655,9 +656,8 @@ const EASE_OUT = [0.165, 0.84, 0.44, 1];
 // behavioral benefit.
 const COPY_COUNT = 3;
 const MIDDLE_COPY = Math.floor(COPY_COUNT / 2);
-const INACTIVE_CARD_TOOLTIP = 'SCROLL OR CLICK TO VIEW';
 // Shown next to the cursor over the ACTIVE (centered) card, whose image click
-// opens the full note — the counterpart to the inactive "scroll or click" hint.
+// opens the full note.
 const ACTIVE_CARD_TOOLTIP = 'VIEW NOTE';
 const INACTIVE_TOOLTIP_GAP = 12;
 // Conservative width so we flip before the label clips off-screen.
@@ -762,18 +762,97 @@ const DIAL_NAV_ITEMS = [
   { id: 'right', label: 'RIGHT', kind: 'arrow', dir: 'right', aria: 'Next note (D key)' },
 ];
 
-export function DialNavHint({ pressedKey, onPress, onRelease, style }) {
+// Animated grain <filter> for the nav-key glyphs — the same feTurbulence +
+// feDisplacementMap "boil" as the onboarding scroll-cue arrow (HeroNoiseFilter),
+// tuned down for tiny 12px Courier glyphs so the A / D edges shimmer/dissolve
+// into noise rather than smearing illegibly. Crawls the seed on a ~30fps rAF
+// clock; a static seed under prefers-reduced-motion. Opt-in per DialNavHint
+// (see `grainArrows`) so it only rides the note-open stack, never the dial page.
+const NAV_GRAIN = {
+  baseFrequency: 0.86, // fractalNoise frequency (higher = finer grain)
+  octaves: 2,
+  seed: 7,
+  fps: 12, //    seed hops/sec (lower = chunkier flicker)
+  scale: 1.4, // px of edge displacement — subtle at 12px
+};
+
+export function NavGrainFilter({ id, reduceMotion = false }) {
+  const animate = !reduceMotion;
+  const startRef = useRef(null);
+  if (startRef.current == null) {
+    startRef.current = typeof performance !== 'undefined' ? performance.now() : Date.now();
+  }
+  const [, setFrame] = useState(0);
+  useEffect(() => {
+    if (!animate) return undefined;
+    let raf;
+    let last = 0;
+    const interval = 1000 / 30;
+    const loop = (t) => {
+      raf = requestAnimationFrame(loop);
+      if (t - last < interval) return;
+      last = t;
+      setFrame((f) => (f + 1) % 1e6);
+    };
+    raf = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(raf);
+  }, [animate]);
+  const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+  const seed = animate
+    ? NAV_GRAIN.seed + Math.floor(((now - startRef.current) / 1000) * NAV_GRAIN.fps)
+    : NAV_GRAIN.seed;
+  return (
+    <svg
+      width="0"
+      height="0"
+      aria-hidden="true"
+      style={{ position: 'absolute', width: 0, height: 0, pointerEvents: 'none' }}
+    >
+      <defs>
+        {/* Generous region so displaced edge pixels aren't clipped. */}
+        <filter id={id} x="-50%" y="-50%" width="200%" height="200%">
+          <feTurbulence
+            type="fractalNoise"
+            baseFrequency={NAV_GRAIN.baseFrequency}
+            numOctaves={NAV_GRAIN.octaves}
+            seed={seed}
+            stitchTiles="stitch"
+            result="noise"
+          />
+          <feDisplacementMap
+            in="SourceGraphic"
+            in2="noise"
+            scale={NAV_GRAIN.scale}
+            xChannelSelector="R"
+            yChannelSelector="G"
+          />
+        </filter>
+      </defs>
+    </svg>
+  );
+}
+
+export function DialNavHint({ pressedKey, onPress, onRelease, style, showExit = true, grainArrows = false }) {
+  // EXIT/ESC is optional — some surfaces (e.g. the dial page) hide it and keep
+  // only the LEFT / RIGHT flip keys.
+  const items = showExit ? DIAL_NAV_ITEMS : DIAL_NAV_ITEMS.filter((i) => i.kind !== 'exit');
+  const reduceMotion = useReducedMotion();
+  // Unique id per instance so multiple legends (dial page + note view) don't
+  // share/clobber one <filter>.
+  const grainId = `nav-grain-${useId().replace(/:/g, '')}`;
   return (
     <div style={{ ...dialNavHintStyles.wrap, ...style }} aria-label="Keyboard navigation guide">
-      {DIAL_NAV_ITEMS.map((item) => {
+      {grainArrows ? <NavGrainFilter id={grainId} reduceMotion={reduceMotion} /> : null}
+      {items.map((item) => {
         const pressed = pressedKey === item.id;
         return (
           <div
             key={item.id}
             style={{
               ...dialNavHintStyles.item,
-              // EXIT is set apart from the LEFT / RIGHT pair.
-              ...(item.id === 'left' ? dialNavHintStyles.itemPairStart : null),
+              // EXIT is set apart from the LEFT / RIGHT pair — only add that gap
+              // when EXIT is actually shown.
+              ...(showExit && item.id === 'left' ? dialNavHintStyles.itemPairStart : null),
             }}
           >
             <span style={dialNavHintStyles.label}>{item.label}</span>
@@ -795,7 +874,16 @@ export function DialNavHint({ pressedKey, onPress, onRelease, style }) {
                 ...(pressed ? dialNavHintStyles.keyPressed : null),
               }}
             >
-              <span style={dialNavHintStyles.keyGlyph}>
+              <span
+                style={{
+                  ...dialNavHintStyles.keyGlyph,
+                  // Grain only the LEFT / RIGHT flip glyphs (opt-in) — EXIT stays
+                  // crisp. Matches the onboarding scroll-cue arrow's boil.
+                  ...(grainArrows && item.kind === 'arrow'
+                    ? { filter: `url(#${grainId})` }
+                    : null),
+                }}
+              >
                 {item.kind === 'exit' ? 'ESC' : item.dir === 'left' ? 'A' : 'D'}
               </span>
             </button>
@@ -840,7 +928,7 @@ const dialNavHintStyles = {
     letterSpacing: '0.16em',
     lineHeight: 1,
     textTransform: 'uppercase',
-    color: 'rgba(207, 202, 183, 0.55)',
+    color: 'rgba(255, 255, 255, 0.92)',
     paddingLeft: 1,
   },
   key: {
@@ -903,9 +991,22 @@ export function HorizontalConfessionStack({
   onReturnToIntro,
   // When true, keyboard + chip nav is suppressed (about modal / note drawer).
   navDisabled = false,
+  // Opacity of the background (non-active) notes, by ring distance from centre.
+  // Defaults to the shared filmstrip values so the dial page is untouched; the
+  // note-open view passes a dimmer set so the neighbours recede much further.
+  inactiveOpacity = INACTIVE_OPACITY,
+  // When true, the entire DATE / LOCATION block (labels, values, and the divider
+  // beneath) crossfades out/in on note change. Off by default so the dial page
+  // keeps its static scaffold with only the values re-fading.
+  metaBlockCrossfade = false,
+  // When true, transcript words appear one-by-one at full opacity (no per-word
+  // fade). Used by the EXPLORE tab; the dial page keeps staggered fade-in.
+  transcriptInstantWords = false,
 }) {
   const scrollRef = useRef(null);
   const reduceMotion = useReducedMotion();
+  // Active card image box — anchors the crossfading meta overlay above the note.
+  const [metaAnchorEl, setMetaAnchorEl] = useState(null);
   const inactive = useInactiveCardParams();
   // Live-tunable coverflow depth (Z recession on inactive cards). The per-side
   // x-tilt (rotateY turn) was removed — side notes recede but stay flat / facing
@@ -937,8 +1038,8 @@ export function HorizontalConfessionStack({
   const categorySlot = getCategorySlotInfo(confessions, confessions[activeIndex]);
   const nRef = useRef(n);
   nRef.current = n;
-  // Cursor-following hint over a card: { x, y, label }. Inactive cards show the
-  // "scroll or click" hint; the active card shows "VIEW NOTE" over its image.
+  // Cursor-following hint over the active card image ("VIEW NOTE" when enlarge
+  // is enabled). Inactive cards no longer show a hover hint.
   const [inactiveTipPos, setInactiveTipPos] = useState(null);
   // Width (px) of the active image *as displayed* — its layout width times the
   // active scale transform. The meta/transcription block is pinned to this so
@@ -1649,6 +1750,18 @@ export function HorizontalConfessionStack({
           pressedKey={pressedNavKey}
           onPress={handleNavPress}
           onRelease={handleNavRelease}
+          showExit={false}
+        />
+      ) : null}
+      {metaBlockCrossfade ? (
+        <MetaCrossfadeSlot
+          confession={confessions[activeIndex]}
+          reduceMotion={reduceMotion}
+          // Track the ACTIVE note's content width (same `contentW` the transcript
+          // below uses) so the DATE / LOCATION / THEME block lines up edge-to-edge
+          // with the transcript, rather than the widest-note `maxContentW`.
+          columnWidth={contentW || maxContentW || '80%'}
+          anchorEl={metaAnchorEl}
         />
       ) : null}
       <div
@@ -1701,22 +1814,13 @@ export function HorizontalConfessionStack({
                   }
             }
             onClick={() => setActiveFromClick(item.logicalIndex)}
-            onMouseEnter={(e) => {
-              if (!isActive)
-                setInactiveTipPos({ x: e.clientX, y: e.clientY, label: INACTIVE_CARD_TOOLTIP });
-            }}
-            onMouseMove={(e) => {
-              if (!isActive)
-                setInactiveTipPos({ x: e.clientX, y: e.clientY, label: INACTIVE_CARD_TOOLTIP });
-            }}
-            onMouseLeave={() => setInactiveTipPos(null)}
             style={{
               ...st.cardWrapper,
               cursor: isActive ? 'default' : 'pointer',
               willChange: 'transform, opacity',
             }}
           >
-            {isActive && item.copy === MIDDLE_COPY ? (
+            {isActive && item.copy === MIDDLE_COPY && !metaBlockCrossfade ? (
               // Anchored OUT OF FLOW just above the image so the metadata never
               // pushes the image down when a note goes active — the image box
               // stays the card's only in-flow element and holds its level.
@@ -1730,6 +1834,11 @@ export function HorizontalConfessionStack({
             ) : null}
             <div
               data-tilt-target
+              ref={
+                metaBlockCrossfade && isActive && item.copy === MIDDLE_COPY
+                  ? (el) => setMetaAnchorEl(el)
+                  : undefined
+              }
               style={{
                 ...st.cardImageBox,
                 ...(canEnlargeImage ? { cursor: 'zoom-in' } : null),
@@ -1743,8 +1852,7 @@ export function HorizontalConfessionStack({
                   : undefined
               }
               // Active card only: trail a "VIEW NOTE" hint by the cursor since
-              // clicking the image opens the full note (mirrors the inactive
-              // cards' "scroll or click" hint).
+              // clicking the image opens the full note.
               onMouseEnter={
                 canEnlargeImage
                   ? (e) =>
@@ -1773,8 +1881,8 @@ export function HorizontalConfessionStack({
                   opacity: isActive
                     ? 1
                     : ringDist <= 1
-                      ? INACTIVE_OPACITY.near
-                      : INACTIVE_OPACITY.far,
+                      ? inactiveOpacity.near
+                      : inactiveOpacity.far,
                   transform: `scale(${isActive ? ACTIVE_IMG_SCALE : inactive.scale})`,
                   // Active card sharpens/brightens immediately but keeps its
                   // grain for GRAIN_HOLD_MS (grainHeld), then clears — a slight
@@ -1813,6 +1921,7 @@ export function HorizontalConfessionStack({
                       key={item.confession.id}
                       text={item.confession.transcription}
                       reduceMotion={reduceMotion}
+                      instantWords={transcriptInstantWords}
                     />
                   ) : null}
                   {showInlineCounter && (categorySlot || categoryInfo) ? (
@@ -1867,7 +1976,7 @@ export function HorizontalConfessionStack({
           like `transform` — makes it the containing block for fixed descendants.
           Rendered here it would resolve against the scrolled strip and fly
           thousands of px off-screen; the portal keeps it anchored to the cursor. */}
-      {inactiveTipPos && typeof document !== 'undefined'
+      {inactiveTipPos?.label && typeof document !== 'undefined'
         ? createPortal(
             <div
               role="tooltip"
@@ -1882,12 +1991,89 @@ export function HorizontalConfessionStack({
                   : { left: inactiveTipPos.x + INACTIVE_TOOLTIP_GAP }),
               }}
             >
-              {inactiveTipPos.label || INACTIVE_CARD_TOOLTIP}
+              {inactiveTipPos.label}
             </div>,
             document.body
           )
         : null}
       </div>
+    </div>
+  );
+}
+
+/** Gap between the crossfading meta block and the note image top (px). */
+const META_CROSSFADE_GAP = 24;
+
+/**
+ * Pins a crossfading NoteMeta above the active card's image. The anchor element
+ * is the active card's image box; position is recomputed on scroll/resize so the
+ * meta stays locked above the centred note while the whole block (labels,
+ * values, divider) fades out/in on note change.
+ */
+function MetaCrossfadeSlot({ confession, reduceMotion, columnWidth, anchorEl }) {
+  const slotRef = useRef(null);
+  const [pos, setPos] = useState(null);
+
+  useLayoutEffect(() => {
+    if (!anchorEl) {
+      setPos(null);
+      return undefined;
+    }
+    const update = () => {
+      const anchor = anchorEl.getBoundingClientRect();
+      const parent = slotRef.current?.offsetParent?.getBoundingClientRect();
+      if (!parent) return;
+      const metaH = slotRef.current?.offsetHeight ?? 0;
+      setPos({
+        top: anchor.top - parent.top - META_CROSSFADE_GAP - metaH,
+        left: anchor.left - parent.left + anchor.width / 2,
+      });
+    };
+    update();
+    const raf = requestAnimationFrame(update);
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(update) : null;
+    ro?.observe(anchorEl);
+    if (slotRef.current) ro?.observe(slotRef.current);
+    window.addEventListener('resize', update);
+    const scrollEl = anchorEl.closest('[data-card], [data-vcard]')?.parentElement;
+    scrollEl?.addEventListener('scroll', update, { passive: true });
+    return () => {
+      cancelAnimationFrame(raf);
+      ro?.disconnect();
+      window.removeEventListener('resize', update);
+      scrollEl?.removeEventListener('scroll', update);
+    };
+  }, [anchorEl, confession?.id, columnWidth]);
+
+  if (!confession) return null;
+  const date = confession?.metadata?.date || '';
+  const location = confession?.metadata?.location || '';
+  if (!date && !location && !confession?.category) return null;
+
+  return (
+    <div
+      ref={slotRef}
+      style={{
+        position: 'absolute',
+        top: pos?.top ?? -9999,
+        left: pos?.left ?? '50%',
+        transform: 'translateX(-50%)',
+        width: columnWidth,
+        zIndex: 6,
+        pointerEvents: 'none',
+        visibility: pos ? 'visible' : 'hidden',
+      }}
+    >
+      <AnimatePresence mode="wait">
+        <NoteMeta
+          key={confession.id}
+          confession={confession}
+          reduceMotion={reduceMotion}
+          columnWidth="100%"
+          crossfadeBlock
+          showTheme
+        />
+      </AnimatePresence>
     </div>
   );
 }
@@ -1899,18 +2085,53 @@ export function HorizontalConfessionStack({
  * Sourced from sheet columns P (Date) and Q (Location). Rows with no value are
  * dropped. The whole block fades in together (no stagger).
  */
-function NoteMeta({ confession, reduceMotion, columnWidth = '100%' }) {
+function NoteMeta({
+  confession,
+  reduceMotion,
+  columnWidth = '100%',
+  crossfadeBlock = false,
+  showTheme = false,
+}) {
   const date = confession?.metadata?.date || '';
   const location = confession?.metadata?.location || '';
-  if (!date && !location) return null;
+  const category = confession?.category || '';
+  if (!date && !location && !(showTheme && category)) return null;
 
   // Always render BOTH labels (even if a value is blank) so the scaffold's
   // height never changes note-to-note — a missing value must not drop a row and
-  // shift the divider up. Only the values differ.
+  // shift the divider up. Only the values differ. THEME is appended for the
+  // EXPLORE tab (showTheme); the dial page keeps just DATE / LOCATION.
   const rows = [
     ['DATE', date],
     ['LOCATION', location],
   ];
+  if (showTheme && category) {
+    rows.push(['THEME', formatCategoryLabel(category)]);
+  }
+
+  if (crossfadeBlock) {
+    // EXPLORE tab: the entire block (labels, values, divider) crossfades as one
+    // unit when the active note changes — parent wraps in AnimatePresence.
+    return (
+      <motion.div
+        style={{ ...st.metaAboveRow, width: columnWidth }}
+        initial={reduceMotion ? false : { opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={reduceMotion ? undefined : { opacity: 0 }}
+        transition={{
+          duration: reduceMotion ? 0 : TRANSCRIPT_FADE_S,
+          ease: EASE_OUT,
+        }}
+      >
+        {rows.map(([label, value]) => (
+          <div key={label} style={st.metaAboveItem}>
+            <span style={st.sideMetaLabel}>{label}</span>
+            <span style={st.sideMetaValue}>{value}</span>
+          </div>
+        ))}
+      </motion.div>
+    );
+  }
 
   return (
     // The DATE / LOCATION scaffold — labels + divider — is identical for every
@@ -1963,7 +2184,7 @@ function transcriptFadeMask(fadeTop, fadeBottom) {
   return 'none';
 }
 
-function TranscriptReveal({ text, reduceMotion }) {
+function TranscriptReveal({ text, reduceMotion, instantWords = false }) {
   const words = useMemo(() => text.trim().split(/\s+/), [text]);
   const scrollRef = useRef(null);
   // Whether there's clipped (scrollable) text above / below the current view.
@@ -2010,7 +2231,9 @@ function TranscriptReveal({ text, reduceMotion }) {
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 transition={{
-                  duration: TRANSCRIPT_REVEAL.wordFadeS,
+                  // EXPLORE: each word pops in at full opacity on its beat (no
+                  // per-word fade). Dial page keeps the staggered fade-in.
+                  duration: instantWords || reduceMotion ? 0 : TRANSCRIPT_REVEAL.wordFadeS,
                   ease: EASE_OUT,
                   delay:
                     META_TIMING.transcriptStart / 1000 +
@@ -2045,9 +2268,12 @@ export function VerticalConfessionStack({
   onActiveChange,
   entranceDelay = 0,
   mountEntrance = true,
+  metaBlockCrossfade = false,
+  transcriptInstantWords = false,
 }) {
   const scrollRef = useRef(null);
   const reduceMotion = useReducedMotion();
+  const [metaAnchorEl, setMetaAnchorEl] = useState(null);
   const inactive = useInactiveCardParams();
   const noiseEnabled = inactive.noise?.enabled ?? true;
   const inactiveFilter = [
@@ -2146,7 +2372,16 @@ export function VerticalConfessionStack({
   );
 
   return (
-    <div ref={scrollRef} onScroll={handleScroll} style={st.vScrollContainer}>
+    <div style={{ position: 'relative', width: '100%', height: '100%' }}>
+      {metaBlockCrossfade ? (
+        <MetaCrossfadeSlot
+          confession={confessions[activeIndex]}
+          reduceMotion={reduceMotion}
+          columnWidth="min(86vw, 430px)"
+          anchorEl={metaAnchorEl}
+        />
+      ) : null}
+      <div ref={scrollRef} onScroll={handleScroll} style={st.vScrollContainer}>
       <CardNoiseFilterDefs params={inactive} />
       {confessions.map((c, i) => {
         const isActive = i === activeIndex;
@@ -2178,8 +2413,11 @@ export function VerticalConfessionStack({
               cursor: isActive ? 'default' : 'pointer',
             }}
           >
-            {isActive ? <NoteMeta confession={c} reduceMotion={reduceMotion} /> : null}
+            {isActive && !metaBlockCrossfade ? (
+              <NoteMeta confession={c} reduceMotion={reduceMotion} />
+            ) : null}
             <div
+              ref={metaBlockCrossfade && isActive ? (el) => setMetaAnchorEl(el) : undefined}
               style={{
                 ...st.cardImageBox,
                 // Mobile carousel note is a touch shorter than the desktop strip
@@ -2209,12 +2447,18 @@ export function VerticalConfessionStack({
             </div>
             {isActive && c.transcription ? (
               <div style={st.metaBlock} aria-live="polite">
-                <TranscriptReveal key={c.id} text={c.transcription} reduceMotion={reduceMotion} />
+                <TranscriptReveal
+                  key={c.id}
+                  text={c.transcription}
+                  reduceMotion={reduceMotion}
+                  instantWords={transcriptInstantWords}
+                />
               </div>
             ) : null}
           </motion.div>
         );
       })}
+    </div>
     </div>
   );
 }
