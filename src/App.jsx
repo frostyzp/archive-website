@@ -58,10 +58,10 @@ function useArchiveNavCompact() {
   return compact;
 }
 
-// Single-column phones. Together with ARCHIVE_NAV_COMPACT_MQ (and the wide
-// tiers below) this mirrors the grid's responsive column count exactly (see
-// .confession-grid media queries): 1 at ≤460px, 2 at ≤760px, 3 by default,
-// 4 at ≥1640px, 5 at ≥2040px.
+// Smallest phones. Together with ARCHIVE_NAV_COMPACT_MQ (and the wide tiers
+// below) this mirrors the grid's responsive column count exactly (see
+// .confession-grid media queries): 2 at ≤460px, 2 at ≤760px, 3 by default,
+// 4 at ≥1640px, 5 at ≥2040px. Phones stay at a 2-up contact sheet.
 const GRID_ONE_COL_MQ = '(max-width: 460px)';
 // Wider desktops pack more columns so the contact sheet fills large monitors
 // instead of floating in a fixed 1100px column — while keeping the square
@@ -76,7 +76,7 @@ const GRID_FIVE_COL_MQ = '(min-width: 2040px)';
 function useGridColumns() {
   const read = () => {
     if (typeof window === 'undefined') return 3;
-    if (window.matchMedia(GRID_ONE_COL_MQ).matches) return 1;
+    if (window.matchMedia(GRID_ONE_COL_MQ).matches) return 2;
     if (window.matchMedia(ARCHIVE_NAV_COMPACT_MQ).matches) return 2;
     // Widest match wins: a 2040px screen also matches the 1640px query.
     if (window.matchMedia(GRID_FIVE_COL_MQ).matches) return 5;
@@ -563,6 +563,23 @@ function AboutModal({ open, onClose }) {
   const easeOut = [0.165, 0.84, 0.44, 1];
   const drawerEase = [0.23, 1, 0.32, 1];
 
+  // Mobile: the reading content reveals from the top down — each block fades +
+  // settles in from slightly above, cascading down the panel (ease-out). Desktop
+  // keeps its right-drawer slide with no per-block stagger.
+  const stagger = compact && !reduceMotion;
+  const aboutContainerVariants = {
+    hidden: {},
+    show: { transition: { staggerChildren: 0.06, delayChildren: 0.1 } },
+  };
+  const aboutItemVariants = {
+    hidden: { opacity: 0, y: -12 },
+    show: { opacity: 1, y: 0, transition: { duration: 0.5, ease: easeOut } },
+  };
+  const aboutItemMotion = stagger ? { variants: aboutItemVariants } : {};
+  const aboutContainerMotion = stagger
+    ? { variants: aboutContainerVariants, initial: 'hidden', animate: 'show' }
+    : {};
+
   const backdropMotion = reduceMotion
     ? { initial: { opacity: 0 }, animate: { opacity: 1 }, exit: { opacity: 0 } }
     : {
@@ -577,9 +594,11 @@ function AboutModal({ open, onClose }) {
     ? { initial: { opacity: 0 }, animate: { opacity: 1 }, exit: { opacity: 0 } }
     : compact
     ? {
-        initial: { opacity: 0, scale: 0.985 },
-        animate: { opacity: 1, scale: 1 },
-        exit: { opacity: 0, scale: 0.985 },
+        // Panel itself just fades; the reading content cascades in top→down
+        // (aboutContainerVariants) so the entrance reads as info dropping in.
+        initial: { opacity: 0 },
+        animate: { opacity: 1 },
+        exit: { opacity: 0 },
       }
     : { initial: { x: '100%' }, animate: { x: 0 }, exit: { x: '100%' } };
 
@@ -676,8 +695,10 @@ function AboutModal({ open, onClose }) {
             }}
           >
           {/* Reading column — centered + width-capped so the full-screen pop-up
-              doesn't stretch the copy edge-to-edge on wide viewports. */}
-          <div
+              doesn't stretch the copy edge-to-edge on wide viewports. On mobile
+              its blocks stagger-fade in from the top down (aboutContainerMotion). */}
+          <motion.div
+            {...aboutContainerMotion}
             style={{
               flexShrink: 0,
               width: '100%',
@@ -705,7 +726,7 @@ function AboutModal({ open, onClose }) {
           `}</style>
 
           {/* Torn strip of note thumbnails + a bare close X. */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 24 }}>
+          <motion.div {...aboutItemMotion} style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 24 }}>
             <div
               ref={stripRef}
               aria-hidden="true"
@@ -751,9 +772,10 @@ function AboutModal({ open, onClose }) {
             >
               <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden="true"><line x1="5" y1="5" x2="19" y2="19" /><line x1="19" y1="5" x2="5" y2="19" /></svg>
             </button>
-          </div>
+          </motion.div>
 
-            <p
+            <motion.p
+              {...aboutItemMotion}
               style={{
                 margin: '0 0 18px',
                 fontFamily: BODY_FONT,
@@ -774,10 +796,11 @@ function AboutModal({ open, onClose }) {
               >
                 artificial intelligence
               </span>{' '}
-              (AI).
-            </p>
+                (AI).
+            </motion.p>
 
-            <p
+            <motion.p
+              {...aboutItemMotion}
               style={{
                 margin: '0 0 20px',
                 fontFamily: BODY_FONT,
@@ -801,10 +824,11 @@ function AboutModal({ open, onClose }) {
                 AI conferences
               </span>
               .
-            </p>
+            </motion.p>
 
             {/* Contact links. */}
-            <a
+            <motion.a
+              {...aboutItemMotion}
               className="about-contact-link"
               href="mailto:hello@whatwetellai.com"
               style={{
@@ -816,8 +840,9 @@ function AboutModal({ open, onClose }) {
               }}
             >
               EMAIL
-            </a>
-            <a
+            </motion.a>
+            <motion.a
+              {...aboutItemMotion}
               className="about-contact-link"
               href="https://www.instagram.com/whatwetellai"
               target="_blank"
@@ -831,10 +856,11 @@ function AboutModal({ open, onClose }) {
               }}
             >
               INSTAGRAM
-            </a>
+            </motion.a>
 
             {/* Mailing-list signup. */}
-            <div
+            <motion.div
+              {...aboutItemMotion}
               className="about-subscribe"
               style={{
                 marginTop: 24,
@@ -946,9 +972,10 @@ function AboutModal({ open, onClose }) {
                   {subscribeError}
                 </Text>
               )}
-            </div>
+            </motion.div>
 
-            <p
+            <motion.p
+              {...aboutItemMotion}
               style={{
                 margin: '22px 0 0',
                 fontFamily: MONO_FONT,
@@ -958,8 +985,8 @@ function AboutModal({ open, onClose }) {
               }}
             >
               © What We Tell AI 2026
-            </p>
-          </div>
+            </motion.p>
+          </motion.div>
 
           {/* Oversized wordmark watermark — full-bleed footer pinned to the very
               bottom of the scrolling panel. It sits OUTSIDE the centred reading
@@ -1981,7 +2008,7 @@ const GRID_ENTRANCE = {
   startDelay: 80, // ms before the first tile leaves its edge
   stagger: 0.075, // s between tiles, in reveal order (see gridColumnOrder)
   duration: 0.8, // s per tile fly-in
-  ease: [0.16, 1, 0.3, 1], // ease-out (expo-ish): fast launch, soft landing
+  ease: [0.17, 0.84, 0.44, 1], // ease-out (cubic-bezier): quick launch, gentle settle
   offscreenPad: 64, // px past the nearest edge so a tile parks fully hidden
   rotate: 8, // deg — parked tilt (signed by travel dir); unwinds to 0 on landing
 };
@@ -2089,6 +2116,9 @@ function GridView({
   // Tiles whose image failed to load (file not yet on disk for that GlobalID).
   // We drop the whole tile rather than show a broken-image icon.
   const [failedIds, setFailedIds] = useState(() => new Set());
+  // Tiles whose image has finished loading — until then a soft pulsing skeleton
+  // fills the tile (notes stream in lazily, so this shows on both mobile + desktop).
+  const [loadedIds, setLoadedIds] = useState(() => new Set());
 
   // Filter hierarchy. Each facet has its own tab + dropdown, but every facet's
   // selection stays live and they combine with AND:
@@ -2575,6 +2605,22 @@ function GridView({
           background: rgba(207, 202, 183, 0.07);
         }
         .grid-tile { box-sizing: border-box; transition: filter 0.4s ${HOVER_EASE}; }
+        /* Loading skeleton — a faint warm fill that breathes until the note's
+           image has decoded (tiles load lazily). Inset to the image box so it
+           reads as the note materialising in place. */
+        .grid-tile-loading {
+          position: absolute;
+          inset: ${TILE_PADDING}px;
+          border-radius: 2px;
+          background: rgba(207, 202, 183, 0.08);
+          animation: gridTilePulse 1.5s ${HOVER_EASE} infinite;
+          pointer-events: none;
+          z-index: 0;
+        }
+        @keyframes gridTilePulse {
+          0%, 100% { opacity: 0.45; }
+          50% { opacity: 1; }
+        }
         /* Spotlight the note under the cursor: while the grid is hovered, gently
            fade every other tile, then lift that treatment off the one actually
            hovered so it stays crisp (its own scale/warp is handled inline).
@@ -2589,7 +2635,7 @@ function GridView({
           .confession-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
         }
         @media (max-width: 460px) {
-          .confession-grid { grid-template-columns: 1fr; }
+          .confession-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
         }
         /* Wide desktops: more columns so tiles fill the sheet without ballooning.
            Ordered widest-last so the 2040px rule wins when both match — mirrors
@@ -2654,6 +2700,7 @@ function GridView({
         @media (prefers-reduced-motion: reduce) {
           .grid-tile-num, .grid-tile-cat { transition: none; }
           .grid-tile { transition: none; }
+          .grid-tile-loading { animation: none; }
         }
       `}</style>
 
@@ -2831,7 +2878,12 @@ function GridView({
                 flex: compact ? '0 0 auto' : '0 1 440px',
                 width: compact ? '100%' : 'auto',
                 maxWidth: 440,
-                background: 'rgba(207,202,183,0.1)',
+                // Slight frosted tint fill behind the search: a touch more fill
+                // plus a soft backdrop blur so the field reads as grounded over
+                // the note images scrolling underneath (mobile filter bar).
+                background: 'rgba(207,202,183,0.14)',
+                backdropFilter: 'blur(12px)',
+                WebkitBackdropFilter: 'blur(12px)',
                 border: '1px solid rgba(207,202,183,0.18)',
                 borderRadius: 999,
                 padding: '9px 16px',
@@ -3209,6 +3261,7 @@ function GridView({
               // variants run. exitDelay ripples the fade out from the clicked tile.
               const settled = entranceStage === 'settled';
               const exitDelay = exitDelaysRef.current.get(c.id) || 0;
+              const loaded = loadedIds.has(c.id);
               return (
               <motion.div
                 key={c.id}
@@ -3243,11 +3296,12 @@ function GridView({
                     : undefined
                 }
                 onClick={(e) => {
-                  // Mobile always uses the Lightbox overlay (the full-screen
-                  // note-open / dial view is a desktop treatment). On desktop we
-                  // also fall back to the Lightbox when a filter is active or no
-                  // open handler was provided.
-                  if (compact || anyFilterActive || !onOpenNote) {
+                  // Mobile (no filter): open the vertical note-scroll view — the
+                  // note enlarges with its metadata and you swipe up/down through
+                  // the rest (NoteOpenView → VerticalConfessionStack). Desktop, a
+                  // live filter, or a missing handler falls back to the Lightbox
+                  // (a "search / compare" task where the quick zoom is faster).
+                  if (!compact || anyFilterActive || !onOpenNote) {
                     setSelected(c);
                     return;
                   }
@@ -3262,6 +3316,7 @@ function GridView({
                   cursor: 'pointer',
                 }}
               >
+                {!loaded ? <span aria-hidden="true" className="grid-tile-loading" /> : null}
                 <img
                   src={c.image}
                   alt={`Note ${c.id}`}
@@ -3270,6 +3325,14 @@ function GridView({
                   decoding="async"
                   onError={() =>
                     setFailedIds((s) => {
+                      const next = new Set(s);
+                      next.add(c.id);
+                      return next;
+                    })
+                  }
+                  onLoad={() =>
+                    setLoadedIds((s) => {
+                      if (s.has(c.id)) return s;
                       const next = new Set(s);
                       next.add(c.id);
                       return next;
@@ -3284,11 +3347,14 @@ function GridView({
                     padding: TILE_PADDING,
                     boxSizing: 'border-box',
                     display: 'block',
+                    // Fade the note in once its image decodes; the skeleton
+                    // (rendered above) unmounts on the same load, handing off.
+                    opacity: loaded ? 1 : 0,
                     // At rest the tile is full colour — no grayscale. The noise +
                     // displacement warp is applied on hover only.
                     // Filter isn't transitioned: swapping to/from the url() noise
                     // filter can't interpolate, so we apply it crisply on hover.
-                    transition: `transform 0.3s ${HOVER_EASE}`,
+                    transition: `transform 0.3s ${HOVER_EASE}, opacity 0.5s ${HOVER_EASE}`,
                   }}
                   onMouseEnter={(e) => {
                     // Slight paper-tilt on hover; alternate direction per tile
@@ -4249,6 +4315,10 @@ function ArchivePage({ confessionQuery, initialEmotion = null, initialView = 'th
   // can recede while a note is focused in the Lightbox — the grid itself dims
   // via GridView, and this dims the surrounding chrome to match.
   const [gridLightboxOpen, setGridLightboxOpen] = useState(false);
+  // Mobile grid tap opens the vertical note-scroll view as a full-screen overlay
+  // (NoteOpenView). `{ confession, rect }`; null when closed. Desktop grid taps
+  // use the Lightbox instead (see GridView tile onClick).
+  const [openNote, setOpenNote] = useState(null);
   // Grid fly-in runs once per session; returning from dial → grid stays settled.
   const gridEntranceDoneRef = useRef(false);
   const compactNav = useArchiveNavCompact();
@@ -4468,11 +4538,31 @@ function ArchivePage({ confessionQuery, initialEmotion = null, initialView = 'th
             key="grid"
             confessions={confessions}
             sidebarInset={sidebarInset}
+            onOpenNote={(c, rect) => setOpenNote({ confession: c, rect })}
+            noteOpen={!!openNote}
             onLightboxOpenChange={setGridLightboxOpen}
             skipEntrance={gridEntranceDoneRef.current}
             onEntranceSettled={() => {
               gridEntranceDoneRef.current = true;
             }}
+          />
+        )}
+      </AnimatePresence>
+
+      {/* Mobile grid tap → full-screen vertical note-scroll view (up/down through
+          the notes). Keyed by note id so a fresh open remounts the stack seeded
+          to the tapped note. Desktop grid taps use the Lightbox instead. */}
+      <AnimatePresence>
+        {openNote && (
+          <NoteOpenView
+            key={openNote.confession.id}
+            confession={openNote.confession}
+            originRect={openNote.rect}
+            confessions={confessions}
+            emotions={emotions}
+            onExit={() => setOpenNote(null)}
+            onAbout={() => setAboutOpen(true)}
+            onIndex={() => setOpenNote(null)}
           />
         )}
       </AnimatePresence>

@@ -332,28 +332,13 @@ function MobileThemeCaption({ label, position, total, reduceMotion }) {
     transition: { duration: reduceMotion ? 0 : 0.4, ease: GRADIENT_EASE },
   };
   return (
-    <>
-      <motion.div
-        initial={reduceMotion ? { opacity: 1 } : { opacity: 0, y: -6 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.5, ease: EASE_OUT, delay: reduceMotion ? 0 : CATEGORY_REVEAL_DELAY_S }}
-        style={st.mCaption}
-      >
-        <AnimatePresence mode="wait">
-          <motion.div key={label} {...fade}>
-            <div style={st.mCategory}>{formatCategoryLabel(label)}</div>
-          </motion.div>
-        </AnimatePresence>
-      </motion.div>
-
-      <div style={st.mCounterWrap}>
-        <AnimatePresence mode="wait">
-          <motion.div key={`${label}-${position}`} {...fade} style={st.mCounter}>
-            {String(position).padStart(2, '0')}/{String(total).padStart(2, '0')}
-          </motion.div>
-        </AnimatePresence>
-      </div>
-    </>
+    <div style={st.mCounterWrap}>
+      <AnimatePresence mode="wait">
+        <motion.div key={`${label}-${position}`} {...fade} style={st.mCounter}>
+          {String(position).padStart(2, '0')}/{String(total).padStart(2, '0')}
+        </motion.div>
+      </AnimatePresence>
+    </div>
   );
 }
 
@@ -637,6 +622,24 @@ export default function NoteOpenView({
     [themed.length]
   );
 
+  // W / S step between themes (categories). The left theme dial is a vertical
+  // wheel, so W = up = previous theme, S = down = next theme. Wraps around and
+  // lands on the first note of the target theme (mirrors handleCategoryChange).
+  // Uses a functional update — like `step` — so it reads the live position and
+  // rapid presses don't miss on a stale index.
+  const stepCategory = useCallback(
+    (dir) =>
+      setActiveIndex((i) => {
+        if (!emotions.length || !themed.length) return i;
+        const curLabel = themed[i]?.category;
+        const curIdx = Math.max(0, emotions.findIndex((e) => e.label === curLabel));
+        const nextEmo = emotions[(curIdx + dir + emotions.length) % emotions.length];
+        const target = themed.findIndex((c) => c.category === nextEmo?.label);
+        return target >= 0 ? target : i;
+      }),
+    [emotions, themed]
+  );
+
   // Drives the top nav legend's pressed-key highlight (see DialNavHint). Set on
   // keydown / button press, cleared on keyup / release.
   const [pressedNavKey, setPressedNavKey] = useState(null);
@@ -645,8 +648,10 @@ export default function NoteOpenView({
       if (id === 'esc') onExit?.();
       else if (id === 'left') step(-1);
       else if (id === 'right') step(1);
+      else if (id === 'catPrev') stepCategory(-1);
+      else if (id === 'catNext') stepCategory(1);
     },
-    [onExit, step]
+    [onExit, step, stepCategory]
   );
   const handleNavPress = useCallback(
     (id) => {
@@ -677,16 +682,20 @@ export default function NoteOpenView({
   );
 
   useEffect(() => {
-    // A / D flip through notes alongside the arrow keys (the legend shows A / D).
+    // A / D (or ← / →) flip through notes; W / S step between themes/categories
+    // (the vertical theme dial — W = prev, S = next). Both pairs sit in the
+    // top legend (see DialNavHint showCategoryKeys).
     const keyToId = {
       Escape: 'esc',
       ArrowLeft: 'left', a: 'left', A: 'left',
       ArrowRight: 'right', d: 'right', D: 'right',
+      w: 'catPrev', W: 'catPrev',
+      s: 'catNext', S: 'catNext',
     };
     const onKeyDown = (e) => {
       const id = keyToId[e.key];
       if (!id) return;
-      // Don't hijack A / D (or arrows) while typing in a field.
+      // Don't hijack A / D / W / S (or arrows) while typing in a field.
       const t = e.target;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
       setPressedNavKey(id);
@@ -790,8 +799,7 @@ export default function NoteOpenView({
 
       {/* Theme context washes in once the entrance has landed. Desktop shows the
           left rotary wheel; mobile hides it (no room beside the full-width note)
-          and keeps just the category (top-left) and the note counter
-          (bottom-centre). */}
+          and keeps just the note counter (bottom-centre). */}
       {revealed && (
         <>
           {isMobile ? (
@@ -833,7 +841,8 @@ export default function NoteOpenView({
             </motion.div>
           ) : null}
 
-          {/* Mobile: side chevrons with grain (no top A/D legend). */}
+          {/* Mobile: up/down chevrons with grain (vertical carousel — up steps
+              to the previous note, down to the next). No top A/D legend. */}
           {isMobile && total > 1 ? (
             <>
               <NavGrainFilter id={MOBILE_NAV_GRAIN_ID} reduceMotion={reduceMotion} />
@@ -844,7 +853,7 @@ export default function NoteOpenView({
                   e.stopPropagation();
                   step(-1);
                 }}
-                style={st.mobileNavBtnLeft}
+                style={st.mobileNavBtnUp}
               >
                 <svg
                   width="22"
@@ -858,7 +867,7 @@ export default function NoteOpenView({
                   aria-hidden="true"
                   style={{ position: 'relative', zIndex: 1, filter: `url(#${MOBILE_NAV_GRAIN_ID})` }}
                 >
-                  <polyline points="15 18 9 12 15 6" />
+                  <polyline points="18 15 12 9 6 15" />
                 </svg>
               </button>
               <button
@@ -868,7 +877,7 @@ export default function NoteOpenView({
                   e.stopPropagation();
                   step(1);
                 }}
-                style={st.mobileNavBtnRight}
+                style={st.mobileNavBtnDown}
               >
                 <svg
                   width="22"
@@ -882,7 +891,7 @@ export default function NoteOpenView({
                   aria-hidden="true"
                   style={{ position: 'relative', zIndex: 1, filter: `url(#${MOBILE_NAV_GRAIN_ID})` }}
                 >
-                  <polyline points="9 18 15 12 9 6" />
+                  <polyline points="6 9 12 15 18 9" />
                 </svg>
               </button>
             </>
@@ -907,6 +916,7 @@ export default function NoteOpenView({
                 style={st.navHintInner}
                 grainArrows
                 showExit={false}
+                showCategoryKeys={emotions.length > 1}
               />
             </motion.div>
           )}
@@ -1070,12 +1080,14 @@ const st = {
     transform: 'none',
   },
 
-  // Mobile explore: fixed side chevrons (grain-filtered), matching the lightbox
-  // nav arrows but without the top A/D legend.
-  mobileNavBtnLeft: {
+  // Mobile explore: fixed up/down chevrons (grain-filtered) for the vertical
+  // carousel. Up sits top-centre (below the nav chrome), down bottom-centre
+  // (clear of the note counter). No top A/D legend.
+  mobileNavBtnUp: {
     position: 'fixed',
-    top: '50%',
-    transform: 'translateY(-50%)',
+    left: '50%',
+    transform: 'translateX(-50%)',
+    top: 'max(64px, 8vh)',
     zIndex: 45,
     width: 44,
     height: 44,
@@ -1090,12 +1102,12 @@ const st = {
     opacity: 0.85,
     cursor: 'pointer',
     WebkitTapHighlightColor: 'transparent',
-    left: 'max(8px, 2vw)',
   },
-  mobileNavBtnRight: {
+  mobileNavBtnDown: {
     position: 'fixed',
-    top: '50%',
-    transform: 'translateY(-50%)',
+    left: '50%',
+    transform: 'translateX(-50%)',
+    bottom: 'max(72px, 9vh)',
     zIndex: 45,
     width: 44,
     height: 44,
@@ -1110,7 +1122,6 @@ const st = {
     opacity: 0.85,
     cursor: 'pointer',
     WebkitTapHighlightColor: 'transparent',
-    right: 'max(8px, 2vw)',
   },
 
   // Matches the main index screen's top-right nav chrome (App.jsx AboutHeader):
@@ -1222,22 +1233,6 @@ const st = {
   },
 
   // ── Mobile theme caption ──────────────────────────────────
-  // Top-left: category label. Sits above the top peek's dimmed note.
-  mCaption: {
-    position: 'absolute',
-    top: 74,
-    left: 22,
-    zIndex: 20,
-    maxWidth: '62vw',
-    pointerEvents: 'none',
-  },
-  mCategory: {
-    fontFamily: MONO,
-    fontSize: 13,
-    letterSpacing: '0.16em',
-    textTransform: 'uppercase',
-    color: 'rgba(207,202,183,0.72)',
-  },
   // Bottom-centre: the NN/MM note counter.
   mCounterWrap: {
     position: 'absolute',

@@ -762,6 +762,16 @@ const DIAL_NAV_ITEMS = [
   { id: 'right', label: 'RIGHT', kind: 'arrow', dir: 'right', aria: 'Next note (D key)' },
 ];
 
+// Optional theme-nav pair for the explore stack: W / S step between themes.
+// The left dial is a vertical wheel, so W (up) = previous theme, S (down) =
+// next. Rendered under a single THEME caption and only when `showCategoryKeys`
+// is set — the dial page and grid lightbox don't wire these keys, so they
+// stay out of those legends.
+const DIAL_CATEGORY_ITEMS = [
+  { id: 'catPrev', kind: 'cat', glyph: 'W', aria: 'Previous theme (W key)' },
+  { id: 'catNext', kind: 'cat', glyph: 'S', aria: 'Next theme (S key)' },
+];
+
 // Animated grain <filter> for the nav-key glyphs — the same feTurbulence +
 // feDisplacementMap "boil" as the onboarding scroll-cue arrow (HeroNoiseFilter),
 // tuned down for tiny 12px Courier glyphs so the A / D edges shimmer/dissolve
@@ -832,7 +842,15 @@ export function NavGrainFilter({ id, reduceMotion = false }) {
   );
 }
 
-export function DialNavHint({ pressedKey, onPress, onRelease, style, showExit = true, grainArrows = false }) {
+export function DialNavHint({
+  pressedKey,
+  onPress,
+  onRelease,
+  style,
+  showExit = true,
+  grainArrows = false,
+  showCategoryKeys = false,
+}) {
   // EXIT/ESC is optional — some surfaces (e.g. the dial page) hide it and keep
   // only the LEFT / RIGHT flip keys.
   const items = showExit ? DIAL_NAV_ITEMS : DIAL_NAV_ITEMS.filter((i) => i.kind !== 'exit');
@@ -840,56 +858,69 @@ export function DialNavHint({ pressedKey, onPress, onRelease, style, showExit = 
   // Unique id per instance so multiple legends (dial page + note view) don't
   // share/clobber one <filter>.
   const grainId = `nav-grain-${useId().replace(/:/g, '')}`;
+
+  // A single dark key box (its caption lives in the wrapping item). Glyph is the
+  // physical key: ESC for exit, A / D for the note flippers, or the item's own
+  // `glyph` (W / S for the theme keys). Grain rides the arrow + theme glyphs when
+  // opted in; EXIT always stays crisp.
+  const keyButton = (item) => {
+    const pressed = pressedKey === item.id;
+    const grained = grainArrows && (item.kind === 'arrow' || item.kind === 'cat');
+    return (
+      <button
+        key={item.id}
+        type="button"
+        aria-label={item.aria}
+        onPointerDown={(e) => {
+          e.preventDefault();
+          onPress(item.id);
+        }}
+        onPointerUp={() => onRelease(item.id)}
+        onPointerLeave={() => onRelease(item.id)}
+        onPointerCancel={() => onRelease(item.id)}
+        style={{
+          ...dialNavHintStyles.key,
+          ...(item.kind === 'exit' ? dialNavHintStyles.keyExit : dialNavHintStyles.keyArrow),
+          ...(pressed ? dialNavHintStyles.keyPressed : null),
+        }}
+      >
+        <span
+          style={{
+            ...dialNavHintStyles.keyGlyph,
+            ...(grained ? { filter: `url(#${grainId})` } : null),
+          }}
+        >
+          {item.glyph ?? (item.kind === 'exit' ? 'ESC' : item.dir === 'left' ? 'A' : 'D')}
+        </span>
+      </button>
+    );
+  };
+
   return (
     <div style={{ ...dialNavHintStyles.wrap, ...style }} aria-label="Keyboard navigation guide">
       {grainArrows ? <NavGrainFilter id={grainId} reduceMotion={reduceMotion} /> : null}
-      {items.map((item) => {
-        const pressed = pressedKey === item.id;
-        return (
-          <div
-            key={item.id}
-            style={{
-              ...dialNavHintStyles.item,
-              // EXIT is set apart from the LEFT / RIGHT pair — only add that gap
-              // when EXIT is actually shown.
-              ...(showExit && item.id === 'left' ? dialNavHintStyles.itemPairStart : null),
-            }}
-          >
-            <span style={dialNavHintStyles.label}>{item.label}</span>
-            <button
-              type="button"
-              aria-label={item.aria}
-              onPointerDown={(e) => {
-                e.preventDefault();
-                onPress(item.id);
-              }}
-              onPointerUp={() => onRelease(item.id)}
-              onPointerLeave={() => onRelease(item.id)}
-              onPointerCancel={() => onRelease(item.id)}
-              style={{
-                ...dialNavHintStyles.key,
-                ...(item.kind === 'exit'
-                  ? dialNavHintStyles.keyExit
-                  : dialNavHintStyles.keyArrow),
-                ...(pressed ? dialNavHintStyles.keyPressed : null),
-              }}
-            >
-              <span
-                style={{
-                  ...dialNavHintStyles.keyGlyph,
-                  // Grain only the LEFT / RIGHT flip glyphs (opt-in) — EXIT stays
-                  // crisp. Matches the onboarding scroll-cue arrow's boil.
-                  ...(grainArrows && item.kind === 'arrow'
-                    ? { filter: `url(#${grainId})` }
-                    : null),
-                }}
-              >
-                {item.kind === 'exit' ? 'ESC' : item.dir === 'left' ? 'A' : 'D'}
-              </span>
-            </button>
-          </div>
-        );
-      })}
+      {items.map((item) => (
+        <div
+          key={item.id}
+          style={{
+            ...dialNavHintStyles.item,
+            // EXIT is set apart from the LEFT / RIGHT pair — only add that gap
+            // when EXIT is actually shown.
+            ...(showExit && item.id === 'left' ? dialNavHintStyles.itemPairStart : null),
+          }}
+        >
+          <span style={dialNavHintStyles.label}>{item.label}</span>
+          {keyButton(item)}
+        </div>
+      ))}
+      {/* Theme (category) flip pair — W / S under one THEME caption, set apart
+          from the note keys. Explore stack only (see showCategoryKeys). */}
+      {showCategoryKeys ? (
+        <div style={{ ...dialNavHintStyles.item, ...dialNavHintStyles.itemPairStart }}>
+          <span style={dialNavHintStyles.label}>THEME</span>
+          <div style={dialNavHintStyles.catRow}>{DIAL_CATEGORY_ITEMS.map(keyButton)}</div>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -921,6 +952,12 @@ const dialNavHintStyles = {
   itemPairStart: {
     // Push the LEFT / RIGHT group away from EXIT so EXIT reads as separate.
     marginLeft: 24,
+  },
+  catRow: {
+    // The W / S theme keys sit as a tight pair beneath the single THEME caption.
+    display: 'flex',
+    flexDirection: 'row',
+    gap: 6,
   },
   label: {
     fontFamily: COURIER,
