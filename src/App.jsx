@@ -37,6 +37,8 @@ import { INK, inkA } from './colors';
 import { subscribeToKit } from './kit';
 import NoteOpenView, { TILE_PADDING } from './NoteOpenView';
 import { GridImageFilter, GRID_IMAGE_FILTER } from './NoiseDisplaceFilter';
+import { useNoteSound } from './sounds';
+import CubeScene from './CubeScene';
 const ease = [0.22, 1, 0.36, 1];
 /** Shared hover / color / opacity transition curve (ease-out-quart). */
 const HOVER_EASE = 'cubic-bezier(0.17, 0.84, 0.44, 1)';
@@ -176,72 +178,16 @@ function ArchiveNavGradientWash() {
   );
 }
 
-function ViewToggle({
-  view,
-  onChange,
-  sidebarInset = SIDEBAR_WIDTH,
-  stacked = false,
-  /** In mobile top bar: GRID | DIAL stay on one row, not fixed to viewport. */
-  embedded = false,
-  entranceDelay = 0.2,
-}) {
-  const columnStack = stacked && !embedded;
-  return (
-    <motion.div
-      initial={{ opacity: 0, y: -12 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.5, ease, delay: entranceDelay }}
-      style={{
-        ...(embedded || columnStack
-          ? {
-              position: 'relative',
-              left: 'auto',
-              right: 'auto',
-              marginLeft: 0,
-              marginRight: 0,
-            }
-          : {
-              position: 'fixed',
-              top: 24,
-              left: sidebarInset,
-              right: 0,
-              marginLeft: 'auto',
-              marginRight: 'auto',
-            }),
-        width: 'fit-content',
-        zIndex: 200,
-        display: 'flex',
-        flexDirection: columnStack ? 'column' : 'row',
-        alignItems: 'center',
-        gap: columnStack ? 10 : 12,
-        padding: '0 12px',
-        minHeight: ARCHIVE_NAV_CHROME_HEIGHT,
-        background: 'transparent',
-        border: 'none',
-        ...ARCHIVE_NAV_TEXT,
-        flexShrink: 0,
-      }}
-    >
-      <ToggleButton active={view === 'grid'} onClick={() => onChange('grid')}>
-        INDEX
-      </ToggleButton>
-      <ToggleButton active={view === 'explore'} onClick={() => onChange('explore')}>
-        EXPLORE
-      </ToggleButton>
-    </motion.div>
-  );
-}
-
 /** Hand-lettered "What We / Tell AI" wordmark button — the same outline art the
  *  onboarding hero uses, dropped into the nav. Tapping it returns to the intro
  *  onboarding. `logoHeight` lets the mobile chrome render it a touch smaller. */
-function WordmarkLogo({ onReturnToIntro, logoHeight = 48 }) {
+function WordmarkLogo({ onReturnToIntro, onClick, ariaLabel, title, logoHeight = 48 }) {
   return (
     <button
       type="button"
-      onClick={onReturnToIntro}
-      aria-label="What We Tell AI — return to the intro"
-      title="Return to the intro"
+      onClick={onClick || onReturnToIntro}
+      aria-label={ariaLabel || 'What We Tell AI — return to the intro'}
+      title={title || 'Return to the intro'}
       style={{
         pointerEvents: 'auto',
         background: 'none',
@@ -398,13 +344,24 @@ function AboutHoverNote({ children }) {
   );
 }
 
-function AboutHeader({ onClick, open, view, onChange, stacked = false, entranceDelay = 0.2 }) {
-  // Desktop top-right chrome: INDEX (2×2 note grid on hover) · EXPLORE (3-card fan) · ABOUT.
-  // In the stacked (compact) top bar the view tabs already live on the left,
-  // so there we render only the standalone INDEX + ABOUT to avoid duplicating
-  // them. `view` is only passed to the desktop (non-stacked) cluster, which is
-  // the only place these tabs render anyway.
-  const showTabs = !stacked;
+function AboutHeader({
+  onClick,
+  open,
+  view,
+  onChange,
+  stacked = false,
+  // Whether INDEX/EXPLORE render as hover-preview menus (desktop) vs plain
+  // toggles. Defaults to follow `stacked` (compact bar = toggles), but the
+  // About panel reuses the desktop menus in its in-flow bar by passing this
+  // explicitly — so the panel nav is the same component as the site chrome.
+  menus = !stacked,
+  entranceDelay = 0.2,
+}) {
+  // Desktop top-right chrome: INDEX (2×2 note grid on hover) · EXPLORE (3-card
+  // fan) · ABOUT. The compact (stacked) bar has no hover, so it swaps those
+  // menus for plain INDEX/EXPLORE toggles that sit with ABOUT as one flush-right
+  // cluster (the wordmark holds the left cell).
+  const showTabs = menus;
 
   // ABOUT opens the panel. On desktop it's wrapped in the grainy sketch hover
   // note (see AboutHoverNote); the compact/touch top bar keeps the plain button
@@ -412,7 +369,9 @@ function AboutHeader({ onClick, open, view, onChange, stacked = false, entranceD
   const aboutButton = (
     <button
       type="button"
-      onClick={onClick}
+      onClick={(e) => {
+        onClick?.(e);
+      }}
       aria-expanded={open}
       aria-label="Open about panel"
       style={{
@@ -456,22 +415,83 @@ function AboutHeader({ onClick, open, view, onChange, stacked = false, entranceD
         ...ARCHIVE_NAV_TEXT,
       }}
     >
-      {showTabs && (
+      {showTabs ? (
         <>
-          <IndexMenu view={view} onChange={onChange} />
-          <ExploreMenu view={view} onChange={onChange} />
+          <IndexMenu view={view} onChange={onChange} aboutOpen={open} />
+          <ExploreMenu view={view} onChange={onChange} aboutOpen={open} />
+          {/* EXPERIMENT + CUBE tabs hidden for now — the views still exist and
+              stay reachable via ?view=experiment / ?view=cube. */}
         </>
-      )}
-      {/* Compact top bar: standalone INDEX next to ABOUT (no deck hover). */}
-      {!showTabs && (
-        <ToggleButton active={view === 'grid'} onClick={() => onChange?.('grid')}>
-          INDEX
-        </ToggleButton>
+      ) : (
+        // Compact bar: INDEX · EXPLORE · EXPERIMENT ride flush-right alongside
+        // ABOUT (plain toggles — the phone has no hover for the desktop menus).
+        <>
+          {/* While the About panel is open, ABOUT is the current destination, so
+              INDEX/EXPLORE must read as inactive (dimmed) — otherwise INDEX stays
+              lit from the underlying view and the bar shows two active tabs. This
+              keeps "exactly one active tab" consistent with the archive pages. */}
+          <ToggleButton active={!open && view === 'grid'} onClick={() => onChange?.('grid')}>
+            INDEX
+          </ToggleButton>
+          <ToggleButton active={!open && view === 'explore'} onClick={() => onChange?.('explore')}>
+            EXPLORE
+          </ToggleButton>
+          {/* EXPERIMENT + CUBE tabs hidden for now — the views still exist and
+              stay reachable via ?view=experiment / ?view=cube. */}
+        </>
       )}
       {/* Desktop reveals the torn-paper "?" hover note; the compact/touch top
           bar keeps the plain ABOUT button (no hover). */}
-      {stacked ? aboutButton : <AboutHoverNote>{aboutButton}</AboutHoverNote>}
+      {menus ? <AboutHoverNote>{aboutButton}</AboutHoverNote> : aboutButton}
     </motion.div>
+  );
+}
+
+/* Decorative confession-note cutouts that "peek" from the panel edges — a few
+ * are randomly drawn from the archive once per session (see peekImages; stable
+ * across opens, re-rolled only on refresh), tucked mostly off-screen at the left
+ * edge + bottom-right corner so only a torn sliver shows. Purely ambient:
+ * aria-hidden, pointer-events:none, and behind the reading content. Desktop only
+ * (mobile has no spare margin). */
+const ABOUT_PEEK_SLOTS = [
+  { key: 'left-a', pos: { left: -116, top: '33%' }, rot: -7, w: 208, from: { x: -48 } },
+  { key: 'left-b', pos: { left: -104, top: '69%' }, rot: 6, w: 176, from: { x: -48 } },
+  { key: 'br-a', pos: { right: -104, bottom: -78 }, rot: -12, w: 232, from: { x: 44, y: 44 } },
+  { key: 'br-b', pos: { right: 88, bottom: -130 }, rot: 9, w: 150, from: { x: 20, y: 46 } },
+];
+
+function AboutPeekNotes({ images, reduceMotion }) {
+  if (!images || images.length === 0) return null;
+  return (
+    <div
+      aria-hidden="true"
+      style={{ position: 'absolute', inset: 0, zIndex: 0, pointerEvents: 'none', overflow: 'hidden' }}
+    >
+      {ABOUT_PEEK_SLOTS.map((slot, i) => {
+        const src = images[i % images.length];
+        if (!src) return null;
+        return (
+          <motion.img
+            key={slot.key}
+            src={src}
+            alt=""
+            draggable={false}
+            loading="lazy"
+            initial={reduceMotion ? false : { opacity: 0, rotate: slot.rot, ...slot.from }}
+            animate={{ opacity: 0.7, rotate: slot.rot, x: 0, y: 0 }}
+            transition={{ duration: reduceMotion ? 0 : 0.7, ease: [0.22, 1, 0.36, 1], delay: 0.15 + i * 0.08 }}
+            style={{
+              position: 'absolute',
+              width: slot.w,
+              height: 'auto',
+              ...slot.pos,
+              filter: 'drop-shadow(0 12px 26px rgba(0,0,0,0.5))',
+              userSelect: 'none',
+            }}
+          />
+        );
+      })}
+    </div>
   );
 }
 
@@ -480,10 +500,15 @@ function AboutHeader({ onClick, open, view, onChange, stacked = false, entranceD
  * / ESC) both exit with opacity only — no scale or drift so it reads as a
  * simple dismiss. prefers-reduced-motion skips transforms on enter too.
  */
-function AboutModal({ open, onClose }) {
+function AboutModal({ open, onClose, view, onNavigate, confessions = [] }) {
   const reduceMotion = useReducedMotion();
-  // Desktop docks the panel as a right-side drawer (matching NoteDrawer);
-  // phones (≤760) take the full screen.
+  // Grain <filter> id for the active section-rail arrow (see .about-navlink::before).
+  const railGrainId = 'about-rail-grain';
+  // Full-screen takeover that keeps the site nav bar up top. Desktop puts a left
+  // section-nav rail (ABOUT · WHY WE CARE · OUR PROCESS) — sitting where the index
+  // filter rail lives — beside ONE scrolling content column; phones (≤760) stack
+  // the sections. The rail links + the intro pointer scroll the content to each
+  // section, and an IntersectionObserver highlights the section in view.
   const compact = useArchiveNavCompact();
 
   // Mailing-list signup state.
@@ -494,6 +519,31 @@ function AboutModal({ open, onClose }) {
 
   const subscribing = subscribeStatus === 'submitting';
   const subscribed = subscribeStatus === 'success';
+
+  // Section scroll-nav: the left rail (desktop) + the intro pointer links scroll
+  // this content container to each section; a scroll-spy highlights the active one.
+  const contentRef = useRef(null);
+  const sectionRefs = useRef({});
+  const [activeSection, setActiveSection] = useState('about');
+
+  // A random handful of note cutouts for the edge "peek" decor. Locked in once
+  // per session — cached in a ref the first time the archive pool is available —
+  // so opening/closing About during the same visit keeps the SAME notes; only a
+  // refresh / new session re-rolls. Skipped on mobile (no spare margin to peek).
+  const peekImagesRef = useRef(null);
+  const peekImages = useMemo(() => {
+    if (compact) return [];
+    if (peekImagesRef.current) return peekImagesRef.current;
+    const pool = (confessions || []).map((c) => c && c.image).filter(Boolean);
+    if (pool.length === 0) return [];
+    const arr = [...pool];
+    for (let i = arr.length - 1; i > 0; i -= 1) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [arr[i], arr[j]] = [arr[j], arr[i]];
+    }
+    peekImagesRef.current = arr.slice(0, ABOUT_PEEK_SLOTS.length);
+    return peekImagesRef.current;
+  }, [compact, confessions]);
 
   // Reset the signup form whenever the panel is closed so a reopen is fresh.
   useEffect(() => {
@@ -518,18 +568,11 @@ function AboutModal({ open, onClose }) {
     }
   }
 
-  // Fonts: Faktory for body copy, mono for the contact links / credit. (The
-  // foot-of-panel wordmark is now an image, not the script italic face.)
+  // Fonts: Faktory for body copy, mono for chrome/links, Reckless Italic for the
+  // pull-quote. (The foot-of-panel wordmark is an image, not a script face.)
   const BODY_FONT = "'Faktory', Georgia, serif";
   const MONO_FONT = 'var(--font-mono)';
-
-  // Torn strip of note thumbnails across the top. Fills the header width with
-  // as many thumbs as fit WITHOUT the last one clipping — measured live so it
-  // adapts to the desktop drawer vs the full-screen (mobile) width.
-  const STRIP_NOTE_W = 30; // px — each thumb card's width
-  const STRIP_GAP = 5; //     px — gap between cards (matches the row's `gap`)
-  const stripRef = useRef(null);
-  const [stripCount, setStripCount] = useState(0);
+  const QUOTE_FONT = "'Reckless Italic', Georgia, serif";
 
   useEffect(() => {
     if (!open) return;
@@ -540,46 +583,56 @@ function AboutModal({ open, onClose }) {
     return () => window.removeEventListener('keydown', onKey);
   }, [open, onClose]);
 
-  // Fit the torn strip: as many cards as the row can hold without the last one
-  // overflowing (a few px of headroom absorbs the cards' slight tilt so none
-  // clip). Re-measures on open and on resize (drawer ⇄ full-screen).
-  useLayoutEffect(() => {
-    if (!open) return undefined;
-    const el = stripRef.current;
-    if (!el) return undefined;
-    const fit = () => {
-      const w = el.clientWidth;
-      if (w <= 0) return;
-      const n = Math.floor((w + STRIP_GAP - 4) / (STRIP_NOTE_W + STRIP_GAP));
-      setStripCount(Math.max(1, n));
-    };
-    fit();
-    if (typeof ResizeObserver === 'undefined') return undefined;
-    const ro = new ResizeObserver(fit);
-    ro.observe(el);
-    return () => ro.disconnect();
+  // Smooth-scroll the content container to a section (used by the rail links and
+  // the inline "our process" / "why we care" pointers in the intro).
+  const scrollToSection = useCallback(
+    (id) => {
+      const root = contentRef.current;
+      const el = sectionRefs.current[id];
+      if (!root || !el) return;
+      const top =
+        el.getBoundingClientRect().top -
+        root.getBoundingClientRect().top +
+        root.scrollTop -
+        (compact ? 12 : 20);
+      root.scrollTo({ top: Math.max(0, top), behavior: reduceMotion ? 'auto' : 'smooth' });
+    },
+    [compact, reduceMotion]
+  );
+
+  // Fresh open always starts on the first section.
+  useEffect(() => {
+    if (open) setActiveSection('about');
   }, [open]);
 
+  // Scroll-spy (desktop rail): mark whichever section sits nearest the top.
+  useEffect(() => {
+    if (!open || compact) return;
+    const root = contentRef.current;
+    if (!root) return;
+    const els = ['about', 'why', 'process']
+      .map((id) => sectionRefs.current[id])
+      .filter(Boolean);
+    if (!els.length) return;
+    const obs = new IntersectionObserver(
+      (entries) => {
+        const top = entries
+          .filter((e) => e.isIntersecting)
+          .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top)[0];
+        const id = top?.target?.getAttribute('data-section');
+        if (id) setActiveSection(id);
+      },
+      { root, rootMargin: '0px 0px -65% 0px', threshold: 0.01 }
+    );
+    els.forEach((el) => obs.observe(el));
+    return () => obs.disconnect();
+  }, [open, compact]);
+
   const easeOut = [0.165, 0.84, 0.44, 1];
-  const drawerEase = [0.23, 1, 0.32, 1];
 
-  // Mobile: the reading content reveals from the top down — each block fades +
-  // settles in from slightly above, cascading down the panel (ease-out). Desktop
-  // keeps its right-drawer slide with no per-block stagger.
-  const stagger = compact && !reduceMotion;
-  const aboutContainerVariants = {
-    hidden: {},
-    show: { transition: { staggerChildren: 0.06, delayChildren: 0.1 } },
-  };
-  const aboutItemVariants = {
-    hidden: { opacity: 0, y: -12 },
-    show: { opacity: 1, y: 0, transition: { duration: 0.5, ease: easeOut } },
-  };
-  const aboutItemMotion = stagger ? { variants: aboutItemVariants } : {};
-  const aboutContainerMotion = stagger
-    ? { variants: aboutContainerVariants, initial: 'hidden', animate: 'show' }
-    : {};
-
+  // Content reveals top→down — each block fades + settles in from slightly above.
+  // On mobile it cascades down the single column; on desktop each of the three
+  // columns cascades (offset per column) so the page assembles left-to-right.
   const backdropMotion = reduceMotion
     ? { initial: { opacity: 0 }, animate: { opacity: 1 }, exit: { opacity: 0 } }
     : {
@@ -588,19 +641,279 @@ function AboutModal({ open, onClose }) {
         exit: { opacity: 0, backdropFilter: 'blur(0px)' },
       };
 
-  // Mobile full-screen keeps the simple fade/scale pop; the desktop drawer
-  // slides in from the right edge (reverting to the pre-full-screen behavior).
-  const panelMotion = reduceMotion
-    ? { initial: { opacity: 0 }, animate: { opacity: 1 }, exit: { opacity: 0 } }
-    : compact
-    ? {
-        // Panel itself just fades; the reading content cascades in top→down
-        // (aboutContainerVariants) so the entrance reads as info dropping in.
-        initial: { opacity: 0 },
-        animate: { opacity: 1 },
-        exit: { opacity: 0 },
-      }
-    : { initial: { x: '100%' }, animate: { x: 0 }, exit: { x: '100%' } };
+  // Full-screen takeover on every breakpoint — a gentle fade (no drawer slide);
+  // the reading blocks handle the entrance motion.
+  const panelMotion = {
+    initial: { opacity: 0 },
+    animate: { opacity: 1 },
+    exit: { opacity: 0 },
+  };
+
+  // ── Shared copy + styles for the three columns ──────────────────────────
+  const BODY_COLOR = 'rgba(200,200,200,0.9)';
+  const bodySize = compact ? 16 : 15;
+  const bodyStyle = {
+    margin: '0 0 15px',
+    fontFamily: BODY_FONT,
+    fontSize: bodySize,
+    lineHeight: 1.5,
+    letterSpacing: '0.01em',
+    color: BODY_COLOR,
+  };
+  const headStyle = {
+    margin: '0 0 16px',
+    fontFamily: MONO_FONT,
+    fontSize: 11,
+    fontWeight: 400,
+    letterSpacing: '0.16em',
+    textTransform: 'uppercase',
+    color: inkA(0.55),
+  };
+  const captionStyle = {
+    margin: '8px 0 0',
+    fontFamily: MONO_FONT,
+    fontSize: 10,
+    letterSpacing: '0.1em',
+    textTransform: 'uppercase',
+    color: inkA(0.4),
+  };
+
+  const introParas = [
+    'What We Tell AI is a project exploring our secrets about our complex relationship with A.I. (artificial intelligence).',
+    'Last September, we set up a box in Dolores Park, San Francisco and asked strangers to write down a confession about their relationship with A.I.',
+    'Since then, we’ve collected more than 350 handwritten notes gathered in parks, shopping malls, and even AI conferences across the California Bay Area, New York, and beyond.',
+    'A snapshot of these strange times, WWTAI shines a light on the emerging taboos around AI use and its increasing presence in our intimate lives in 2026, just 3 years after the release of ChatGPT.',
+    'At its best, we hope this project invites deeper reflection about AI’s impact not just on our world, but on our personal lives: how we think, how we love, and how we make sense of it all together.',
+  ];
+
+  const whyLead = 'AI is reshaping our social lives faster than we can understand.';
+  const whyParas = [
+    {
+      text:
+        'AI is occupying roles once reserved for people we surround ourselves with: lovers, therapists, oracles. The attention economy is evolving into an intimacy economy, where multimodal AI services offer to fulfill our deepest needs for human connection and/or replace them with new forms of synthetic intimacies. What happens when millions of people interact daily with AI in this way?',
+    },
+    {
+      lead: 'The core issue:',
+      text:
+        ' this social change is happening too fast for individual sense-making. Public debates center on economy and geopolitics, overshadowing the everyday questions: What is this? How should I feel about it? Is this changing me for the better? While “everyone is talking about AI,” certain topics remain taboo: fear of being left behind, shame around emotional dependence and personal experimentation. Personalized AI also silos us into singular experiences, making collective discussion difficult — we’re not all experiencing the same version of “chat.”',
+    },
+    {
+      lead: 'At its worst,',
+      text:
+        ' we’ll be bombarded with AI products too quickly for thoughtful adoption, leading to crises in human connection and well-being. AI will become an unlimited attention pool, diverting our love and energy away from friends, families, neighbors, and communities. Trust and authenticity will erode in digital spaces where AI and humans become indistinguishable. We will start to prioritize AI’s “knowledge” over our own, losing touch with our embodied, lived experience.',
+    },
+    {
+      lead: 'At its best,',
+      text:
+        ' we’ll recognize AI simply as a radical new technology and learn how to steward it wisely into our lives and communities. We’ll stay cautious and curious. Like ecological concepts of “indicator species,” we’ll learn to sense emergent invisible harms — raising awareness throughout our networks to protect the health of our human ecosystems. Our collective wisdom will create and uphold cultural norms around AI use that protect the values most important to us.',
+    },
+  ];
+
+  const processIntro =
+    'WWTAI collects anonymous confessions by installing a makeshift confession booth across more than twenty sites in California, Massachusetts, Colorado, and New York. Locations range from ordinary public space (e.g. parks, shopping malls) to gatherings where AI is already the explicit subject (e.g. workshops, conferences).';
+  const processParas = [
+    'The setup is deliberately scrappy: a big red sign, table, pen & paper, and box for secrets. The instructions say: “Write an anonymous confession about your relationship with AI. Write it down. Fold it up. Slip it in. Walk away.” A small display shows 5–6 example confessions along with how to learn more about the project. We also disclose that confessions may be published as a part of an art-research project, but always anonymously (we do not collect any personal information from participants).',
+    'Most often, we’d sit about 6ft from the booth for three to five hours. This was close enough to chat occasionally or reset the booth when the wind knocked it over, but far enough to keep the writing private. Other times we’d leave the booth entirely unattended, sitting on the other side of the park. Unmanned booths drew noticeably more pranks — young boys, in particular, filling the box with lewd jokes — but they also drew longer, more vulnerable disclosures. Context shaped the encounter in other ways too: in some places, Washington Square among them, people assumed by default that they were being filmed and this was a content creator scheme.',
+  ];
+
+  const renderPara = (p, i) => (
+    <p key={i} style={bodyStyle}>
+      {typeof p === 'string' ? (
+        p
+      ) : (
+        <>
+          {p.lead ? (
+            <strong style={{ color: inkA(0.9), fontWeight: 600 }}>{p.lead}</strong>
+          ) : null}
+          {p.text}
+        </>
+      )}
+    </p>
+  );
+
+  // ABOUT column — the project blurb + a pointer into the other two columns.
+  const sectionAbout = (
+    <>
+      <h2 style={headStyle}>About</h2>
+      {introParas.map(renderPara)}
+      <p style={{ ...bodyStyle, color: inkA(0.6), marginTop: 4 }}>
+      </p>
+    </>
+  );
+
+  // WHY WE CARE column — a McLuhan pull-quote, a thesis line, then the essay.
+  const sectionWhy = (
+    <>
+      <h2 style={headStyle}>Why we care about this</h2>
+      <blockquote style={{ margin: '0 0 20px', padding: 0 }}>
+        <p
+          style={{
+            margin: '0 0 8px',
+            fontFamily: BODY_FONT,
+            // Faktory ships upright only (no italic face); fontStyle:'italic' would
+            // synthesize an ugly faux slant, so keep the pull-quote roman.
+            fontStyle: 'normal',
+            fontSize: compact ? 20 : 19,
+            lineHeight: 1.36,
+            color: inkA(0.9),
+          }}
+        >
+          “There is absolutely no inevitability as long as there is a willingness
+          to contemplate what is happening”
+        </p>
+        <cite
+          style={{
+            fontStyle: 'normal',
+            fontFamily: MONO_FONT,
+            fontSize: 11,
+            letterSpacing: '0.08em',
+            color: inkA(0.5),
+          }}
+        >
+          — Marshall McLuhan
+        </cite>
+      </blockquote>
+      <p style={{ ...bodyStyle, color: inkA(0.85), fontSize: bodySize + 1, margin: '0 0 16px' }}>
+        {whyLead}
+      </p>
+      {whyParas.map(renderPara)}
+    </>
+  );
+
+  // OUR PROCESS column — how the booth works + an installation image.
+  const sectionProcess = (
+    <>
+      <h2 style={headStyle}>Our process</h2>
+      {renderPara(processIntro, 'p-intro')}
+      <figure style={{ margin: '4px 0 16px' }}>
+        <img
+          src="/box-bg.png"
+          alt="A What We Tell AI confession booth installed in a public space."
+          draggable={false}
+          style={{
+            display: 'block',
+            width: '100%',
+            height: 'auto',
+            aspectRatio: '4 / 3',
+            objectFit: 'cover',
+            borderRadius: 3,
+            border: `1px solid ${inkA(0.12)}`,
+            filter: 'grayscale(0.2)',
+          }}
+        />
+        <figcaption style={captionStyle}>Fig. 01 — the confession booth</figcaption>
+      </figure>
+      {processParas.map((p, i) => renderPara(p, `pp-${i}`))}
+    </>
+  );
+
+  // Contact + mailing list + copyright. Foot of the ABOUT column on desktop;
+  // end of the stack on mobile.
+  const connectBlock = (
+    <div
+      className="about-subscribe"
+      style={{ marginTop: 28, paddingTop: 22, borderTop: `1px solid ${inkA(0.1)}` }}
+    >
+      <style>{`
+        .about-subscribe input::placeholder { color: ${inkA(0.4)}; }
+        .about-subscribe input:focus { border-color: ${inkA(0.55)}; }
+        .about-subscribe button:hover:not(:disabled),
+        .about-subscribe button:focus-visible:not(:disabled) {
+          background: #fff; border-color: #CFCAB7;
+        }
+        .about-subscribe button:disabled { opacity: 0.55; cursor: default; }
+        .about-subscribe input:disabled { opacity: 0.55; }
+      `}</style>
+      <div style={{ display: 'flex', gap: 18, marginBottom: 16 }}>
+        <a
+          className="about-contact-link"
+          href="mailto:hello@whatwetellai.com"
+          style={{ fontFamily: MONO_FONT, fontSize: 12, letterSpacing: '0.08em' }}
+        >
+          EMAIL
+        </a>
+        <a
+          className="about-contact-link"
+          href="https://www.instagram.com/whatwetellai"
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{ fontFamily: MONO_FONT, fontSize: 12, letterSpacing: '0.08em' }}
+        >
+          INSTAGRAM
+        </a>
+      </div>
+      <p style={{ margin: '0 0 10px', fontFamily: BODY_FONT, fontSize: bodySize, lineHeight: 1.4, color: BODY_COLOR }}>
+        Join the mailing list
+      </p>
+      {!subscribed ? (
+        <form onSubmit={handleSubscribe} style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <input
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="you@somewhere.com"
+            required
+            disabled={subscribing}
+            autoComplete="email"
+            aria-label="Email address"
+            style={{
+              flex: '1 1 180px',
+              minWidth: 0,
+              background: inkA(0.04),
+              border: `1px solid ${inkA(0.22)}`,
+              borderRadius: 4,
+              color: '#CFCAB7',
+              padding: '10px 12px',
+              fontFamily: BODY_FONT,
+              fontSize: 14,
+              letterSpacing: '0.01em',
+              outline: 'none',
+              transition: `border-color 0.18s ${HOVER_EASE}`,
+            }}
+          />
+          <button
+            type="submit"
+            disabled={subscribing}
+            style={{
+              flex: '0 0 auto',
+              background: '#e5e5e5',
+              color: '#111',
+              border: '1px solid #e5e5e5',
+              borderRadius: 4,
+              padding: '10px 18px',
+              fontFamily: BODY_FONT,
+              fontSize: 14,
+              letterSpacing: '0.02em',
+              cursor: 'pointer',
+              transition: `background 0.18s ${HOVER_EASE}, border-color 0.18s ${HOVER_EASE}`,
+            }}
+          >
+            {subscribing ? 'SUBSCRIBING…' : 'SUBSCRIBE'}
+          </button>
+        </form>
+      ) : (
+        <p style={{ margin: 0, fontFamily: BODY_FONT, fontSize: 14, lineHeight: 1.6, color: inkA(0.8) }}>
+          Thanks — check your inbox to confirm your subscription.
+        </p>
+      )}
+      {subscribeStatus === 'error' && (
+        <p style={{ margin: '8px 0 0', fontFamily: MONO_FONT, fontSize: 10, letterSpacing: '0.04em', lineHeight: 1.5, color: '#f0846b' }}>
+          {subscribeError}
+        </p>
+      )}
+      <p style={{ margin: '20px 0 0', fontFamily: MONO_FONT, fontSize: 11, letterSpacing: '0.06em', color: inkA(0.45) }}>
+        © What We Tell AI 2026
+      </p>
+    </div>
+  );
+
+  // The three reading sections, in order. The rail links + scroll-spy key off
+  // these ids; the shorter `label` is what the left rail shows.
+  const sections = [
+    { id: 'about', label: 'About', node: sectionAbout },
+    { id: 'why', label: 'Why we care', node: sectionWhy },
+    { id: 'process', label: 'Our process', node: sectionProcess },
+  ];
 
   return (
     <AnimatePresence>
@@ -631,35 +944,18 @@ function AboutModal({ open, onClose }) {
           aria-modal="true"
           aria-label="About What We Tell AI"
           {...panelMotion}
-          transition={
-            reduceMotion
-              ? { duration: 0.2, ease: easeOut }
-              : compact
-              ? { duration: 0.32, ease: easeOut }
-              : { duration: 0.48, ease: drawerEase }
-          }
+          transition={{ duration: reduceMotion ? 0.2 : 0.4, ease: easeOut }}
           style={{
             position: 'fixed',
+            inset: 0,
             zIndex: 1001,
             // Same base as the rest of the site (#111). The grain layer inside
-            // paints over this, and the scrolling content sits above the grain.
+            // paints over this, and the content sits above the grain.
             background: '#111',
-            color: '#CFCAB7',
+            color: INK,
             display: 'flex',
             flexDirection: 'column',
             overflow: 'hidden',
-            // Phones: full-screen takeover. Desktop: right-docked drawer
-            // (matches NoteDrawer) with an edge border + drop shadow.
-            ...(compact
-              ? { inset: 0 }
-              : {
-                  top: 0,
-                  right: 0,
-                  bottom: 0,
-                  width: 'min(460px, 92vw)',
-                  borderLeft: '1px solid rgba(207,202,183,0.1)',
-                  boxShadow: '-24px 0 60px rgba(0,0,0,0.5)',
-                }),
           }}
         >
           {/* Same base + grain as the rest of the site: an isolated #111 layer
@@ -679,366 +975,255 @@ function AboutModal({ open, onClose }) {
             <TunableGrainBackground />
           </div>
 
-          <div
-            style={{
-              position: 'relative',
-              zIndex: 1,
-              flex: 1,
-              minHeight: 0,
-              overflowY: 'auto',
-              overflowX: 'hidden',
-              WebkitOverflowScrolling: 'touch',
-              // Column so the reading copy stacks above a full-bleed wordmark
-              // footer that gets pinned to the bottom (marginTop: auto).
-              display: 'flex',
-              flexDirection: 'column',
-            }}
-          >
-          {/* Reading column — centered + width-capped so the full-screen pop-up
-              doesn't stretch the copy edge-to-edge on wide viewports. On mobile
-              its blocks stagger-fade in from the top down (aboutContainerMotion). */}
-          <motion.div
-            {...aboutContainerMotion}
-            style={{
-              flexShrink: 0,
-              width: '100%',
-              maxWidth: 640,
-              margin: '0 auto',
-              padding: '24px 34px 56px',
-            }}
-          >
+          {/* Ambient confession-note cutouts peeking from the panel edges. */}
+          <AboutPeekNotes images={peekImages} reduceMotion={reduceMotion} />
+
           <style>{`
-            .about-close {
-              flex: 0 0 auto; display: inline-flex; align-items: center;
-              justify-content: center; padding: 6px; margin: -6px; border: none;
-              background: none; color: rgba(207,202,183,0.8); cursor: pointer;
-              line-height: 0; transition: color 0.18s ${HOVER_EASE}, transform 0.12s ${HOVER_EASE};
-            }
-            .about-close:hover { color: #CFCAB7; }
-            .about-close:active { transform: scale(0.9); }
             .about-contact-link {
-              display: inline-block; color: rgba(207,202,183,0.72);
+              display: inline-block; color: ${inkA(0.72)};
               text-decoration: underline; text-decoration-style: dotted;
               text-decoration-thickness: 1px;
               text-underline-offset: 3px; transition: color 0.18s ${HOVER_EASE};
             }
             .about-contact-link:hover { color: #CFCAB7; }
+            .about-emph {
+              color: ${inkA(0.85)}; text-decoration: underline;
+              text-decoration-style: dotted; text-decoration-thickness: 1px;
+              text-underline-offset: 3px;
+            }
+            .about-col::-webkit-scrollbar { width: 9px; }
+            .about-col::-webkit-scrollbar-thumb {
+              background: ${inkA(0.14)}; border-radius: 4px;
+            }
+            /* Entrance animates transform + a fade that always resolves visible:
+               opacity starts at 0.4 (never fully hidden) so content is legible
+               even if the tab throttles/pauses animation time. */
+            @keyframes aboutFadeUp {
+              from { opacity: 0.4; transform: translateY(14px); }
+              to { opacity: 1; transform: none; }
+            }
+            .about-fade { animation: aboutFadeUp 0.6s cubic-bezier(0.165, 0.84, 0.44, 1) both; }
+            @media (prefers-reduced-motion: reduce) {
+              .about-fade { animation: none; }
+            }
+            /* Inline pointers in the intro copy ("our process" / "why we care")
+               reuse the dotted .about-emph underline but scroll on click. */
+            .about-inline-link {
+              background: none; border: none; padding: 0; margin: 0;
+              font: inherit; color: inherit; cursor: pointer;
+            }
+            /* Left section-nav rail — styled to echo the index filter rail:
+               mono, uppercase, hairline-separated rows with a dot on the active. */
+            .about-navlink {
+              position: relative; display: block; width: 100%; text-align: left;
+              background: none; border: none;
+              border-bottom: 1px solid ${inkA(0.12)};
+              padding: 11px 2px 11px 18px; margin: 0; cursor: pointer;
+              font-family: var(--font-mono); font-size: 13px; font-weight: 400;
+              letter-spacing: 0.12em; text-transform: uppercase; color: ${inkA(0.5)};
+              transition: color 0.18s ${HOVER_EASE};
+            }
+            .about-navlink:hover { color: #CFCAB7; }
+            .about-navlink[data-active='true'] { color: #CFCAB7; }
+            /* Active row is marked by a small "->" pointing at the label in the
+               left gutter, roughened by the shared SVG grain displacement filter.
+               letter-spacing is reset so the two glyphs read as one tight arrow
+               (the rail's 0.12em tracking would otherwise split it into "- >"). */
+            .about-navlink::before {
+              content: '->'; position: absolute; left: 0; top: 50%;
+              font-size: 11px; line-height: 1; letter-spacing: 0; color: #CFCAB7;
+              opacity: 0; transform: translate(-4px, -50%) scale(0.7);
+              filter: url(#${railGrainId});
+              transition: opacity 0.2s ${HOVER_EASE}, transform 0.2s ${HOVER_EASE};
+            }
+            .about-navlink:hover::before { opacity: 0.55; transform: translate(-2px, -50%) scale(0.85); }
+            .about-navlink[data-active='true']::before { opacity: 1; transform: translate(0, -50%) scale(1); }
           `}</style>
 
-          {/* Torn strip of note thumbnails + a bare close X. */}
-          <motion.div {...aboutItemMotion} style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 24 }}>
-            <div
-              ref={stripRef}
-              aria-hidden="true"
-              style={{
-                flex: 1,
-                minWidth: 0,
-                display: 'flex',
-                flexDirection: 'row',
-                flexWrap: 'nowrap',
-                alignItems: 'center',
-                gap: STRIP_GAP,
-                overflow: 'hidden',
-                paddingTop: 6,
-                paddingBottom: 2,
-              }}
-            >
-              {Array.from({ length: stripCount }).map((_, i) => {
-                // Alternating tilt + a repeating height pattern so the row
-                // reads as a scatter of translucent notes rather than a grid.
-                // Laid out with a real gap so the cards never overlap.
-                const rot = (i % 2 === 0 ? -1 : 1) * (2 + ((i * 7) % 3));
-                const height = [40, 30, 34, 44, 30, 38, 32][i % 7];
-                return (
-                  <div
-                    key={i}
-                    style={{
-                      flex: '0 0 auto',
-                      width: STRIP_NOTE_W,
-                      height,
-                      transform: `rotate(${rot}deg)`,
-                      borderRadius: 2,
-                      background: 'rgba(136,134,134,0.22)',
-                    }}
-                  />
-                );
-              })}
-            </div>
-            <button
-              type="button"
-              className="about-close"
-              aria-label="Close about panel"
-              onClick={onClose}
-            >
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden="true"><line x1="5" y1="5" x2="19" y2="19" /><line x1="19" y1="5" x2="5" y2="19" /></svg>
-            </button>
-          </motion.div>
-
-            <motion.p
-              {...aboutItemMotion}
-              style={{
-                margin: '0 0 18px',
-                fontFamily: BODY_FONT,
-                fontSize: 18,
-                lineHeight: 1.4,
-                letterSpacing: '0.01em',
-                color: 'rgba(200,200,200,0.9)',
-              }}
-            >
-              What We Tell AI is a collection of anonymous notes people have
-              written about their relationship with{' '}
-              <span
-                style={{
-                  textDecoration: 'underline',
-                  textDecorationColor: 'rgba(207,202,183,0.5)',
-                  textUnderlineOffset: '3px',
-                }}
-              >
-                artificial intelligence
-              </span>{' '}
-                (AI).
-            </motion.p>
-
-            <motion.p
-              {...aboutItemMotion}
-              style={{
-                margin: '0 0 20px',
-                fontFamily: BODY_FONT,
-                fontSize: 18,
-                lineHeight: 1.4,
-                letterSpacing: '0.01em',
-                color: 'rgba(200,200,200,0.9)',
-              }}
-            >
-              This anthropological art project documents AI&rsquo;s growing
-              presence in the most intimate details of our lives. Each
-              handwritten note is collected in public parks, on street corners,
-              and even at{' '}
-              <span
-                style={{
-                  textDecoration: 'underline',
-                  textDecorationColor: 'rgba(207,202,183,0.5)',
-                  textUnderlineOffset: '3px',
-                }}
-              >
-                AI conferences
-              </span>
-              .
-            </motion.p>
-
-            {/* Contact links. */}
-            <motion.a
-              {...aboutItemMotion}
-              className="about-contact-link"
-              href="mailto:hello@whatwetellai.com"
-              style={{
-                display: 'block',
-                fontFamily: MONO_FONT,
-                fontSize: 13,
-                letterSpacing: '0.08em',
-                lineHeight: 1.95,
-              }}
-            >
-              EMAIL
-            </motion.a>
-            <motion.a
-              {...aboutItemMotion}
-              className="about-contact-link"
-              href="https://www.instagram.com/whatwetellai"
-              target="_blank"
-              rel="noopener noreferrer"
-              style={{
-                display: 'block',
-                fontFamily: MONO_FONT,
-                fontSize: 13,
-                letterSpacing: '0.08em',
-                lineHeight: 1.95,
-              }}
-            >
-              INSTAGRAM
-            </motion.a>
-
-            {/* Mailing-list signup. */}
-            <motion.div
-              {...aboutItemMotion}
-              className="about-subscribe"
-              style={{
-                marginTop: 24,
-                paddingTop: 20,
-                borderTop: '1px solid rgba(207,202,183,0.1)',
-              }}
-            >
-              <style>{`
-                .about-subscribe input::placeholder { color: rgba(207,202,183,0.4); }
-                .about-subscribe input:focus { border-color: rgba(207,202,183,0.55); }
-                .about-subscribe button:hover:not(:disabled),
-                .about-subscribe button:focus-visible:not(:disabled) {
-                  background: #fff; border-color: #CFCAB7;
-                }
-                .about-subscribe button:disabled { opacity: 0.55; cursor: default; }
-                .about-subscribe input:disabled { opacity: 0.55; }
-              `}</style>
-
-              <p
-                style={{
-                  margin: '0 0 12px',
-                  fontFamily: BODY_FONT,
-                  fontSize: 18,
-                  lineHeight: 1.4,
-                  letterSpacing: '0.01em',
-                  color: 'rgba(200,200,200,0.9)',
-                }}
-              >
-                Join the mailing list
-              </p>
-
-              {!subscribed ? (
-                <form
-                  onSubmit={handleSubscribe}
-                  style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}
-                >
-                  <input
-                    type="email"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    placeholder="you@somewhere.com"
-                    required
-                    disabled={subscribing}
-                    autoComplete="email"
-                    aria-label="Email address"
-                    style={{
-                      flex: '1 1 200px',
-                      minWidth: 0,
-                      background: 'rgba(207,202,183,0.04)',
-                      border: '1px solid rgba(207,202,183,0.22)',
-                      borderRadius: 4,
-                      color: '#CFCAB7',
-                      padding: '10px 12px',
-                      fontFamily: 'var(--font-mono)',
-                      fontSize: 12,
-                      letterSpacing: '0.02em',
-                      outline: 'none',
-                      transition: `border-color 0.18s ${HOVER_EASE}`,
-                    }}
-                  />
-                  <button
-                    type="submit"
-                    disabled={subscribing}
-                    style={{
-                      flex: '0 0 auto',
-                      background: '#e5e5e5',
-                      color: '#111',
-                      border: '1px solid #e5e5e5',
-                      borderRadius: 4,
-                      padding: '10px 18px',
-                      fontFamily: 'var(--font-mono)',
-                      fontSize: 11,
-                      letterSpacing: '0.12em',
-                      cursor: 'pointer',
-                      transition: `background 0.18s ${HOVER_EASE}, border-color 0.18s ${HOVER_EASE}`,
-                    }}
-                  >
-                    {subscribing ? 'SUBSCRIBING…' : 'SUBSCRIBE'}
-                  </button>
-                </form>
-              ) : (
-                <Text
-                  variant="bodySmall"
-                  style={{
-                    display: 'block',
-                    fontFamily: BODY_FONT,
-                    fontSize: 14,
-                    lineHeight: 1.6,
-                    color: 'rgba(207,202,183,0.8)',
-                  }}
-                >
-                  Thanks — check your inbox to confirm your subscription.
-                </Text>
-              )}
-
-              {subscribeStatus === 'error' && (
-                <Text
-                  variant="caption"
-                  mono
-                  style={{
-                    display: 'block',
-                    marginTop: 8,
-                    fontSize: 10,
-                    letterSpacing: '0.04em',
-                    lineHeight: 1.5,
-                    color: '#f0846b',
-                  }}
-                >
-                  {subscribeError}
-                </Text>
-              )}
-            </motion.div>
-
-            <motion.p
-              {...aboutItemMotion}
-              style={{
-                margin: '22px 0 0',
-                fontFamily: MONO_FONT,
-                fontSize: 12,
-                letterSpacing: '0.06em',
-                color: 'rgba(207,202,183,0.5)',
-              }}
-            >
-              © What We Tell AI 2026
-            </motion.p>
-          </motion.div>
-
-          {/* Oversized wordmark watermark — full-bleed footer pinned to the very
-              bottom of the scrolling panel. It sits OUTSIDE the centred reading
-              column (a direct child of the scroll area) so it spans the panel
-              edge-to-edge and parks the lockup in the bottom-right corner. */}
+          {/* Top bar — mirrors the site nav so About keeps the same top-level
+              navigation (wordmark · INDEX · EXPLORE · EXPERIMENT · ABOUT) plus a
+              close control. INDEX/EXPLORE/EXPERIMENT leave About and switch view;
+              the wordmark, ABOUT, and ✕ all close back to the current view. */}
           <div
-            aria-hidden="true"
             style={{
-              marginTop: 'auto',
-              flexShrink: 0,
               position: 'relative',
-              overflow: 'hidden',
-              paddingTop: 48,
+              zIndex: 5,
+              flexShrink: 0,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: 16,
+              padding: compact ? '12px 12px 24px 16px' : '16px 24px 32px',
+              // Match the archive top nav (ArchiveNavGradientWash): a dark →
+              // transparent scrim that dissolves the bar into the page rather
+              // than a hard hairline.
+              background:
+                'linear-gradient(to bottom, rgba(0, 0, 0, 0.88) 0%, rgba(0, 0, 0, 0.42) 52%, rgba(0, 0, 0, 0) 100%)',
             }}
           >
-            <div
-              style={{
-                position: 'absolute',
-                left: 18,
-                bottom: 26,
-                width: 150,
-                height: 180,
-                border: '1px solid rgba(207,202,183,0.055)',
-                borderRadius: 2,
-                transform: 'rotate(-9deg)',
-              }}
+            {/* Same shared brand mark as the archive nav (WordmarkLogo); here it
+                doubles as the close control instead of the return-to-intro one. */}
+            <WordmarkLogo
+              onClick={onClose}
+              ariaLabel="What We Tell AI — close about"
+              title="Close about"
+              logoHeight={compact ? 26 : 34}
             />
-            <div
-              style={{
-                position: 'relative',
-                padding: '0 18px',
-                display: 'flex',
-                justifyContent: 'flex-end',
-              }}
-            >
-              {/* Same hand-lettered outline wordmark as the nav + onboarding hero. */}
-              <img
-                src="/What%20We%20Tell%20AI.png"
-                alt=""
-                aria-hidden="true"
-                draggable={false}
-                style={{
-                  display: 'block',
-                  width: 'auto',
-                  height: 'clamp(110px, 30vw, 180px)',
-                  opacity: 0.9,
-                  userSelect: 'none',
-                }}
+            {/* No ✕ — the wordmark, the ABOUT nav item, and ESC all dismiss the
+                panel (mirrors the site chrome on every breakpoint). Reuses the
+                shared AboutHeader: desktop gets the same INDEX/EXPLORE hover
+                menus as the archive, compact falls back to plain toggles. */}
+            <div style={{ display: 'flex', alignItems: 'center' }}>
+              <AboutHeader
+                stacked
+                menus={!compact}
+                open
+                view={view}
+                onChange={(v) => onNavigate?.(v)}
+                onClick={onClose}
+                entranceDelay={0}
               />
             </div>
           </div>
-          </div>
+
+          {compact ? (
+            /* MOBILE — one scroll column, sections stacked (with anchors so the
+               intro pointer links still jump between them). */
+            <div
+              ref={contentRef}
+              style={{
+                position: 'relative',
+                zIndex: 1,
+                flex: 1,
+                minHeight: 0,
+                overflowY: 'auto',
+                overflowX: 'hidden',
+                WebkitOverflowScrolling: 'touch',
+                outline: 'none',
+              }}
+            >
+              <div style={{ maxWidth: 680, margin: '0 auto', padding: '26px 22px 8px' }}>
+                {sections.map((s, i) => (
+                  <div key={s.id}>
+                    {i > 0 ? (
+                      <div style={{ height: 1, background: inkA(0.1), margin: '30px 0' }} />
+                    ) : null}
+                    <section
+                      id={`about-sec-${s.id}`}
+                      data-section={s.id}
+                      ref={(el) => {
+                        sectionRefs.current[s.id] = el;
+                      }}
+                      className="about-fade"
+                      style={{ animationDelay: `${0.05 + i * 0.08}s`, scrollMarginTop: 16 }}
+                    >
+                      {s.node}
+                    </section>
+                  </div>
+                ))}
+                <div className="about-fade" style={{ animationDelay: '0.29s' }}>{connectBlock}</div>
+              </div>
+              <div
+                aria-hidden="true"
+                style={{ display: 'flex', justifyContent: 'flex-end', padding: '32px 22px 26px' }}
+              >
+                <img
+                  src="/What%20We%20Tell%20AI.png"
+                  alt=""
+                  aria-hidden="true"
+                  draggable={false}
+                  style={{ height: 'clamp(90px, 26vw, 140px)', width: 'auto', opacity: 0.85, userSelect: 'none' }}
+                />
+              </div>
+            </div>
+          ) : (
+            /* DESKTOP — left section-nav rail + ONE scrolling content column.
+               The rail+content group is capped and centered so it sits in the
+               middle of wide screens instead of hugging the left edge. */
+            <div
+              style={{
+                position: 'relative',
+                zIndex: 1,
+                flex: 1,
+                minHeight: 0,
+                display: 'flex',
+                width: '100%',
+                maxWidth: 1100,
+                margin: '0 auto',
+              }}
+            >
+              {/* Left rail — sits where the index filter rail lives; its links
+                  scroll the content to each section (scroll-spy highlights). */}
+              <nav
+                aria-label="About sections"
+                style={{
+                  flexShrink: 0,
+                  width: FILTER_SIDEBAR_LEFT + FILTER_SIDEBAR_W,
+                  paddingLeft: FILTER_SIDEBAR_LEFT,
+                  paddingRight: 24,
+                  paddingTop: 44,
+                }}
+              >
+                <NavGrainFilter id={railGrainId} reduceMotion={reduceMotion} />
+                {sections.map((s) => (
+                  <button
+                    key={s.id}
+                    type="button"
+                    className="about-navlink"
+                    data-active={activeSection === s.id}
+                    onClick={() => scrollToSection(s.id)}
+                  >
+                    {s.label}
+                  </button>
+                ))}
+              </nav>
+              {/* Content — single column, scrolls. */}
+              <div
+                ref={contentRef}
+                className="about-col"
+                style={{
+                  flex: 1,
+                  minHeight: 0,
+                  overflowY: 'auto',
+                  padding: '44px 40px 96px',
+                  // Chrome makes overflow:auto regions keyboard-focusable and
+                  // paints a :focus-visible ring around them — suppress it.
+                  outline: 'none',
+                }}
+              >
+                <div style={{ maxWidth: 720 }}>
+                  {sections.map((s, i) => (
+                    <section
+                      key={s.id}
+                      id={`about-sec-${s.id}`}
+                      data-section={s.id}
+                      ref={(el) => {
+                        sectionRefs.current[s.id] = el;
+                      }}
+                      className="about-fade"
+                      style={{ animationDelay: `${0.05 + i * 0.06}s`, scrollMarginTop: 24, marginBottom: 44 }}
+                    >
+                      {s.node}
+                    </section>
+                  ))}
+                  <div className="about-fade" style={{ animationDelay: '0.23s' }}>{connectBlock}</div>
+                </div>
+              </div>
+              {/* Bottom fade hints the column keeps scrolling. */}
+              <div
+                aria-hidden="true"
+                style={{
+                  position: 'absolute',
+                  left: 0,
+                  right: 0,
+                  bottom: 0,
+                  height: 56,
+                  pointerEvents: 'none',
+                  background: 'linear-gradient(to bottom, rgba(17,17,17,0), rgba(17,17,17,0.9))',
+                }}
+              />
+            </div>
+          )}
 
           {/* Grain ON TOP of the copy: a single fine-noise tile blended (overlay)
               over the scrolling content so the text picks up the same film-grain
@@ -1075,7 +1260,9 @@ function AboutModal({ open, onClose }) {
 function ToggleButton({ active, onClick, children }) {
   return (
     <button
-      onClick={onClick}
+      onClick={(e) => {
+        onClick?.(e);
+      }}
       style={{
         background: 'none',
         border: 'none',
@@ -1312,7 +1499,7 @@ function ExploreHoverFanCard({ item, i, count, reduceMotion, peekStyle }) {
  * EXPLORE tab with a hover-revealed 3-card fan (the old INDEX deck).
  * Decorative peek only — the tab click still opens explore.
  */
-function ExploreMenu({ view, onChange }) {
+function ExploreMenu({ view, onChange, aboutOpen = false }) {
   const reduceMotion = useReducedMotion();
   const [open, setOpen] = useState(false);
   const closeTimer = useRef(null);
@@ -1348,7 +1535,8 @@ function ExploreMenu({ view, onChange }) {
         if (!e.currentTarget.contains(e.relatedTarget)) scheduleClose();
       }}
     >
-      <ToggleButton active={view === 'explore'} onClick={() => onChange?.('explore')}>
+      {/* Dim while the About panel owns the nav so exactly one tab reads active. */}
+      <ToggleButton active={!aboutOpen && view === 'explore'} onClick={() => onChange?.('explore')}>
         EXPLORE
       </ToggleButton>
 
@@ -1391,7 +1579,7 @@ function ExploreMenu({ view, onChange }) {
  * INDEX tab with a hover-revealed 2×2 grid of small note images.
  * Decorative peek only — the tab click still opens the grid.
  */
-function IndexMenu({ view, onChange }) {
+function IndexMenu({ view, onChange, aboutOpen = false }) {
   const reduceMotion = useReducedMotion();
   const [open, setOpen] = useState(false);
   const closeTimer = useRef(null);
@@ -1426,7 +1614,8 @@ function IndexMenu({ view, onChange }) {
         if (!e.currentTarget.contains(e.relatedTarget)) scheduleClose();
       }}
     >
-      <ToggleButton active={view === 'grid'} onClick={() => onChange?.('grid')}>
+      {/* Dim while the About panel owns the nav so exactly one tab reads active. */}
+      <ToggleButton active={!aboutOpen && view === 'grid'} onClick={() => onChange?.('grid')}>
         INDEX
       </ToggleButton>
 
@@ -2107,6 +2296,7 @@ function GridView({
   const [selected, setSelected] = useState(null);
   const [query, setQuery] = useState('');
   const reduceMotion = useReducedMotion();
+  const playNote = useNoteSound();
   // Phone widths (≤760): the filter bar moves to the TOP and stacks (search
   // above the Category/Location tabs). On desktop it stays pinned to the
   // bottom with the search centred between the tabs.
@@ -2738,10 +2928,34 @@ function GridView({
             margin: '0 auto',
             display: 'flex',
             flexDirection: 'column',
-            alignItems: 'center',
+            // Mobile: stretch children full-width and left-align them so the
+            // search + tally sit flush to the grid's edges (the desktop rail
+            // model). Desktop keeps the centred row.
+            alignItems: compact ? 'stretch' : 'center',
             gap: 12,
           }}
         >
+          {/* Total tally, pinned above the search so the index announces its
+              size at a glance (mobile only — desktop carries its own rail). Shows
+              the whole archive normally; narrows to "shown / total" once a filter
+              trims the set. */}
+          <div
+            aria-live="polite"
+            style={{
+              pointerEvents: 'none',
+              fontFamily: 'var(--font-mono)',
+              fontSize: 11,
+              letterSpacing: '0.14em',
+              textTransform: 'uppercase',
+              color: 'rgba(207,202,183,0.5)',
+              textAlign: 'left',
+            }}
+          >
+            {anyFilterActive
+              ? `${visible.length} / ${withImages.length} confessions`
+              : `${withImages.length} confessions`}
+          </div>
+
           {/* Row 1 — filter tabs (Category · Location · Recency) + transcript
               search on one line. Each tab opens a dropdown of its own selectable
               values, so no persistent chip row is needed. */}
@@ -2752,7 +2966,9 @@ function GridView({
               // Mobile stacks (search on top, tabs below); desktop is one row
               // with the search centred between an empty spacer and the tabs.
               flexDirection: compact ? 'column' : 'row',
-              alignItems: 'center',
+              // Mobile column: left-align so search + tabs sit flush left (like
+              // the desktop rail); desktop row stays centred.
+              alignItems: compact ? 'stretch' : 'center',
               justifyContent: 'center',
               gap: compact ? 12 : 10,
               flexWrap: compact ? 'nowrap' : 'wrap',
@@ -2771,7 +2987,7 @@ function GridView({
               style={{
                 display: 'flex',
                 alignItems: 'center',
-                justifyContent: compact ? 'center' : 'flex-end',
+                justifyContent: compact ? 'flex-start' : 'flex-end',
                 gap: 8,
                 flex: compact ? '0 0 auto' : '1 1 0',
                 minWidth: 0,
@@ -2875,17 +3091,19 @@ function GridView({
               style={{
                 pointerEvents: 'auto',
                 order: 1,
-                flex: compact ? '0 0 auto' : '0 1 440px',
-                width: compact ? '100%' : 'auto',
-                maxWidth: 440,
-                // Slight frosted tint fill behind the search: a touch more fill
-                // plus a soft backdrop blur so the field reads as grounded over
-                // the note images scrolling underneath (mobile filter bar).
+                flex: '0 0 auto',
+                width: '100%',
+                // Full-bleed to the grid's edges — the bar's 16px inset matches
+                // the tile scroller — so no centred 440px cap.
+                maxWidth: 'none',
+                // Keep the frosted tint fill + backdrop blur (grounds the field
+                // over the notes scrolling beneath), but adopt the desktop rail's
+                // dashed hairline + square corners so the two searches read as one.
                 background: 'rgba(207,202,183,0.14)',
                 backdropFilter: 'blur(12px)',
                 WebkitBackdropFilter: 'blur(12px)',
-                border: '1px solid rgba(207,202,183,0.18)',
-                borderRadius: 999,
+                border: '1px dashed rgba(207,202,183,0.3)',
+                borderRadius: 0,
                 padding: '9px 16px',
                 color: '#CFCAB7',
                 fontFamily: 'var(--font-mono)',
@@ -3296,6 +3514,8 @@ function GridView({
                     : undefined
                 }
                 onClick={(e) => {
+                  // Post-it "peel" as the note opens.
+                  playNote();
                   // Mobile (no filter): open the vertical note-scroll view — the
                   // note enlarges with its metadata and you swipe up/down through
                   // the rest (NoteOpenView → VerticalConfessionStack). Desktop, a
@@ -3442,7 +3662,7 @@ function Lightbox({ confession, onClose, onPrev, onNext }) {
     setPressedNavKey((cur) => (cur === id ? null : cur));
   }, []);
 
-  // ESC closes; ← / → and A / D step through notes (the legend shows A / D).
+  // ESC closes; ← / → (or A / D) step through notes (the legend shows the arrows).
   useEffect(() => {
     if (!open) return;
     const keyToId = {
@@ -3530,7 +3750,7 @@ function Lightbox({ confession, onClose, onPrev, onNext }) {
               site, standing in for the removed backdrop blur. */}
           <TunableGrainBackground />
 
-          {/* Top-centre keyboard legend — the same A / D flip keys as the
+          {/* Top-centre keyboard legend — the same ← / → flip keys as the
               full-screen note view. Only shown when there's more than one note
               to page through. pointer-events are none on the wrap (so blank-area
               clicks still dismiss); the legend's own buttons opt back in, and we
@@ -4268,6 +4488,633 @@ function ArchiveLoading() {
   );
 }
 
+/* ─────────────────────────────────────────────────────────
+ * EXPERIMENT — notes outline a rectangle around the page
+ *
+ * The thumbnails are placed in RING ORDER (outermost ring first, then
+ * inward), so they trace a rectangular outline hugging the edges of the
+ * content area — a frame around the site with a large empty middle. When a
+ * filter narrows the set to fewer notes than one ring, they're spaced evenly
+ * around the perimeter so it still reads as a rectangle. Hovering a thumbnail
+ * enlarges that note (+ metadata) in the center stage; the stage carries ‹ ›
+ * arrows (and ← / → keys) to page between notes like the INDEX lightbox. A
+ * category filter rail sits on the left.
+ * ───────────────────────────────────────────────────────── */
+const EXP_GAP = 6; //       px between thumbnails
+const EXP_MAX_CELL = 40; // px — thumbnail size ceiling (bigger screens → bigger tiles)
+const EXP_MIN_CELL = 22; // px — floor before we thicken the ring inward instead of shrinking
+const EXP_RAIL_W = 150; //  px — left category-filter rail width
+
+/** Cells of a cols×rows grid in concentric-ring order (outermost ring first,
+ *  each ring walked clockwise). Placing notes in this order traces a filled
+ *  rectangular outline that thickens inward as the note count grows. */
+function expRingOrder(cols, rows) {
+  const cells = [];
+  let top = 0;
+  let left = 0;
+  let bottom = rows - 1;
+  let right = cols - 1;
+  while (top <= bottom && left <= right) {
+    if (top === bottom) {
+      for (let c = left; c <= right; c += 1) cells.push([top, c]);
+    } else if (left === right) {
+      for (let r = top; r <= bottom; r += 1) cells.push([r, left]);
+    } else {
+      for (let c = left; c <= right; c += 1) cells.push([top, c]);
+      for (let r = top + 1; r <= bottom; r += 1) cells.push([r, right]);
+      for (let c = right - 1; c >= left; c -= 1) cells.push([bottom, c]);
+      for (let r = bottom - 1; r > top; r -= 1) cells.push([r, left]);
+    }
+    top += 1;
+    left += 1;
+    bottom -= 1;
+    right -= 1;
+  }
+  return cells;
+}
+
+const expLabelStyle = {
+  fontFamily: 'var(--font-mono)',
+  fontSize: 9,
+  letterSpacing: '0.12em',
+  textTransform: 'uppercase',
+  color: 'rgba(207,202,183,0.4)',
+};
+const expValueStyle = {
+  fontFamily: 'var(--font-mono)',
+  fontSize: 11,
+  letterSpacing: '0.02em',
+  color: 'rgba(207,202,183,0.85)',
+};
+
+/** Metadata caption under the enlarged note (NOTE # / DATE / LOCATION / THEME
+ *  + a two-line transcript peek). */
+function ExperimentCaption({ note }) {
+  const m = note.metadata || {};
+  const rows = [
+    ['DATE', m.date],
+    ['LOCATION', m.location],
+    ['THEME', note.category ? formatCategoryLabel(note.category) : ''],
+  ];
+  const transcription = (note.transcription || '').trim();
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8, flex: '0 0 auto' }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 18px' }}>
+        <div style={{ display: 'flex', gap: 6, alignItems: 'baseline' }}>
+          <span style={expLabelStyle}>NOTE</span>
+          <span style={expValueStyle}>{String(note.id)}</span>
+        </div>
+        {rows.map(([label, value]) => (
+          <div key={label} style={{ display: 'flex', gap: 6, alignItems: 'baseline' }}>
+            <span style={expLabelStyle}>{label}</span>
+            <span style={expValueStyle}>{value || '—'}</span>
+          </div>
+        ))}
+      </div>
+      {transcription ? (
+        <p
+          style={{
+            margin: 0,
+            fontFamily: 'var(--font-mono)',
+            fontSize: 11,
+            lineHeight: 1.5,
+            color: 'rgba(207,202,183,0.6)',
+            display: '-webkit-box',
+            WebkitLineClamp: 2,
+            WebkitBoxOrient: 'vertical',
+            overflow: 'hidden',
+          }}
+        >
+          {transcription}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+/** The center stage: an empty grey square by default; the current note
+ *  (enlarged image + caption) crossfades in over it, flanked by ‹ › arrows. */
+function ExperimentStage({ note, reduceMotion, onPrev, onNext, canNav }) {
+  return (
+    <div style={{ position: 'absolute', inset: 0 }}>
+      {/* Base layer: the empty grey square (pic 2) — always present so it shows
+          through as the note crossfades out. */}
+      <div
+        style={{
+          position: 'absolute',
+          inset: 0,
+          background: 'rgba(207,202,183,0.05)',
+          border: '1px solid rgba(207,202,183,0.16)',
+        }}
+      />
+      <AnimatePresence>
+        {note ? (
+          <motion.div
+            key={note.id}
+            initial={reduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.985 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: reduceMotion ? 0 : 0.26, ease }}
+            style={{
+              position: 'absolute',
+              inset: 0,
+              background: '#111',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 12,
+              padding: 16,
+            }}
+          >
+            <div
+              style={{
+                flex: '1 1 auto',
+                minHeight: 0,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              <img
+                src={note.image}
+                alt={`Note ${note.id}`}
+                draggable={false}
+                style={{
+                  maxWidth: '100%',
+                  maxHeight: '100%',
+                  objectFit: 'contain',
+                  display: 'block',
+                  boxShadow: '0 18px 40px rgba(0,0,0,0.45)',
+                }}
+              />
+            </div>
+            <ExperimentCaption note={note} />
+          </motion.div>
+        ) : (
+          <motion.div
+            key="empty"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: reduceMotion ? 0 : 0.2, ease }}
+            style={{
+              position: 'absolute',
+              inset: 0,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            <span
+              style={{
+                ...expLabelStyle,
+                color: 'rgba(207,202,183,0.28)',
+                letterSpacing: '0.2em',
+              }}
+            >
+              Hover a note
+            </span>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Paging arrows — flank the stage (INDEX-lightbox parity). Shown only when
+          a note is up and there's more than one to page through. */}
+      {note && canNav ? (
+        <>
+          <button
+            type="button"
+            className="exp-arrow"
+            aria-label="Previous note"
+            onClick={(e) => {
+              e.stopPropagation();
+              onPrev();
+            }}
+            style={{ left: -14, transform: 'translate(-100%, -50%)' }}
+          >
+            ‹
+          </button>
+          <button
+            type="button"
+            className="exp-arrow"
+            aria-label="Next note"
+            onClick={(e) => {
+              e.stopPropagation();
+              onNext();
+            }}
+            style={{ right: -14, transform: 'translate(100%, -50%)' }}
+          >
+            ›
+          </button>
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * CUBE tab — every note mapped onto the six faces of a rotating 3D cube
+ * (total / 6 per face). Drag to spin it; it idles with a slow auto-rotate.
+ * Clicking a note opens the same close-up Lightbox the INDEX grid uses, with
+ * ← / → stepping through the whole set (wrapping at the ends).
+ *
+ * The heavy three.js scene lives in CubeScene.jsx (no App import → no cycle);
+ * this wrapper just owns the data + the shared Lightbox.
+ */
+function CubeView({ confessions }) {
+  const notes = useMemo(
+    () => confessions.filter((c) => c.image),
+    [confessions]
+  );
+  const [selected, setSelected] = useState(null);
+
+  const step = useCallback(
+    (dir) => {
+      setSelected((cur) => {
+        if (!cur || notes.length === 0) return cur;
+        const i = notes.findIndex((n) => n.id === cur.id);
+        if (i < 0) return cur;
+        return notes[(i + dir + notes.length) % notes.length];
+      });
+    },
+    [notes]
+  );
+
+  return (
+    <motion.div
+      key="cube"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: 0.5, ease }}
+      style={{
+        position: 'absolute',
+        inset: 0,
+        background:
+          'radial-gradient(circle at 50% 42%, #18160f 0%, #0c0b09 58%, #070706 100%)',
+        overflow: 'hidden',
+      }}
+    >
+      {notes.length > 0 ? (
+        <CubeScene notes={notes} onSelect={setSelected} />
+      ) : (
+        <div
+          style={{
+            position: 'absolute',
+            inset: 0,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            fontFamily: 'var(--font-mono)',
+            fontSize: 12,
+            letterSpacing: '0.14em',
+            textTransform: 'uppercase',
+            color: 'rgba(207,202,183,0.55)',
+          }}
+        >
+          Loading the archive…
+        </div>
+      )}
+
+      {/* Interaction hint, bottom-center — fades with the view. */}
+      <div
+        style={{
+          position: 'absolute',
+          left: '50%',
+          bottom: 26,
+          transform: 'translateX(-50%)',
+          pointerEvents: 'none',
+          fontFamily: 'var(--font-mono)',
+          fontSize: 10.5,
+          letterSpacing: '0.16em',
+          textTransform: 'uppercase',
+          color: 'rgba(207,202,183,0.42)',
+          whiteSpace: 'nowrap',
+        }}
+      >
+        drag to rotate · click a note
+      </div>
+
+      <Lightbox
+        confession={selected}
+        onClose={() => setSelected(null)}
+        onPrev={notes.length > 1 ? () => step(-1) : undefined}
+        onNext={notes.length > 1 ? () => step(1) : undefined}
+      />
+    </motion.div>
+  );
+}
+
+function ExperimentView({ confessions }) {
+  const reduceMotion = useReducedMotion();
+  const wrapRef = useRef(null);
+  const [box, setBox] = useState({ w: 0, h: 0 });
+  const [current, setCurrent] = useState(null);
+  const [failedIds, setFailedIds] = useState(() => new Set());
+  const [activeCat, setActiveCat] = useState(null);
+
+  const withImages = useMemo(
+    () => confessions.filter((c) => c.image && !failedIds.has(c.id)),
+    [confessions, failedIds]
+  );
+  const categories = useMemo(
+    () => deriveEmotions(withImages).map((e) => e.label),
+    [withImages]
+  );
+  const notes = useMemo(
+    () =>
+      activeCat ? withImages.filter((c) => c.category === activeCat) : withImages,
+    [withImages, activeCat]
+  );
+
+  // Drop the current note if a filter change removes it from the set.
+  useEffect(() => {
+    if (current && !notes.some((n) => n.id === current.id)) setCurrent(null);
+  }, [notes, current]);
+
+  // Measure the framed content area (right of the filter rail).
+  useLayoutEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return undefined;
+    const update = () => setBox({ w: el.clientWidth, h: el.clientHeight });
+    update();
+    if (typeof ResizeObserver === 'undefined') return undefined;
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  // Size tiles so the notes form a DENSE, one-tile-thick rectangle hugging the
+  // content-area edges: pick the LARGEST cell (≤ ceiling) whose single outer
+  // ring can seat every note. If even the smallest cell can't (a big corpus on
+  // a small screen), we stop at the floor and `placed` thickens the ring inward.
+  const layout = useMemo(() => {
+    const { w, h } = box;
+    const N = notes.length;
+    if (!w || !h || N === 0) return null;
+    let chosen = null;
+    for (let cell = EXP_MAX_CELL; cell >= EXP_MIN_CELL; cell -= 1) {
+      const step = cell + EXP_GAP;
+      const cols = Math.max(3, Math.floor((w + EXP_GAP) / step));
+      const rows = Math.max(3, Math.floor((h + EXP_GAP) / step));
+      const perim = cols > 1 && rows > 1 ? 2 * cols + 2 * rows - 4 : cols * rows;
+      chosen = { cell, cols, rows };
+      if (perim >= N) break;
+    }
+    return chosen;
+  }, [box, notes.length]);
+
+  // Place notes ring-by-ring → a rectangular outline that thickens inward.
+  // Complete outer rings are filled solid; the first ring that can't be filled
+  // gets its notes spaced EVENLY around it, so the frame stays balanced (never
+  // top-heavy) whether it's the full corpus or a small filtered subset.
+  const placed = useMemo(() => {
+    if (!layout) return [];
+    const { cols, rows } = layout;
+    const cells = expRingOrder(cols, rows);
+    if (cells.length === 0 || notes.length === 0) return [];
+
+    // Slice `cells` into concentric rings and record each ring's [start, len].
+    const rings = [];
+    let offset = 0;
+    let cc = cols;
+    let rr = rows;
+    while (cc > 0 && rr > 0) {
+      const len = rr === 1 ? cc : cc === 1 ? rr : 2 * cc + 2 * rr - 4;
+      rings.push([offset, len]);
+      offset += len;
+      cc -= 2;
+      rr -= 2;
+    }
+
+    const out = [];
+    let remaining = notes.length;
+    let ni = 0;
+    for (const [start, len] of rings) {
+      if (remaining <= 0) break;
+      if (remaining >= len) {
+        for (let j = 0; j < len; j += 1) {
+          const [r, c] = cells[start + j];
+          out.push({ note: notes[ni], r, c });
+          ni += 1;
+        }
+        remaining -= len;
+      } else {
+        for (let j = 0; j < remaining; j += 1) {
+          const [r, c] = cells[start + Math.floor((j * len) / remaining)];
+          out.push({ note: notes[ni], r, c });
+          ni += 1;
+        }
+        remaining = 0;
+      }
+    }
+    return out;
+  }, [layout, notes]);
+
+  // Page through the (filtered) notes, wrapping at the ends — INDEX parity.
+  const goRelative = useCallback(
+    (dir) => {
+      setCurrent((cur) => {
+        const n = notes.length;
+        if (n === 0) return cur;
+        if (!cur) return notes[dir > 0 ? 0 : n - 1];
+        const idx = notes.findIndex((c) => c.id === cur.id);
+        if (idx < 0) return notes[0];
+        return notes[(idx + dir + n) % n];
+      });
+    },
+    [notes]
+  );
+
+  // ← / → step through notes while one is open; ESC returns to the empty stage.
+  useEffect(() => {
+    if (!current) return undefined;
+    const onKey = (e) => {
+      const t = e.target;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable))
+        return;
+      if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        goRelative(-1);
+      } else if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        goRelative(1);
+      } else if (e.key === 'Escape') {
+        setCurrent(null);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [current, goRelative]);
+
+  const stageSize =
+    box.w && box.h
+      ? Math.round(Math.max(300, Math.min(520, box.w * 0.4, box.h * 0.52)))
+      : 420;
+  const canNav = notes.length > 1;
+
+  return (
+    <motion.div
+      key="experiment"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: 0.5, ease }}
+      style={{ position: 'absolute', inset: 0, background: '#111' }}
+    >
+      <style>{`
+        .exp-arrow{position:absolute;top:50%;width:40px;height:40px;display:inline-flex;align-items:center;justify-content:center;padding:0 0 3px;border:1px solid rgba(207,202,183,0.18);border-radius:50%;background:rgba(17,17,17,0.55);color:#CFCAB7;font-family:var(--font-mono);font-size:22px;line-height:1;cursor:pointer;opacity:0.72;transition:opacity .18s ${HOVER_EASE},background .18s ${HOVER_EASE};z-index:6;}
+        .exp-arrow:hover{opacity:1;background:rgba(207,202,183,0.14);}
+        .exp-cat{display:block;width:100%;text-align:left;background:none;border:none;padding:5px 0;font-family:var(--font-mono);font-size:11px;letter-spacing:0.06em;text-transform:uppercase;color:rgba(207,202,183,0.5);cursor:pointer;transition:color .18s ${HOVER_EASE};}
+        .exp-cat:hover{color:rgba(207,202,183,0.85);}
+        .exp-cat.is-active{color:#CFCAB7;text-decoration:underline;text-decoration-style:dotted;text-underline-offset:3px;}
+      `}</style>
+
+      {/* Left category-filter rail — single-select (click again to clear). */}
+      {categories.length > 1 ? (
+        <div
+          style={{
+            position: 'absolute',
+            left: 24,
+            top: 112,
+            bottom: 24,
+            width: EXP_RAIL_W,
+            zIndex: 8,
+            display: 'flex',
+            flexDirection: 'column',
+          }}
+        >
+          <div style={{ ...expLabelStyle, color: 'rgba(207,202,183,0.4)', marginBottom: 8 }}>
+            Category
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', overflowY: 'auto', paddingRight: 4 }}>
+            <button
+              type="button"
+              className={`exp-cat${activeCat == null ? ' is-active' : ''}`}
+              onClick={() => setActiveCat(null)}
+            >
+              All
+            </button>
+            {categories.map((label) => (
+              <button
+                key={label}
+                type="button"
+                className={`exp-cat${activeCat === label ? ' is-active' : ''}`}
+                onClick={() => setActiveCat((cur) => (cur === label ? null : label))}
+              >
+                {formatCategoryLabel(label)}
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      {/* Framed content area (right of the rail): the note-outline + center stage.
+          Leaving this area returns the stage to the empty square; moving between
+          a thumbnail and the stage/arrows keeps the current note up. */}
+      <div
+        ref={wrapRef}
+        onMouseLeave={() => setCurrent(null)}
+        style={{
+          position: 'absolute',
+          top: 84, //   clear the fixed wordmark + INDEX/EXPLORE/EXPERIMENT/ABOUT nav
+          left: 24 + EXP_RAIL_W + 24,
+          right: 24,
+          bottom: 24,
+          overflow: 'hidden',
+        }}
+      >
+        {layout ? (
+          <div
+            style={{
+              position: 'absolute',
+              inset: 0,
+              display: 'grid',
+              gridTemplateColumns: `repeat(${layout.cols}, ${layout.cell}px)`,
+              gridTemplateRows: `repeat(${layout.rows}, ${layout.cell}px)`,
+              gap: EXP_GAP,
+              justifyContent: 'center',
+              alignContent: 'center',
+            }}
+          >
+            {placed.map(({ note, r, c }) => {
+              const isCurrent = current && current.id === note.id;
+              const dim = current && !isCurrent;
+              return (
+                <button
+                  key={note.id}
+                  type="button"
+                  onMouseEnter={() => setCurrent(note)}
+                  onFocus={() => setCurrent(note)}
+                  onClick={() => setCurrent(note)}
+                  aria-label={`Preview note ${note.id}`}
+                  style={{
+                    gridColumn: c + 1,
+                    gridRow: r + 1,
+                    padding: 0,
+                    margin: 0,
+                    border: 'none',
+                    background: 'transparent',
+                    overflow: 'hidden',
+                    cursor: 'pointer',
+                    outline: 'none',
+                  }}
+                >
+                  <img
+                    src={note.image}
+                    alt=""
+                    aria-hidden="true"
+                    draggable={false}
+                    loading="eager"
+                    decoding="async"
+                    onError={() =>
+                      setFailedIds((s) => {
+                        const next = new Set(s);
+                        next.add(note.id);
+                        return next;
+                      })
+                    }
+                    style={{
+                      width: '100%',
+                      height: '100%',
+                      objectFit: 'contain',
+                      display: 'block',
+                      opacity: dim ? 0.4 : 0.92,
+                      transform: isCurrent ? 'scale(1.1)' : 'scale(1)',
+                      transition: `opacity 0.22s ${HOVER_EASE}, transform 0.22s ${HOVER_EASE}`,
+                    }}
+                  />
+                </button>
+              );
+            })}
+          </div>
+        ) : null}
+
+        {/* Center stage floats in the empty middle of the outline. */}
+        <div
+          style={{
+            position: 'absolute',
+            inset: 0,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            pointerEvents: 'none',
+          }}
+        >
+          <div style={{ position: 'relative', width: stageSize, height: stageSize, pointerEvents: 'auto' }}>
+            <ExperimentStage
+              note={current}
+              reduceMotion={reduceMotion}
+              canNav={canNav}
+              onPrev={() => goRelative(-1)}
+              onNext={() => goRelative(1)}
+            />
+          </div>
+        </div>
+      </div>
+    </motion.div>
+  );
+}
+
 function ArchivePage({ confessionQuery, initialEmotion = null, initialView = 'theme', onReturnToIntro }) {
   // Live data from the published Google Sheet. Falls back to the bundled
   // sample data if the network call fails so the prototype still works
@@ -4456,21 +5303,10 @@ function ArchivePage({ confessionQuery, initialEmotion = null, initialView = 'th
             pointerEvents: 'none',
           }}
         >
-          {/* View tabs are hidden on the grid (INDEX) view; the wordmark logo
-              takes the left cell there instead so the mobile index keeps a
-              top-left brand mark. Other views show the tabs. */}
+          {/* Brand mark holds the left cell on every compact view; INDEX ·
+              EXPLORE · ABOUT cluster flush-right in the AboutHeader beside it. */}
           <div style={{ pointerEvents: 'auto', flexShrink: 0 }}>
-            {view === 'grid' ? (
-              <WordmarkLogo onReturnToIntro={onReturnToIntro} logoHeight={34} />
-            ) : (
-              <ViewToggle
-                view={view}
-                onChange={setView}
-                sidebarInset={sidebarInset}
-                embedded
-                entranceDelay={navChromeEntranceDelay}
-              />
-            )}
+            <WordmarkLogo onReturnToIntro={onReturnToIntro} logoHeight={34} />
           </div>
           <div style={{ pointerEvents: 'auto', flexShrink: 0 }}>
             <AboutHeader
@@ -4493,7 +5329,16 @@ function ArchivePage({ confessionQuery, initialEmotion = null, initialView = 'th
         />
       )}
       </motion.div>
-      <AboutModal open={aboutOpen} onClose={() => setAboutOpen(false)} />
+      <AboutModal
+        open={aboutOpen}
+        onClose={() => setAboutOpen(false)}
+        view={view}
+        confessions={confessions}
+        onNavigate={(v) => {
+          setAboutOpen(false);
+          setView(v);
+        }}
+      />
 
       <AnimatePresence mode="wait">
         {view === 'theme' ? (
@@ -4531,6 +5376,15 @@ function ArchivePage({ confessionQuery, initialEmotion = null, initialView = 'th
             onAbout={() => setAboutOpen(true)}
             onIndex={() => setView('grid')}
           />
+        ) : view === 'experiment' ? (
+          /* EXPERIMENT tab — a super-small contact-sheet of every note with an
+             empty grey stage dead-center; hovering a thumbnail enlarges that
+             note (+ metadata) into the stage. */
+          <ExperimentView key="experiment" confessions={confessions} />
+        ) : view === 'cube' ? (
+          /* CUBE tab — every note mapped onto the six faces of a rotating
+             three.js cube; click a face tile to open the INDEX-style close-up. */
+          <CubeView key="cube" confessions={confessions} />
         ) : view === 'wall' ? (
           <WallView key="wall" confessions={confessions} sidebarInset={sidebarInset} />
         ) : (
@@ -4583,7 +5437,9 @@ export default function App() {
     deepLinkView === 'grid' ||
     deepLinkView === 'theme' ||
     deepLinkView === 'explore' ||
-    deepLinkView === 'wall';
+    deepLinkView === 'wall' ||
+    deepLinkView === 'experiment' ||
+    deepLinkView === 'cube';
 
   const [page, setPage] = useState(deepLinkArchive ? 'archive' : 'landing');
   // Which view the archive opens on. The onboarding's ENTER lands on the grid
@@ -4598,7 +5454,6 @@ export default function App() {
       {page === 'landing' && (
         <OnboardingReveal
           key="onboarding"
-          skipEntrance
           onEnter={() => {
             setArchiveView('grid');
             setPage('archive');

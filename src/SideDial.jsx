@@ -9,6 +9,7 @@ import {
 } from './noise.jsx';
 import { TRANSCRIPTION_TEXT } from './text';
 import { formatCategoryLabel } from './themes';
+import { useNoteSound } from './sounds';
 
 export const EMOTIONS = [
   { id: 'therapist', label: 'Therapist', gradient: 'linear-gradient(to left, #2a1a4a, #111 70%)' },
@@ -753,23 +754,23 @@ const COURIER = '"Courier New", Courier, ui-monospace, SFMono-Regular, Menlo, mo
 // Keyboard-navigation mini guide for the confession stack.
 // Top-of-view keyboard legend for the dial. Each item is a label above a dark
 // key box: EXIT sits apart from the LEFT/RIGHT pair. The boxes show plain Courier
-// glyphs for the physical key — ESC for exit, A / D for left/right (A/D or the
-// arrow keys both flip through notes). Pressing the physical key — or clicking a
+// glyphs for the physical key — ESC for exit, ← / → for left/right (the arrow
+// keys or A/D both flip through notes). Pressing the physical key — or clicking a
 // box — darkens that box (see `pressedKey` → `keyPressed`).
 const DIAL_NAV_ITEMS = [
   { id: 'esc', label: 'EXIT', kind: 'exit', aria: 'Exit view (Esc)' },
-  { id: 'left', label: 'LEFT', kind: 'arrow', dir: 'left', aria: 'Previous note (A key)' },
-  { id: 'right', label: 'RIGHT', kind: 'arrow', dir: 'right', aria: 'Next note (D key)' },
+  { id: 'left', label: 'LEFT', kind: 'arrow', dir: 'left', glyph: '←', aria: 'Previous note (left arrow)' },
+  { id: 'right', label: 'RIGHT', kind: 'arrow', dir: 'right', glyph: '→', aria: 'Next note (right arrow)' },
 ];
 
-// Optional theme-nav pair for the explore stack: W / S step between themes.
-// The left dial is a vertical wheel, so W (up) = previous theme, S (down) =
-// next. Rendered under a single THEME caption and only when `showCategoryKeys`
-// is set — the dial page and grid lightbox don't wire these keys, so they
-// stay out of those legends.
+// Optional theme-nav pair for the explore stack: ↑ / ↓ step between themes.
+// The left dial is a vertical wheel, so ↑ (up) = previous theme, ↓ (down) =
+// next (the arrow keys or W/S both work). Rendered under a single THEME caption
+// and only when `showCategoryKeys` is set — the dial page and grid lightbox
+// don't wire these keys, so they stay out of those legends.
 const DIAL_CATEGORY_ITEMS = [
-  { id: 'catPrev', kind: 'cat', glyph: 'W', aria: 'Previous theme (W key)' },
-  { id: 'catNext', kind: 'cat', glyph: 'S', aria: 'Next theme (S key)' },
+  { id: 'catPrev', kind: 'cat', glyph: '↑', aria: 'Previous theme (up arrow)' },
+  { id: 'catNext', kind: 'cat', glyph: '↓', aria: 'Next theme (down arrow)' },
 ];
 
 // Animated grain <filter> for the nav-key glyphs — the same feTurbulence +
@@ -860,8 +861,8 @@ export function DialNavHint({
   const grainId = `nav-grain-${useId().replace(/:/g, '')}`;
 
   // A single dark key box (its caption lives in the wrapping item). Glyph is the
-  // physical key: ESC for exit, A / D for the note flippers, or the item's own
-  // `glyph` (W / S for the theme keys). Grain rides the arrow + theme glyphs when
+  // item's own `glyph` — ← / → for the note flippers, ↑ / ↓ for the theme keys —
+  // falling back to ESC for exit. Grain rides the arrow + theme glyphs when
   // opted in; EXIT always stays crisp.
   const keyButton = (item) => {
     const pressed = pressedKey === item.id;
@@ -890,7 +891,7 @@ export function DialNavHint({
             ...(grained ? { filter: `url(#${grainId})` } : null),
           }}
         >
-          {item.glyph ?? (item.kind === 'exit' ? 'ESC' : item.dir === 'left' ? 'A' : 'D')}
+          {item.glyph ?? (item.kind === 'exit' ? 'ESC' : item.dir === 'left' ? '←' : '→')}
         </span>
       </button>
     );
@@ -1042,6 +1043,7 @@ export function HorizontalConfessionStack({
 }) {
   const scrollRef = useRef(null);
   const reduceMotion = useReducedMotion();
+  const playNote = useNoteSound();
   // Active card image box — anchors the crossfading meta overlay above the note.
   const [metaAnchorEl, setMetaAnchorEl] = useState(null);
   const inactive = useInactiveCardParams();
@@ -1215,6 +1217,10 @@ export function HorizontalConfessionStack({
   const copyWidthRef = useRef(0);
   // Has the initial scroll into the middle copy happened yet?
   const hasInitialScrolledRef = useRef(false);
+  // Last scrollWidth we saw in handleScroll. When it changes, a scroll event was
+  // driven by the strip RESIZING (a late image committing its intrinsic width),
+  // not by the user — so we re-center rather than treat it as a drag.
+  const lastScrollWidthRef = useRef(0);
   // Scroll-linked micro-rotation (deg) on card images; decays via the tilt loop.
   const lastScrollLeftForRotateRef = useRef(null);
   const scrollRotateDegRef = useRef(0);
@@ -1241,6 +1247,8 @@ export function HorizontalConfessionStack({
   };
 
   const setActiveFromClick = (i) => {
+    // Post-it "peel" when a note is clicked to focus in the coverflow.
+    playNote();
     activeIndexSourceRef.current = 'external';
     onActiveChange(i);
   };
@@ -1276,7 +1284,7 @@ export function HorizontalConfessionStack({
 
   useEffect(() => {
     if (!showNavHint) return undefined;
-    // A / D flip through notes alongside the arrow keys (the legend shows A / D).
+    // ← / → flip through notes alongside A / D (the legend shows the arrow keys).
     const keyToId = {
       ArrowLeft: 'left', a: 'left', A: 'left',
       ArrowRight: 'right', d: 'right', D: 'right',
@@ -1537,44 +1545,102 @@ export function HorizontalConfessionStack({
     updateCardTiltsRef.current();
   }, [warp.depth]);
 
-  // Mark layout as settled after a generous post-mount wait so the
-  // snap-to-center logic doesn't fight image loads. 800ms covers most
-  // image decode times for ~30 small PNGs over a fast connection; on
-  // slow connections the worst case is a slightly delayed first snap.
+  // Hold the "layout settled" gate closed until image decode/reflow actually
+  // stops, keeping the active card pinned to center throughout. A fixed timer
+  // was too optimistic on a COLD first open (notably the EXPLORE tab): the ~100
+  // card images decode past the timer, each commit grows the strip and shifts
+  // the active card, and the browser's scroll-anchoring nudges `scrollLeft`.
+  // With the gate already open those reflow scrolls were misread as USER
+  // scrolls — handleScroll would latch onto whatever card was momentarily
+  // nearest center (a random note) and smooth-snap to it, so the coverflow
+  // visibly "scrolled through notes and highlighted a random image" on entry.
+  // Instead we watch the strip's scrollWidth: while it's still growing we
+  // re-pin the active note under the center; only once it holds still (or a
+  // safety ceiling) do we open the user-scroll / snap gate.
   useEffect(() => {
-    const t = setTimeout(() => {
-      layoutSettledRef.current = true;
-      // Re-measure once layout has settled so wrap-around math uses the
-      // correct copy width going forward, and recompute tilts now that
-      // image widths are stable.
-      measureCopyWidth();
-      // Images changing intrinsic widths can leave the strip scrolled to a
-      // "nearest" card that no longer matches `activeIndex` — re-center the
-      // middle copy of the logical active card so one image is clearly active
-      // on landing (and after decode/layout).
-      const el = scrollRef.current;
+    const el = scrollRef.current;
+    if (!el) return undefined;
+    let raf = 0;
+    let cancelled = false;
+    let lastW = -1;
+    const start = performance.now();
+    // Settle once every card image has resolved (loaded OR errored — both flip
+    // `complete`), so a slow connection that streams images in bursts can't trip
+    // an early "quiet" window and then shift the strip out from under us. The
+    // ceiling is only a safety net for a genuinely stuck request; kept generous
+    // so a slow (but working) connection still settles on real image loads.
+    const CEILING_MS = 15000;
+
+    // Re-pin the middle copy's active card to the viewport center (instant,
+    // flagged programmatic so its scroll event is ignored, not read as a drag).
+    // Called every frame while settling so the focal note stays glued to center
+    // and neighbours fill in AROUND it rather than shoving it aside.
+    const repin = () => {
       const ni = nRef.current;
-      if (el && hasInitialScrolledRef.current && ni > 0) {
-        const cards = el.querySelectorAll('[data-card]');
-        const ai = activeIndexRef.current;
-        const card = cards[MIDDLE_COPY * ni + ai];
-        if (card) {
-          const target = Math.max(
-            0,
-            card.offsetLeft + card.offsetWidth / 2 - el.offsetWidth / 2
-          );
-          isProgScrollingRef.current = true;
-          progScrollTargetRef.current = target;
-          el.scrollLeft = target;
-          requestAnimationFrame(() => {
-            isProgScrollingRef.current = false;
-            progScrollTargetRef.current = null;
-          });
-        }
+      if (!hasInitialScrolledRef.current || ni <= 0) return;
+      const cards = el.querySelectorAll('[data-card]');
+      const card = cards[MIDDLE_COPY * ni + activeIndexRef.current];
+      if (!card) return;
+      const target = Math.max(0, card.offsetLeft + card.offsetWidth / 2 - el.offsetWidth / 2);
+      if (Math.abs(el.scrollLeft - target) > 1) {
+        isProgScrollingRef.current = true;
+        progScrollTargetRef.current = target;
+        el.scrollLeft = target;
       }
+    };
+
+    const settle = () => {
+      measureCopyWidth();
+      repin();
+      // Record the final width so the user's first real scroll after load isn't
+      // misread as reflow by handleScroll's scrollWidth guard.
+      lastScrollWidthRef.current = el.scrollWidth;
+      requestAnimationFrame(() => {
+        isProgScrollingRef.current = false;
+        progScrollTargetRef.current = null;
+      });
+      layoutSettledRef.current = true;
       updateCardTiltsRef.current();
-    }, 800);
-    return () => clearTimeout(t);
+    };
+
+    const allImagesResolved = () => {
+      const imgs = el.querySelectorAll('img');
+      if (imgs.length === 0) return false;
+      for (let i = 0; i < imgs.length; i++) {
+        if (!imgs[i].complete) return false;
+      }
+      return true;
+    };
+
+    const tick = () => {
+      if (cancelled) return;
+      const now = performance.now();
+      const w = el.scrollWidth;
+      if (w !== lastW) {
+        // Strip grew (another image committed its width) → refresh copy-width
+        // and tilt math so the coverflow warp tracks the new geometry.
+        lastW = w;
+        measureCopyWidth();
+        updateCardTiltsRef.current();
+      }
+      // Hold the focal note centered against the growing strip.
+      repin();
+      // Settle when every image has resolved (once we've actually pinned), or
+      // unconditionally at the ceiling so the loop can never run forever (e.g.
+      // if cards never gain width because every image failed to load).
+      const timedOut = now - start >= CEILING_MS;
+      if (timedOut || (hasInitialScrolledRef.current && allImagesResolved())) {
+        settle();
+        return;
+      }
+      raf = requestAnimationFrame(tick);
+    };
+
+    raf = requestAnimationFrame(tick);
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(raf);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -1677,6 +1743,38 @@ export function HorizontalConfessionStack({
   const handleScroll = () => {
     const el = scrollRef.current;
     if (!el) return;
+
+    // Reflow guard: if the strip's scrollWidth changed, this scroll event was
+    // caused by a late image committing its intrinsic width (which the browser's
+    // scroll anchoring nudges), NOT by the user. Re-pin the focal note under the
+    // center instead of latching onto whichever card the reflow slid past — that
+    // misread was what made the coverflow "scroll through notes and highlight a
+    // random image" on the first (cold) open.
+    const sw = el.scrollWidth;
+    const swChanged = sw !== lastScrollWidthRef.current;
+    lastScrollWidthRef.current = sw;
+    if (swChanged && !isProgScrollingRef.current) {
+      const ni = nRef.current;
+      if (ni > 0 && hasInitialScrolledRef.current) {
+        const cards = el.querySelectorAll('[data-card]');
+        const card = cards[MIDDLE_COPY * ni + activeIndexRef.current];
+        if (card) {
+          const maxScroll = el.scrollWidth - el.clientWidth;
+          const target = Math.max(
+            0,
+            Math.min(card.offsetLeft + card.offsetWidth / 2 - el.offsetWidth / 2, maxScroll)
+          );
+          if (Math.abs(el.scrollLeft - target) > 1) {
+            isProgScrollingRef.current = true;
+            progScrollTargetRef.current = target;
+            el.scrollLeft = target;
+          }
+        }
+      }
+      ensureTiltLoop();
+      lastScrollLeftForRotateRef.current = el.scrollLeft;
+      return;
+    }
 
     const sl = el.scrollLeft;
     const prevSl = lastScrollLeftForRotateRef.current;
@@ -2329,6 +2427,15 @@ export function VerticalConfessionStack({
   // a programmatic re-centre); 'external' = dial/click/mount (DO centre it).
   const sourceRef = useRef('external');
   const hasInitialScrolledRef = useRef(false);
+  // Last index we programmatically scrolled to — lets the external-change effect
+  // measure the jump distance so a far theme jump can snap instantly instead of
+  // gliding across every note in between.
+  const lastScrolledIndexRef = useRef(activeIndex);
+  // Wall-clock through which scroll-detection is muted after a programmatic
+  // re-centre (dial / theme chip / card tap). The settle event a jump fires
+  // would otherwise pick a note we scrolled past and yank activeIndex off the
+  // target — so the stack renders one note active while sitting on another.
+  const progScrollUntilRef = useRef(0);
 
   // Grain-hold on the freshly-active note — matches the horizontal stack so the
   // note "settles" into focus rather than de-graining the instant it centres.
@@ -2351,6 +2458,10 @@ export function VerticalConfessionStack({
     const ir = img.getBoundingClientRect();
     const er = el.getBoundingClientRect();
     const delta = ir.top + ir.height / 2 - (er.top + el.clientHeight / 2);
+    // Mute scroll-detection for the length of this glide (plus a settle margin)
+    // so the events it fires don't reassign activeIndex to a passed-over note.
+    progScrollUntilRef.current =
+      performance.now() + (behavior === 'smooth' ? 700 : 260);
     el.scrollBy({ top: delta, behavior: behavior || 'auto' });
   }, []);
 
@@ -2361,15 +2472,22 @@ export function VerticalConfessionStack({
     hasInitialScrolledRef.current = true;
   }, [scrollItemToCenter]);
 
-  // External index change (dial jump / card tap) → smooth-centre it. Skip when
-  // the change came from the user's own scroll.
+  // External index change (dial jump / theme chip / card tap) → centre it. Skip
+  // when the change came from the user's own scroll. Near moves glide smoothly;
+  // far jumps (a theme chip that lands many notes away) snap instantly — a
+  // smooth glide across 20+ notes both reads as a blur and lets every note we
+  // pass over register as "centred" and yank activeIndex off the target.
   useEffect(() => {
     if (sourceRef.current === 'user') {
       sourceRef.current = 'external';
+      lastScrolledIndexRef.current = activeIndex;
       return;
     }
     if (!hasInitialScrolledRef.current) return;
-    scrollItemToCenter(activeIndex, reduceMotion ? 'auto' : 'smooth');
+    const dist = Math.abs(activeIndex - lastScrolledIndexRef.current);
+    lastScrolledIndexRef.current = activeIndex;
+    const behavior = reduceMotion || dist > 4 ? 'auto' : 'smooth';
+    scrollItemToCenter(activeIndex, behavior);
   }, [activeIndex, reduceMotion, scrollItemToCenter]);
 
   // Detect the centred note on scroll (rAF-throttled) and report it upward.
@@ -2378,6 +2496,8 @@ export function VerticalConfessionStack({
     if (rafRef.current) return;
     rafRef.current = requestAnimationFrame(() => {
       rafRef.current = 0;
+      // Skip while a programmatic re-centre is still settling (see the ref).
+      if (performance.now() < progScrollUntilRef.current) return;
       const el = scrollRef.current;
       if (!el) return;
       const er = el.getBoundingClientRect();

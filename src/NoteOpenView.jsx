@@ -6,6 +6,7 @@ import {
   useCallback,
   useRef,
 } from 'react';
+import { createPortal } from 'react-dom';
 import {
   motion,
   AnimatePresence,
@@ -89,8 +90,9 @@ const BRIDGE_FILTER = `url(#${BRIDGE_FILTER_ID})`;
 // Matches App.jsx's ARCHIVE_NAV_COMPACT_MQ so chrome + layout switch together.
 const MOBILE_MQ = '(max-width: 760px)';
 
-/** Grain filter id for mobile explore/lightbox-style chevrons. */
+/** Grain filter ids for mobile navigation glyphs (note chevrons + category arrows). */
 const MOBILE_NAV_GRAIN_ID = 'explore-mobile-arrow-grain';
+const CATEGORY_NAV_GRAIN_ID = 'explore-mobile-category-grain';
 
 /** True on phone-width viewports; live-updates on resize/rotate. */
 function useIsMobile() {
@@ -186,6 +188,29 @@ const DIAL_CONNECTOR_GAP = 16;
 // Shortest a spoke can get (guards against zero/negative for very wide labels).
 const DIAL_CONNECTOR_MIN = 14;
 
+// Normalize a theme label to a lookup key (lower-case, alphanumerics only) so a
+// definition matches whatever casing/punctuation the sheet uses for the theme.
+const catKey = (label) =>
+  String(label ?? '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '');
+
+// One-line definition per theme, shown as a cursor-following tooltip when the
+// visitor hovers a category on the left dial. Keyed by `catKey` so it survives
+// label casing/spacing; a theme with no entry simply shows no tooltip.
+const CATEGORY_DEFINITIONS = {
+  therapist:
+    'Sharing emotional and private information to an AI system acting as a listener and advisor.',
+  companionship:
+    'Treating AI as a relational other, such as a friend, confidant, or romantic partner, where attachment and habit builds over time.',
+  harm: "Interactions with AI that reinforce distorted or harmful beliefs, escalate a crisis, or shape the user's thinking in ways they later name as damaging.",
+  refusal:
+    'Boycotting AI use, partly or entirely, on ethical, environmental, labor, or personal grounds.',
+  exes: "One of our most common themes: using AI to process romantic angst — interpreting a partner's behavior, winning arguments, or even cloning your ex's likeness.",
+  ghostwriter:
+    'Letting AI be your voice or representative by allowing it to draft or fully respond on your behalf in professional and personal contexts.',
+};
+
 function LeftThemeDial({ emotions, activeId, onChange, reduceMotion, delay }) {
   const idx = Math.max(0, emotions.findIndex((e) => e.id === activeId));
   const active = emotions[idx];
@@ -195,6 +220,8 @@ function LeftThemeDial({ emotions, activeId, onChange, reduceMotion, delay }) {
   // label, so we cache them by id and only re-measure on font load / resize.
   const wordElsRef = useRef(new Map());
   const [wordWidths, setWordWidths] = useState({});
+  // Cursor-following definition tooltip for the category the pointer is over.
+  const [tip, setTip] = useState(null);
   const setWordEl = useCallback(
     (id) => (el) => {
       const map = wordElsRef.current;
@@ -236,6 +263,36 @@ function LeftThemeDial({ emotions, activeId, onChange, reduceMotion, delay }) {
     ? { duration: 0 }
     : { type: 'spring', visualDuration: 0.6, bounce: 0.12 };
 
+  // Hover handlers for a lit category label: pop its blurb next to the cursor
+  // (and track the cursor). Returns null for themes with no definition, leaving
+  // that label inert.
+  const tipHandlers = (emo) => {
+    const text = CATEGORY_DEFINITIONS[catKey(emo.label)];
+    if (!text) return null;
+    const track = (e) => setTip({ x: e.clientX, y: e.clientY, label: emo.label, text });
+    return { onMouseEnter: track, onMouseMove: track, onMouseLeave: () => setTip(null) };
+  };
+
+  // Cursor-following tooltip, portaled to <body> so the dial column's transforms
+  // (which would otherwise capture position:fixed) can't shift or clip it.
+  let tipNode = null;
+  if (tip && typeof document !== 'undefined') {
+    const GAP = 18;
+    const vw = typeof window !== 'undefined' ? window.innerWidth : 1200;
+    const vh = typeof window !== 'undefined' ? window.innerHeight : 800;
+    // Flip above the cursor in the lower part of the screen so a tall blurb
+    // never runs off the bottom; clamp horizontally to stay on-screen.
+    const below = tip.y < vh * 0.62;
+    const left = Math.max(12, Math.min(tip.x + GAP, vw - 316));
+    const vpos = below ? { top: tip.y + GAP } : { bottom: vh - tip.y + GAP };
+    tipNode = createPortal(
+      <div style={{ ...st.catTip, left, ...vpos }}>
+        <div style={st.catTipBody}>{tip.text}</div>
+      </div>,
+      document.body
+    );
+  }
+
   return (
     <motion.div
       initial={reduceMotion ? { opacity: 1 } : { opacity: 0, x: -16 }}
@@ -252,6 +309,9 @@ function LeftThemeDial({ emotions, activeId, onChange, reduceMotion, delay }) {
         const slot = wheelSlot(k, vis);
         const isActive = k === 0;
         const clickable = !isActive && Math.abs(k) <= vis;
+        // Only the lit labels (active + clickable neighbours) get a tooltip; the
+        // hidden back-slot labels stay inert.
+        const hover = isActive || clickable ? tipHandlers(emo) : null;
         return (
           <motion.div
             key={emo.id}
@@ -266,13 +326,21 @@ function LeftThemeDial({ emotions, activeId, onChange, reduceMotion, delay }) {
                 onClick={() => onChange(emo.id)}
                 aria-label={`Show ${emo.label}`}
                 style={st.slotButton}
+                {...(hover || {})}
               >
                 <span ref={setWordEl(emo.id)} style={st.word}>
                   {formatCategoryLabel(emo.label)}
                 </span>
               </button>
             ) : (
-              <span style={st.slotStatic}>
+              <span
+                style={
+                  isActive && hover
+                    ? { ...st.slotStatic, pointerEvents: 'auto', cursor: 'help' }
+                    : st.slotStatic
+                }
+                {...(isActive && hover ? hover : {})}
+              >
                 <span ref={setWordEl(emo.id)} style={st.word}>
                   {formatCategoryLabel(emo.label)}
                 </span>
@@ -281,6 +349,7 @@ function LeftThemeDial({ emotions, activeId, onChange, reduceMotion, delay }) {
           </motion.div>
         );
       })}
+      {tipNode}
       {/* Dashed spokes — ONE per theme. Each hairline runs from just left of its
           wordmark inward to the wheel's (off-screen) pivot, so every line is a
           true radius and they all fan out from the dial's centre. Each rides the
@@ -339,6 +408,85 @@ function MobileThemeCaption({ label, position, total, reduceMotion }) {
         </motion.div>
       </AnimatePresence>
     </div>
+  );
+}
+
+/* ── Mobile theme stepper ──────────────────────── */
+
+/** Grain-filtered chevron (‹ or ›) used by the category stepper. */
+function StepperArrow({ points, label, grainId, onClick }) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick();
+      }}
+      style={st.mStepperArrow}
+    >
+      <svg
+        width="18"
+        height="18"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden="true"
+        style={{ position: 'relative', zIndex: 1, filter: `url(#${grainId})` }}
+      >
+        <polyline points={points} />
+      </svg>
+    </button>
+  );
+}
+
+/**
+ * Mobile theme navigation — the phone's stand-in for the desktop left rotary
+ * dial (and the W/S theme keys). The active category is featured centre-stage
+ * with a grain-filtered ‹ / › on either side; tapping an arrow steps to the
+ * prev/next theme's first note (via stepCategory — the same wrap-around jump
+ * the dial and W/S keys use). The label crossfades as the theme changes.
+ * Reveals a beat after the note lands, matching the desktop dial.
+ */
+function MobileThemeStepper({ label, onStep, reduceMotion, delay = 0 }) {
+  return (
+    <motion.div
+      initial={reduceMotion ? false : { opacity: 0, y: -8 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: reduceMotion ? 0 : 0.45, ease: EASE_OUT, delay }}
+      style={st.mStepperWrap}
+    >
+      <NavGrainFilter id={CATEGORY_NAV_GRAIN_ID} reduceMotion={reduceMotion} />
+      <StepperArrow
+        points="15 18 9 12 15 6"
+        label="Previous category"
+        grainId={CATEGORY_NAV_GRAIN_ID}
+        onClick={() => onStep(-1)}
+      />
+      <div style={st.mStepperLabelClip}>
+        <AnimatePresence mode="wait">
+          <motion.div
+            key={label}
+            initial={reduceMotion ? { opacity: 1 } : { opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: reduceMotion ? 0 : 0.3, ease: GRADIENT_EASE }}
+            style={st.mStepperLabel}
+          >
+            {label}
+          </motion.div>
+        </AnimatePresence>
+      </div>
+      <StepperArrow
+        points="9 18 15 12 9 6"
+        label="Next category"
+        grainId={CATEGORY_NAV_GRAIN_ID}
+        onClick={() => onStep(1)}
+      />
+    </motion.div>
   );
 }
 
@@ -682,22 +830,24 @@ export default function NoteOpenView({
   );
 
   useEffect(() => {
-    // A / D (or ← / →) flip through notes; W / S step between themes/categories
-    // (the vertical theme dial — W = prev, S = next). Both pairs sit in the
-    // top legend (see DialNavHint showCategoryKeys).
+    // ← / → (or A / D) flip through notes; ↑ / ↓ (or W / S) step between
+    // themes/categories (the vertical theme dial — up = prev, down = next).
+    // Both pairs sit in the top legend (see DialNavHint showCategoryKeys).
     const keyToId = {
       Escape: 'esc',
       ArrowLeft: 'left', a: 'left', A: 'left',
       ArrowRight: 'right', d: 'right', D: 'right',
-      w: 'catPrev', W: 'catPrev',
-      s: 'catNext', S: 'catNext',
+      ArrowUp: 'catPrev', w: 'catPrev', W: 'catPrev',
+      ArrowDown: 'catNext', s: 'catNext', S: 'catNext',
     };
     const onKeyDown = (e) => {
       const id = keyToId[e.key];
       if (!id) return;
-      // Don't hijack A / D / W / S (or arrows) while typing in a field.
+      // Don't hijack the nav keys (or arrows) while typing in a field.
       const t = e.target;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+      // Arrow keys otherwise scroll the page — claim them for note/theme nav.
+      if (e.key.startsWith('Arrow')) e.preventDefault();
       setPressedNavKey(id);
       runNav(id);
     };
@@ -803,12 +953,25 @@ export default function NoteOpenView({
       {revealed && (
         <>
           {isMobile ? (
-            <MobileThemeCaption
-              label={activeLabel}
-              position={indexInCategory + 1}
-              total={total}
-              reduceMotion={reduceMotion}
-            />
+            <>
+              {/* Explore tab (standalone): a centered category stepper is the
+                  phone's stand-in for the desktop rotary dial. The grid-tap
+                  overlay keeps just the counter (its own chrome owns the top). */}
+              {standalone && emotions.length > 1 ? (
+                <MobileThemeStepper
+                  label={activeLabel}
+                  onStep={stepCategory}
+                  reduceMotion={reduceMotion}
+                  delay={reduceMotion ? 0 : CATEGORY_REVEAL_DELAY_S}
+                />
+              ) : null}
+              <MobileThemeCaption
+                label={activeLabel}
+                position={indexInCategory + 1}
+                total={total}
+                reduceMotion={reduceMotion}
+              />
+            </>
           ) : (
             <LeftThemeDial
               emotions={emotions}
@@ -841,9 +1004,12 @@ export default function NoteOpenView({
             </motion.div>
           ) : null}
 
-          {/* Mobile: up/down chevrons with grain (vertical carousel — up steps
-              to the previous note, down to the next). No top A/D legend. */}
-          {isMobile && total > 1 ? (
+          {/* Mobile up/down chevrons (vertical carousel — up = previous note,
+              down = next). Overlay only: on the standalone EXPLORE tab the top
+              strip belongs to the theme chips, and note-stepping is by vertical
+              swipe / tapping the dimmed prev-next peeks, so the chevrons would
+              only crowd the chips + meta. */}
+          {isMobile && !standalone && total > 1 ? (
             <>
               <NavGrainFilter id={MOBILE_NAV_GRAIN_ID} reduceMotion={reduceMotion} />
               <button
@@ -1232,6 +1398,26 @@ const st = {
     textTransform: 'uppercase',
   },
 
+  // Cursor-following category definition tooltip (portaled to <body>).
+  catTip: {
+    position: 'fixed',
+    zIndex: 3000,
+    maxWidth: 300,
+    pointerEvents: 'none',
+    padding: '10px 12px',
+    background: 'rgba(10, 10, 12, 0.94)',
+    border: '1px solid rgba(207, 202, 183, 0.18)',
+    borderRadius: 4,
+    boxShadow: '0 8px 30px rgba(0, 0, 0, 0.5)',
+  },
+  catTipBody: {
+    fontFamily: MONO,
+    fontSize: 12,
+    lineHeight: 1.5,
+    letterSpacing: '0.01em',
+    color: 'rgba(207, 202, 183, 0.85)',
+  },
+
   // ── Mobile theme caption ──────────────────────────────────
   // Bottom-centre: the NN/MM note counter.
   mCounterWrap: {
@@ -1251,6 +1437,63 @@ const st = {
     letterSpacing: '-0.02em',
     color: 'rgba(207,202,183,0.58)',
   },
+
+  // ── Mobile theme stepper ──────────────────────────────────
+  // Centered category feature flanked by grain-filtered ‹ / › arrows, pinned
+  // just under the top nav. The wrap ignores pointer events so only the arrows
+  // are tappable — the empty gutter over the note stays swipeable.
+  mStepperWrap: {
+    position: 'fixed',
+    top: 60,
+    left: 0,
+    right: 0,
+    zIndex: 46,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    pointerEvents: 'none',
+  },
+  mStepperArrow: {
+    pointerEvents: 'auto',
+    flex: '0 0 auto',
+    width: 40,
+    height: 40,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 0,
+    border: 'none',
+    borderRadius: '50%',
+    background: 'transparent',
+    color: '#CFCAB7',
+    opacity: 0.85,
+    cursor: 'pointer',
+    WebkitTapHighlightColor: 'transparent',
+  },
+  // Fixed measure + clip so the flanking arrows hold position while the
+  // category name crossfades between labels of different lengths.
+  mStepperLabelClip: {
+    position: 'relative',
+    width: 'min(60vw, 260px)',
+    height: 22,
+    overflow: 'hidden',
+  },
+  mStepperLabel: {
+    position: 'absolute',
+    inset: 0,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    fontFamily: MONO,
+    fontSize: 13,
+    letterSpacing: '0.16em',
+    textTransform: 'uppercase',
+    color: 'rgba(207,202,183,0.92)',
+    whiteSpace: 'nowrap',
+    textAlign: 'center',
+  },
+
   // ── Desktop bottom-centre note counter ────────────────────
   // The active note's "n / total" position within its category, pinned to the
   // bottom of the screen (relocated out from under the transcript). Sits above

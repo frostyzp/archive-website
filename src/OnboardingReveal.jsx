@@ -1,5 +1,7 @@
 import { createElement, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion, useInView, useReducedMotion, useScroll, useSpring } from 'motion/react';
+import * as opentype from 'opentype.js';
+import { useDialKit } from 'dialkit';
 import { INK, inkA } from './colors';
 import { TunableGrainBackground } from './noise';
 
@@ -128,6 +130,59 @@ const HERO_TITLE = {
   noiseFps: 12, //      seed hops/sec (lower = chunkier flicker)
 };
 const HERO_TITLE_LINES = ['What We', 'Tell AI'];
+// Total glyph count (spaces excluded). The pixel-glitch picks random indices in
+// [0, count) that line up 1:1 with the per-letter spans HeroTitleText renders.
+const HERO_TITLE_LETTER_COUNT = HERO_TITLE_LINES.reduce(
+  (n, line) => n + line.replace(/\s/g, '').length,
+  0
+);
+
+// Occasional per-letter "pixelation" glitch on the hero wordmark. Once the title
+// has revealed, random single glyphs briefly snap to a chunky SVG mosaic (see
+// HeroPixelateFilter) and flare from the faint resting fill up to near-full
+// opacity, then resolve — a quiet digital artifact on the hand-lettered type.
+// Fully disabled under prefers-reduced-motion.
+const HERO_PIXEL_GLITCH = {
+  enabled: true,
+  block: 12, //          mosaic cell size in CSS px (larger = chunkier pixels)
+  startDelayMs: 600, //  beat after the wordmark reveals before glitches begin
+  minGapMs: 1500, //     shortest pause between glitches
+  maxGapMs: 4200, //     longest pause between glitches
+  minHoldMs: 110, //     shortest time a glyph stays pixelated
+  maxHoldMs: 320, //     longest hold
+  doubleChance: 0.26, // chance a single glitch hits two glyphs at once
+};
+
+// When true the hero wordmark is drawn on letter-by-letter (SVG trim path) via
+// `HeroTitleDraw` instead of the word-by-word opacity fade of `HeroTitleText`.
+// Flip to false to restore the plain webfont reveal.
+// Trace-path draw disabled for now — falls back to the plain webfont reveal.
+const HERO_DRAW_ON = false;
+// Letter-by-letter reveal, one glyph after the next. Glyph outlines are pulled
+// from the TRJN DaVinci face (opentype.js). Two modes:
+//   'fill'    — sweep the SOLID letter in behind a per-letter clip that wipes
+//               across the glyph (the fill-equivalent of a trim path: real trim
+//               paths only trim strokes, so the fill is revealed by a clip).
+//   'outline' — trace each glyph's OUTLINE with a stroke drawn on via Framer
+//               Motion `pathLength` 0→1, then settle to the fill.
+// Either way each letter reveals in bright cream then settles to the faint fill,
+// landing on the same resting look as the webfont hero.
+const HERO_DRAW = {
+  mode: 'fill', //          'fill' (wipe the solid letter in) | 'outline' (trace the outline)
+  wipe: 'lr', //            fill-mode sweep direction: 'lr' | 'rl' | 'ttb' | 'btt'
+  renderFontSize: 150, //   logical glyph size for the offscreen geometry (viewBox scales it)
+  lineGap: 0.94, //         baseline-to-baseline as a multiple of the font size (matches lineHeight)
+  letterSpacing: -0.03, //  em, matches the webfont hero's −3%
+  drawMs: 460, //           per-letter reveal (fill wipe / outline draw) duration
+  fillMs: 420, //           per-letter settle (bright → faint) duration
+  staggerMs: 120, //        delay between consecutive letters (letter-by-letter cascade)
+  fillColor: 'rgb(221, 221, 174)', // cream — opacity is animated below (fillBright → fillRest)
+  fillBright: 0.92, //      fill opacity while a letter reveals (the visible "ink")
+  fillRest: 0.2, //         resting fill opacity (matches the webfont hero)
+  strokeColor: 'rgba(221, 221, 174, 0.9)', // outline-mode: the visible "writing" line
+  strokeWidth: 1.15, //     outline-mode: px (non-scaling, so it stays hairline at any size)
+  drawEase: [0.45, 0.05, 0.55, 0.95], // near-linear so each letter reveals evenly
+};
 const HERO_QUESTION = {
   fadeS: 0.65,
 };
@@ -222,6 +277,47 @@ function HeroNoiseFilter({ id, reduceMotion = false, strength = 1 }) {
   );
 }
 
+/**
+ * Chunky "pixelation" mosaic <filter> for a single hero glyph. The classic
+ * SVG trick: flood one 1px dot per BLOCK×BLOCK cell, tile it across the glyph
+ * box, keep the SourceGraphic only at those sample points, then dilate each
+ * sample back into a full cell — so the letter reads as low-res blocks in its
+ * own colour. Toggled onto random letters by HeroTitleText for a brief glitch.
+ * primitiveUnits stay userSpaceOnUse, so BLOCK is measured in CSS px.
+ */
+function HeroPixelateFilter({ id, block = HERO_PIXEL_GLITCH.block }) {
+  const half = block / 2;
+  return (
+    <svg
+      width="0"
+      height="0"
+      aria-hidden="true"
+      style={{ position: 'absolute', width: 0, height: 0, pointerEvents: 'none' }}
+    >
+      <defs>
+        <filter
+          id={id}
+          x="0%"
+          y="0%"
+          width="100%"
+          height="100%"
+          colorInterpolationFilters="sRGB"
+        >
+          {/* one dot centred in each BLOCK×BLOCK cell … */}
+          <feFlood x={half} y={half} width="1" height="1" result="dot" />
+          <feComposite in="dot" in2="dot" operator="over" x="0" y="0" width={block} height={block} result="cell" />
+          {/* … tiled across the whole glyph box … */}
+          <feTile in="cell" result="grid" />
+          {/* … keep the glyph only where a dot sits … */}
+          <feComposite in="SourceGraphic" in2="grid" operator="in" result="samp" />
+          {/* … then grow each sample into a solid cell → mosaic. */}
+          <feMorphology in="samp" operator="dilate" radius={half} />
+        </filter>
+      </defs>
+    </svg>
+  );
+}
+
 /** "What We Tell AI" — Figma 280:71 via native TRJN DaVinci (not SVG paths). */
 function HeroTitleText({ hold = false, onRevealComplete, reduceMotion = false }) {
   const ref = useRef(null);
@@ -248,7 +344,62 @@ function HeroTitleText({ hold = false, onRevealComplete, reduceMotion = false })
     return () => clearTimeout(id);
   }, [show, reduceMotion, words.length]);
 
+  // Per-letter pixelation glitch. `pix` holds the glyph indices currently
+  // mosaicked; a self-rescheduling timer fires a glitch on 1–2 random glyphs,
+  // holds briefly, then clears them. Torn down (and reset) whenever the title
+  // is hidden or reduced-motion is on.
+  const pixelateId = `hero-title-pixelate-${useId().replace(/:/g, '')}`;
+  const [pix, setPix] = useState(() => new Set());
+  useEffect(() => {
+    if (reduceMotion || !HERO_PIXEL_GLITCH.enabled || !show || HERO_TITLE_LETTER_COUNT === 0) {
+      return undefined;
+    }
+    let alive = true;
+    const timers = new Set();
+    const rand = (a, b) => a + Math.random() * (b - a);
+    const drop = (t) => {
+      clearTimeout(t);
+      timers.delete(t);
+    };
+    const fire = () => {
+      if (!alive) return;
+      const n = Math.random() < HERO_PIXEL_GLITCH.doubleChance ? 2 : 1;
+      const picks = [];
+      while (picks.length < n && picks.length < HERO_TITLE_LETTER_COUNT) {
+        const p = Math.floor(Math.random() * HERO_TITLE_LETTER_COUNT);
+        if (!picks.includes(p)) picks.push(p);
+      }
+      setPix((prev) => new Set([...prev, ...picks]));
+      const off = setTimeout(() => {
+        setPix((prev) => {
+          const s = new Set(prev);
+          picks.forEach((p) => s.delete(p));
+          return s;
+        });
+        drop(off);
+      }, rand(HERO_PIXEL_GLITCH.minHoldMs, HERO_PIXEL_GLITCH.maxHoldMs));
+      timers.add(off);
+      const next = setTimeout(() => {
+        drop(next);
+        fire();
+      }, rand(HERO_PIXEL_GLITCH.minGapMs, HERO_PIXEL_GLITCH.maxGapMs));
+      timers.add(next);
+    };
+    const start = setTimeout(() => {
+      drop(start);
+      fire();
+    }, HERO_PIXEL_GLITCH.startDelayMs);
+    timers.add(start);
+    return () => {
+      alive = false;
+      timers.forEach(clearTimeout);
+      timers.clear();
+      setPix(new Set());
+    };
+  }, [reduceMotion, show]);
+
   let wordIdx = 0;
+  let letterIdx = 0;
   const glyphStyle = {
     color: 'transparent',
     WebkitTextFillColor: HERO_TITLE.fill,
@@ -270,6 +421,7 @@ function HeroTitleText({ hold = false, onRevealComplete, reduceMotion = false })
       }}
     >
       <HeroNoiseFilter id={noiseId} reduceMotion={reduceMotion} />
+      <HeroPixelateFilter id={pixelateId} />
       <h1
         aria-label="What We Tell AI"
         style={{
@@ -298,7 +450,7 @@ function HeroTitleText({ hold = false, onRevealComplete, reduceMotion = false })
                 const i = wordIdx;
                 wordIdx += 1;
                 return (
-                  <span key={`${line}-${w}`}>
+                  <span key={`${line}-${w}-${wi}`}>
                     <motion.span
                       aria-hidden="true"
                       initial={reduceMotion ? false : { opacity: 0 }}
@@ -310,7 +462,30 @@ function HeroTitleText({ hold = false, onRevealComplete, reduceMotion = false })
                       }}
                       style={{ display: 'inline-block', ...glyphStyle }}
                     >
-                      {w}
+                      {/* Per-letter spans so the glitch can hit individual glyphs:
+                          an active letter snaps to the SVG mosaic and flares from
+                          the faint resting fill up to near-full opacity. */}
+                      {w.split('').map((ch, ci) => {
+                        const gi = letterIdx;
+                        letterIdx += 1;
+                        const active = pix.has(gi);
+                        return (
+                          <span
+                            key={ci}
+                            style={{
+                              display: 'inline-block',
+                              ...(active
+                                ? {
+                                    filter: `url(#${pixelateId})`,
+                                    WebkitTextFillColor: 'rgba(221, 221, 174, 0.92)',
+                                  }
+                                : null),
+                            }}
+                          >
+                            {ch}
+                          </span>
+                        );
+                      })}
                     </motion.span>
                     {wi < lineWords.length - 1 ? ' ' : null}
                   </span>
@@ -324,13 +499,246 @@ function HeroTitleText({ hold = false, onRevealComplete, reduceMotion = false })
   );
 }
 
+/** Loads the TRJN DaVinci hero face once and parses it for outline extraction. */
+function useHeroFont() {
+  const [font, setFont] = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(encodeURI('/TRJNDaVinci-Medium-Italic-Trial.otf'));
+        if (!res.ok) return;
+        const parsed = opentype.parse(await res.arrayBuffer());
+        if (!cancelled) setFont(parsed);
+      } catch {
+        /* leave null — caller renders nothing until the face is ready */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  return font;
+}
+
+/** Collapsed → full rect geometry for a per-letter fill wipe, by direction. The
+ *  clip rect starts pinned to one edge of the glyph box and grows to cover it,
+ *  sweeping the fill in (trim-path applied to the fill). */
+function heroWipeRect(dir, rx, ry, rw, rh, reduceMotion) {
+  const full = { x: rx, y: ry, width: rw, height: rh };
+  const zero =
+    {
+      lr: { x: rx, y: ry, width: 0, height: rh },
+      rl: { x: rx + rw, y: ry, width: 0, height: rh },
+      ttb: { x: rx, y: ry, width: rw, height: 0 },
+      btt: { x: rx, y: ry + rh, width: rw, height: 0 },
+    }[dir] || { x: rx, y: ry, width: 0, height: rh };
+  return { initial: reduceMotion ? full : zero, animate: full };
+}
+
+/** "What We Tell AI" revealed letter-by-letter (see HERO_DRAW): either a per-
+ *  letter fill wipe ('fill') or an outline trim path ('outline'). Same size /
+ *  position / grain as HeroTitleText, so it drops into the hero beat
+ *  interchangeably. Settles to the identical faint-cream resting look. */
+function HeroTitleDraw({ hold = false, onRevealComplete, reduceMotion = false }) {
+  const ref = useRef(null);
+  const inView = useInView(ref, IN_VIEW);
+  const show = inView && !hold;
+  const font = useHeroFont();
+  const size = HERO_DRAW.renderFontSize;
+
+  // Per-letter glyph outlines for the two centered lines + the union bbox that
+  // becomes the <svg> viewBox. Kept in reading order so the draw-on can walk
+  // them one letter at a time (spaces advance the pen but emit no path).
+  const geo = useMemo(() => {
+    if (!font) return null;
+    const ls = HERO_DRAW.letterSpacing * size;
+    const lineH = size * HERO_DRAW.lineGap;
+    const lineWidth = (line) => {
+      let w = 0;
+      for (const ch of line) w += font.getAdvanceWidth(ch, size) + ls;
+      return w - ls; // no trailing letter-spacing
+    };
+    const widths = HERO_TITLE_LINES.map(lineWidth);
+    const maxW = Math.max(0, ...widths);
+    const glyphs = [];
+    const bb = { x1: Infinity, y1: Infinity, x2: -Infinity, y2: -Infinity };
+    HERO_TITLE_LINES.forEach((line, li) => {
+      let x = (maxW - widths[li]) / 2; // center each line against the widest
+      const y = li * lineH;
+      for (const ch of line) {
+        const adv = font.getAdvanceWidth(ch, size);
+        if (ch !== ' ') {
+          const p = font.getPath(ch, x, y, size);
+          const d = p.toPathData(2);
+          if (d) {
+            const gb = p.getBoundingBox();
+            // Per-letter bbox drives the fill-mode clip wipe; union bbox → viewBox.
+            glyphs.push({ d, x1: gb.x1, y1: gb.y1, x2: gb.x2, y2: gb.y2 });
+            if (gb.x1 < bb.x1) bb.x1 = gb.x1;
+            if (gb.y1 < bb.y1) bb.y1 = gb.y1;
+            if (gb.x2 > bb.x2) bb.x2 = gb.x2;
+            if (gb.y2 > bb.y2) bb.y2 = gb.y2;
+          }
+        }
+        x += adv + ls;
+      }
+    });
+    if (!glyphs.length || !Number.isFinite(bb.x1)) return null;
+    return { glyphs, bbox: bb };
+  }, [font, size]);
+
+  const n = geo?.glyphs.length || 0;
+  const draw = !reduceMotion;
+  const staggerS = draw ? HERO_DRAW.staggerMs / 1000 : 0;
+  const drawS = draw ? HERO_DRAW.drawMs / 1000 : 0;
+  const fillS = draw ? HERO_DRAW.fillMs / 1000 : 0;
+
+  // Fire onRevealComplete once the last letter has drawn + filled, so the opening
+  // question sequences in after — same contract as HeroTitleText.
+  const notifiedRef = useRef(false);
+  const onDoneRef = useRef(onRevealComplete);
+  onDoneRef.current = onRevealComplete;
+  useEffect(() => {
+    notifiedRef.current = false;
+  }, [hold]);
+  useEffect(() => {
+    if (!show || !geo || notifiedRef.current) return undefined;
+    const total = draw ? (n - 1) * HERO_DRAW.staggerMs + HERO_DRAW.drawMs + HERO_DRAW.fillMs : 0;
+    const id = setTimeout(() => {
+      notifiedRef.current = true;
+      onDoneRef.current?.();
+    }, total);
+    return () => clearTimeout(id);
+  }, [show, geo, draw, n]);
+
+  const rawId = useId().replace(/:/g, '');
+  const noiseId = `hero-draw-noise-${rawId}`;
+  const clipBase = `hero-fill-${rawId}`;
+
+  if (!geo) {
+    // Reserve the hero's footprint so the layout doesn't jump before the font loads.
+    return (
+      <figure
+        ref={ref}
+        aria-label="What We Tell AI"
+        style={{ margin: 0, width: 'min(96vw, 900px)', height: HERO_TITLE.maxHeight }}
+      />
+    );
+  }
+
+  const { bbox } = geo;
+  const pad = size * 0.07; // italic overhang + hairline stroke breathing room
+  const vbW = bbox.x2 - bbox.x1 + pad * 2;
+  const vbH = bbox.y2 - bbox.y1 + pad * 2;
+  const viewBox = `${bbox.x1 - pad} ${bbox.y1 - pad} ${vbW} ${vbH}`;
+  // Scale the SVG so each glyph renders at the same on-screen size as the webfont
+  // hero: cssWidth = fontSize × (viewBoxWidth / renderFontSize).
+  const cssWidth = `calc((${HERO_TITLE.fontSize}) * ${(vbW / size).toFixed(4)})`;
+
+  return (
+    <figure
+      ref={ref}
+      style={{
+        margin: 0,
+        display: 'flex',
+        justifyContent: 'center',
+        width: 'fit-content',
+        maxWidth: HERO_TITLE.maxWidth,
+      }}
+    >
+      <HeroNoiseFilter id={noiseId} reduceMotion={reduceMotion} strength={0.45} />
+      <svg
+        role="img"
+        aria-label="What We Tell AI"
+        viewBox={viewBox}
+        preserveAspectRatio="xMidYMid meet"
+        style={{
+          display: 'block',
+          width: cssWidth,
+          height: 'auto',
+          maxWidth: HERO_TITLE.maxWidth,
+          maxHeight: HERO_TITLE.maxHeight,
+          aspectRatio: `${vbW} / ${vbH}`,
+          overflow: 'visible',
+          filter: `url(#${noiseId})`,
+        }}
+      >
+        {geo.glyphs.map((g, i) => {
+          const base = show ? i * staggerS : 0;
+
+          // FILL MODE — sweep the solid glyph in behind a per-letter clip that
+          // wipes across it, then settle the ink from bright → faint.
+          if (HERO_DRAW.mode === 'fill') {
+            const gp = size * 0.03; // clear the glyph edges fully at the sweep's end
+            const rx = g.x1 - gp;
+            const ry = g.y1 - gp;
+            const rw = g.x2 - g.x1 + gp * 2;
+            const rh = g.y2 - g.y1 + gp * 2;
+            const clipId = `${clipBase}-${i}`;
+            const rect = heroWipeRect(HERO_DRAW.wipe, rx, ry, rw, rh, reduceMotion);
+            return (
+              <g key={`${i}-${g.d.length}`}>
+                <clipPath id={clipId} clipPathUnits="userSpaceOnUse">
+                  <motion.rect
+                    initial={rect.initial}
+                    animate={show ? rect.animate : undefined}
+                    transition={{ duration: drawS, ease: HERO_DRAW.drawEase, delay: base }}
+                  />
+                </clipPath>
+                <motion.path
+                  d={g.d}
+                  clipPath={`url(#${clipId})`}
+                  fill={HERO_DRAW.fillColor}
+                  initial={{
+                    fillOpacity: reduceMotion ? HERO_DRAW.fillRest : HERO_DRAW.fillBright,
+                  }}
+                  animate={show ? { fillOpacity: HERO_DRAW.fillRest } : undefined}
+                  transition={{ fillOpacity: { duration: fillS, ease, delay: base + drawS } }}
+                />
+              </g>
+            );
+          }
+
+          // OUTLINE MODE — trace each glyph's outline (pathLength), fill in, fade
+          // the drawing stroke out.
+          const finalState = { pathLength: 1, fillOpacity: 1, strokeOpacity: 0 };
+          return (
+            <motion.path
+              key={`${i}-${g.d.length}`}
+              d={g.d}
+              fill={HERO_TITLE.fill}
+              stroke={HERO_DRAW.strokeColor}
+              strokeWidth={HERO_DRAW.strokeWidth}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              vectorEffect="non-scaling-stroke"
+              initial={
+                reduceMotion
+                  ? finalState
+                  : { pathLength: 0, fillOpacity: 0, strokeOpacity: 1 }
+              }
+              animate={show ? finalState : undefined}
+              transition={{
+                pathLength: { duration: drawS, ease: HERO_DRAW.drawEase, delay: base },
+                fillOpacity: { duration: fillS, ease, delay: base + drawS * 0.6 },
+                strokeOpacity: { duration: fillS, ease, delay: base + drawS },
+              }}
+            />
+          );
+        })}
+      </svg>
+    </figure>
+  );
+}
+
 const INTRO_LINE =
   'We asked strangers to write a confession about their relationship with AI — artificial intelligence.';
 const BODY_LINE =
-  'It is quietly entering the most intimate parts of our lives, changing our habits...';
+  'AI is entering into the most personal aspects of our lives, changing how we communicate, work, and think…';
 const CLOSING_LINE =
-  'Every note is a record of what we admit to intelligent systems we are learning to live with.';
-const FINAL_QUESTION = 'So what do you tell AI?';
+  'And even substituting our human relationships…';
+const FINAL_QUESTION = 'Every note is a real story, from a real person, about living with this new technology.';
 
 const NOTES = [
   {
@@ -339,9 +747,9 @@ const NOTES = [
     transcript: 'Forgive my sin: I talk to AI way more than to ALL the people in my life, combined :)',
   },
   {
-    id: 'AC_171',
-    serial: 'AC-171',
-    transcript: 'ChatGPT writes 99.9% of all my emails & actually many of my texts now too!!',
+    id: 'AC_148',
+    serial: 'AC-148',
+    transcript: 'I asked it to read my writing & praise it... smh',
   },
   {
     id: 'AC_190',
@@ -614,6 +1022,67 @@ function PlaceholderBox({ width, aspectRatio = '1024 / 729', label = 'placeholde
   );
 }
 
+/** The two confession-booth stills that open the intro (the Dolores Park
+ *  "Confession Box" sign + the example-secrets table). Laid out like a scrapbook
+ *  — a taller portrait print on the left, a wider landscape print dropped a
+ *  little lower on the right. Each develops in (blur / grayscale / brightness
+ *  resolve) like the confession notes, the second a beat behind the first. The
+ *  assets already carry their own white border + tilt on a black field, so the
+ *  corners melt into the near-black page and no extra frame is needed. */
+function IntroBoothCollage({ width }) {
+  const ref = useRef(null);
+  const inView = useInView(ref, IN_VIEW);
+  const reduce = useReducedMotion();
+  const from = {
+    opacity: 0,
+    y: IMAGE.riseY,
+    filter: `blur(${IMAGE.fromBlur}px) grayscale(${IMAGE.fromGrayscale}) brightness(${IMAGE.fromBrightness})`,
+  };
+  const to = { opacity: 1, y: 0, filter: 'blur(0px) grayscale(0) brightness(1)' };
+  return (
+    <div
+      ref={ref}
+      style={{
+        width,
+        maxWidth: '100%',
+        display: 'flex',
+        justifyContent: 'center',
+        alignItems: 'flex-start',
+      }}
+    >
+      <motion.img
+        src="/intro-booth-park.png"
+        alt="A hand-painted “Confession Box — everyone has an AI secret” sign staked in Dolores Park."
+        draggable={false}
+        loading="eager"
+        initial={reduce ? false : from}
+        animate={inView ? to : undefined}
+        transition={{ duration: reduce ? 0 : IMAGE.fadeS, ease }}
+        style={{ flex: '0 0 auto', width: '56%', height: 'auto', display: 'block' }}
+      />
+      <motion.img
+        src="/intro-booth-table.png"
+        alt="The booth table: framed example confessions, a drop box, and a “follow along” QR code."
+        draggable={false}
+        loading="eager"
+        initial={reduce ? false : from}
+        animate={inView ? to : undefined}
+        transition={{ duration: reduce ? 0 : IMAGE.fadeS, ease, delay: reduce ? 0 : 0.18 }}
+        style={{
+          flex: '0 0 auto',
+          width: '62%',
+          height: 'auto',
+          display: 'block',
+          marginTop: 'clamp(18px, 5vw, 52px)',
+          // Pull the close-up left so it overlaps the park shot — a stacked,
+          // scattered-photo look rather than two tiles with a gutter.
+          marginLeft: '-18%',
+        }}
+      />
+    </div>
+  );
+}
+
 /** Typed transcription beneath a note (mono, muted) — mirrors the archive's
  *  TRANSCRIPTION_TEXT treatment. */
 const TRANSCRIPT_STYLE = {
@@ -657,39 +1126,62 @@ function Beat({ children, minVh = 0, style }) {
 
 /* ─── Opening loader ───────────────────────────────────────────────────── */
 
-/** Confession stills the loader flips through (all present in public/). */
-const LOADER_POOL = [
-  'AC_001', 'AC_005', 'AC_012', 'AC_017', 'AC_045', 'AC_055', 'AC_066',
-  'AC_078', 'AC_089', 'AC_095', 'AC_110', 'AC_125', 'AC_140', 'AC_150',
-  'AC_160', 'AC_171', 'AC_181', 'AC_185', 'AC_190', 'AC_200',
-];
-const LOADER_FLIPS = 12;
-
 /* ─────────────────────────────────────────────────────────────────
- * OPENING LOADER STORYBOARD  (~2s · black & white)
+ * OPENING LOADER STORYBOARD  (~2s · black & white confession flip)
  *
- *    0ms   first confession fades in, holds longest
- *    …     stills flip faster and faster, each crossfading (opacity) over
- *          the last — all rendered black & white
- * 2000ms   loader crossfades out → hero
+ * Read top-to-bottom. Times are ms from the moment the site opens.
+ *
+ *      0ms   first confession still HARD-CUTS in — no crossfade, just a
+ *            tiny scale settle (startScale → 1.0) — held the longest
+ *            (firstHold). Every still is grayscale, tilted ±maxTilt°, with
+ *            film grain masked to its own paper shape.
+ *      …     stills flip past faster and faster; each hold eases from
+ *            firstHold → lastHold, and the whole run is time-scaled to land
+ *            on exactly `totalMs` no matter how many `flips` there are.
+ *   ~2000ms  the card crossfades out (fadeOutS) → the hero title reveals.
+ *
+ * Every knob lives in the LOADER config below and is exposed live in the
+ * "Opening Loader" DialKit panel (open any page with ?dial=1). Hit the
+ * panel's ⟳ Replay button to watch it again without reloading.
  * ───────────────────────────────────────────────────────────────── */
-const LOADER_TOTAL_MS = 2000; //   whole opening card, start → hero
-const LOADER_FIRST_HOLD = 300; //  first still lingers the longest
-const LOADER_LAST_HOLD = 70; //    final stills whip by
-const LOADER_DEVELOP_S = 0.5; //   per-still scale settle (stills hard-cut, no fade)
+const LOADER = {
+  // Confession ids the flip pulls from (all present in public/confession_notes_2/).
+  pool: [
+    'AC_001', 'AC_005', 'AC_012', 'AC_017', 'AC_045', 'AC_055', 'AC_066',
+    'AC_078', 'AC_089', 'AC_095', 'AC_110', 'AC_125', 'AC_140', 'AC_150',
+    'AC_160', 'AC_171', 'AC_181', 'AC_185', 'AC_190', 'AC_200',
+  ],
+  flips: 12, //        how many stills flip past before the hero
+  totalMs: 2000, //    whole card, first still → hero handoff
+  firstHold: 300, //   ms the first still lingers (slowest)
+  lastHold: 70, //     ms the final stills whip by (fastest)
+  developS: 0.5, //    per-still scale-settle duration (hard-cut, no opacity fade)
+  startScale: 1.03, // scale each still cuts in at, settling → 1.0
+  maxTilt: 3, //       deg of random ± rotation per still
+  fadeOutS: 0.22, //   loader → hero crossfade-out
+  grayscale: true, //  render the stills black & white
+};
 
 /**
- * ~2s opening title card. Flips through a dozen random confession stills — all
- * stacked in the same spot, rendered black & white — spawning faster and faster,
- * then fades to reveal the hero. Reduced-motion finishes instantly.
+ * ~2s opening title card. Flips through a stack of random confession stills —
+ * all pinned in the same spot, black & white — spawning faster and faster,
+ * then crossfades out to reveal the hero. Every value comes from the LOADER
+ * config, overridable per-instance via `config` (the DialKit panel). Reduced
+ * motion skips straight to the hero.
  */
-function OpeningLoader({ onDone }) {
+function OpeningLoader({ onDone, config }) {
+  const cfg = { ...LOADER, ...config };
+  const flips = Math.max(2, Math.round(cfg.flips));
   const [frame, setFrame] = useState(0);
 
   const shots = useMemo(() => {
-    const pool = [...LOADER_POOL].sort(() => Math.random() - 0.5).slice(0, LOADER_FLIPS);
-    return pool.map((id) => ({ id, rot: Math.round((Math.random() * 2 - 1) * 3) }));
-  }, []);
+    const pool = [...LOADER.pool].sort(() => Math.random() - 0.5).slice(0, flips);
+    return pool.map((id) => ({
+      id,
+      rot: Math.round((Math.random() * 2 - 1) * cfg.maxTilt),
+    }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [flips, cfg.maxTilt]);
 
   useEffect(() => {
     const prefersReduced =
@@ -700,42 +1192,43 @@ function OpeningLoader({ onDone }) {
       onDone();
       return undefined;
     }
+    setFrame(0);
     shots.forEach((s) => {
       const im = new Image();
       im.src = noteSrc(s.id);
     });
-    // Accelerating flips (LOADER_FIRST_HOLD → LOADER_LAST_HOLD) scaled to fill
-    // exactly LOADER_TOTAL_MS, so the whole card lasts 2s regardless of count.
+    // Accelerating flips (firstHold → lastHold) time-scaled to fill exactly
+    // totalMs, so the whole card lasts `totalMs` regardless of the flip count.
     const n = shots.length;
     const holds = [];
     for (let k = 1; k < n; k += 1) {
       const t = (k - 1) / Math.max(1, n - 2);
-      holds.push(LOADER_FIRST_HOLD - (LOADER_FIRST_HOLD - LOADER_LAST_HOLD) * t);
+      holds.push(cfg.firstHold - (cfg.firstHold - cfg.lastHold) * t);
     }
     const rawSum = holds.reduce((a, b) => a + b, 0) || 1;
-    const scale = (LOADER_TOTAL_MS - LOADER_LAST_HOLD) / rawSum;
+    const scale = (cfg.totalMs - cfg.lastHold) / rawSum;
     const timers = [];
     let acc = 0;
     holds.forEach((h, idx) => {
       acc += h * scale;
       timers.push(setTimeout(() => setFrame(idx + 1), acc));
     });
-    const done = setTimeout(onDone, LOADER_TOTAL_MS);
+    const done = setTimeout(onDone, cfg.totalMs);
     return () => {
       timers.forEach(clearTimeout);
       clearTimeout(done);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [shots, cfg.firstHold, cfg.lastHold, cfg.totalMs]);
 
-  const shot = shots[frame];
+  const shot = shots[frame] || shots[shots.length - 1];
 
   return (
     <motion.div
       aria-hidden="true"
       initial={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      transition={{ duration: 0.22, ease }}
+      transition={{ duration: cfg.fadeOutS, ease }}
       style={{
         position: 'fixed',
         inset: 0,
@@ -774,9 +1267,9 @@ function OpeningLoader({ onDone }) {
           <AnimatePresence>
             <motion.div
               key={frame}
-              initial={{ scale: 1.03 }}
+              initial={{ scale: cfg.startScale }}
               animate={{ scale: 1 }}
-              transition={{ duration: LOADER_DEVELOP_S, ease }}
+              transition={{ duration: cfg.developS, ease }}
               style={{
                 position: 'absolute',
                 inset: 0,
@@ -796,7 +1289,7 @@ function OpeningLoader({ onDone }) {
                   transform: `rotate(${shot.rot}deg)`,
                   borderRadius: 2,
                   boxShadow: '0 14px 44px rgba(0,0,0,0.5)',
-                  filter: 'grayscale(1)', // stills read black & white
+                  filter: cfg.grayscale ? 'grayscale(1)' : 'none',
                 }}
               />
               {/* Noise masked to the note's own shape — the grain sits ON the
@@ -836,13 +1329,44 @@ export default function OnboardingReveal({
   skipEntrance = false,
 } = {}) {
   const reduce = useReducedMotion();
-  // `skipEntrance` (main site) drops the 2s confession-still loader but KEEPS
-  // the hero title's particle fade-in. Reduced motion shows everything at rest.
+  // The site plays the opening loader on open (App passes no skipEntrance).
+  // `skipEntrance` stays as an opt-out that drops the 2s confession-still loader
+  // but KEEPS the hero title's particle fade-in. Reduced motion is at rest.
   const showLoader = !skipEntrance && !reduce;
   const rootRef = useRef(null);
   const [loading, setLoading] = useState(showLoader);
   const [titleGate, setTitleGate] = useState(reduce);
   const [heroTitleRevealed, setHeroTitleRevealed] = useState(reduce);
+  // Bumping this remounts the loader from a clean slate — used by the DialKit
+  // Replay action so tweaks can be re-watched without a page reload.
+  const [loaderRun, setLoaderRun] = useState(0);
+
+  // Live-tunable opening-loader knobs, mirrored from the LOADER config. Only
+  // visible on ?dial=1 (DialRoot is dev-gated in main.jsx); values otherwise
+  // fall through to the defaults. The ⟳ Replay action re-shows the loader.
+  const loaderDials = useDialKit(
+    'Opening Loader',
+    {
+      flips: [LOADER.flips, 4, 20, 1],
+      totalMs: [LOADER.totalMs, 500, 5000, 50],
+      firstHold: [LOADER.firstHold, 40, 800, 10],
+      lastHold: [LOADER.lastHold, 20, 400, 5],
+      developS: [LOADER.developS, 0, 1.5, 0.05],
+      startScale: [LOADER.startScale, 1, 1.2, 0.01],
+      maxTilt: [LOADER.maxTilt, 0, 15, 0.5],
+      fadeOutS: [LOADER.fadeOutS, 0, 1, 0.02],
+      grayscale: LOADER.grayscale,
+      replay: { type: 'action', label: '⟳ Replay' },
+    },
+    {
+      onAction: (action) => {
+        if (action !== 'replay') return;
+        window.scrollTo(0, 0);
+        setLoading(true);
+        setLoaderRun((r) => r + 1);
+      },
+    }
+  );
 
   // Thin top progress hairline for the whole scroll.
   const { scrollYProgress } = useScroll();
@@ -889,9 +1413,15 @@ export default function OnboardingReveal({
       }}
     >
       {/* 2s opening loader — flips through random confessions, then lifts to
-          reveal the hero. */}
+          reveal the hero. `key={loaderRun}` lets the DialKit Replay remount it. */}
       <AnimatePresence>
-        {loading && <OpeningLoader onDone={() => setLoading(false)} />}
+        {loading && (
+          <OpeningLoader
+            key={loaderRun}
+            onDone={() => setLoading(false)}
+            config={loaderDials}
+          />
+        )}
       </AnimatePresence>
 
       {/* Full-page film grain — the shared archive/landing texture
@@ -994,11 +1524,19 @@ export default function OnboardingReveal({
       >
         {/* HERO */}
         <Beat minVh={100} style={{ paddingTop: 'clamp(24px, 6vh, 80px)', gap: 'clamp(26px, 5vh, 52px)' }}>
-          <HeroTitleText
-            hold={loading || !titleGate}
-            reduceMotion={reduce}
-            onRevealComplete={() => setHeroTitleRevealed(true)}
-          />
+          {HERO_DRAW_ON ? (
+            <HeroTitleDraw
+              hold={loading || !titleGate}
+              reduceMotion={reduce}
+              onRevealComplete={() => setHeroTitleRevealed(true)}
+            />
+          ) : (
+            <HeroTitleText
+              hold={loading || !titleGate}
+              reduceMotion={reduce}
+              onRevealComplete={() => setHeroTitleRevealed(true)}
+            />
+          )}
           <HeroOpeningQuestion
             hold={loading || !heroTitleRevealed}
             instant={reduce}
@@ -1017,12 +1555,10 @@ export default function OnboardingReveal({
 
         {/* CUBE + INTRO */}
         <Beat style={{ gap: 'clamp(30px, 6vh, 60px)' }}>
-          {/* CUBE — placeholder until the final confession-box art is ready.
-              Swap back to the real art when it lands:
-              <RevealMaskArt src="/intro-cube-parks.png" w={1024} h={729}
-                width="min(100%, 640px)" color="#e6ded0" slope={5} intercept={-0.4}
-                durS={2} alt="…" /> */}
-          <PlaceholderBox width="min(100%, 640px)" aspectRatio="1024 / 729" />
+          {/* The confession-booth stills (Dolores Park sign + example-secrets
+              table) develop in as a scrapbook pair, then the intro line reveals
+              word-by-word beneath them. */}
+          <IntroBoothCollage width="min(100%, 900px)" />
           <RevealWords
             text={INTRO_LINE}
             as="h2"
