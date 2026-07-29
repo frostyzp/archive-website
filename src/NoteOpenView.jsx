@@ -378,9 +378,25 @@ function LeftThemeDial({ emotions, activeId, onChange, reduceMotion, delay }) {
         })}
       </div>
 
-      {/* The note's position within its category is shown once, below the note
-          in the stack (see HorizontalConfessionStack). No counter rides above
-          the wordmark here — it was a duplicate of that one. */}
+      {/* Which category you're on ("03 / 06"), set small above the active
+          wordmark. Deliberately NOT the note counter pinned bottom-centre — that
+          one counts notes inside the current category, this one counts categories.
+          Keyed on activeId so the figure crossfades as the wheel turns instead of
+          hard-cutting mid-spin. */}
+      <div style={st.dialCatCount} aria-label={`Category ${idx + 1} of ${n}`}>
+        <AnimatePresence mode="wait">
+          <motion.span
+            key={activeId}
+            initial={reduceMotion ? { opacity: 1 } : { opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: reduceMotion ? 0 : 0.4, ease: GRADIENT_EASE }}
+          >
+            <span style={st.dCounterCurrent}>{String(idx + 1).padStart(2, '0')}</span>
+            <span style={st.dCounterTotal}>{` / ${String(n).padStart(2, '0')}`}</span>
+          </motion.span>
+        </AnimatePresence>
+      </div>
     </motion.div>
   );
 }
@@ -1396,6 +1412,26 @@ const st = {
     whiteSpace: 'nowrap',
     // Categories render all-caps to match the dial + wordmark style elsewhere.
     textTransform: 'uppercase',
+  },
+
+  // "03 / 06" category position, sat above the active wordmark. Shares the
+  // wheel's baseX so it stays centred over the active label (which parks at the
+  // slot anchor, since wheelSlot(0) is a zero translate), then lifts clear of the
+  // labelFont-tall word plus a little breathing room. Smaller than the bottom note
+  // counter — it's an orienting detail, not the headline.
+  dialCatCount: {
+    position: 'absolute',
+    left: WHEEL.baseX,
+    top: '50%',
+    transform: `translate(-50%, calc(-50% - ${WHEEL.labelFont + 10}px))`,
+    zIndex: 3,
+    pointerEvents: 'none',
+    fontFamily: '"Courier New", Courier, var(--font-mono, ui-monospace, monospace)',
+    fontSize: 11,
+    letterSpacing: '0.14em',
+    fontVariantNumeric: 'tabular-nums',
+    whiteSpace: 'nowrap',
+    userSelect: 'none',
   },
 
   // Cursor-following category definition tooltip (portaled to <body>).

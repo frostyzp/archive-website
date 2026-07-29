@@ -5,11 +5,11 @@ import { HIDDEN_THEMES } from './themes';
  * Live Google-Sheet CSV. Republishing the sheet is enough to update the app —
  * no code change needed.
  */
-export const CSV_URL =
+const CSV_URL =
   'https://docs.google.com/spreadsheets/d/e/2PACX-1vSWmqlXlkSkmqTYF3c7dkvdK0fPHE4TESolAwBqtjeXzC0nb57tuOHjNCRV5w2kAHNpemTzUHunrpDJ/pub?gid=1216878281&single=true&output=csv';
 
 /** Public folder `public/confession_notes_2/*.webp` (served as `/confession_notes_2/…`). */
-export function confessionNoteImageUrl(globalId) {
+function confessionNoteImageUrl(globalId) {
   return `/confession_notes_2/${globalId}.webp`;
 }
 

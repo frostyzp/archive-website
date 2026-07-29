@@ -96,11 +96,3 @@ export const CONFESSIONS = [
   ...buildSet('Ghostwriter', GHOSTWRITER, 26, { reverseImages: true }),
 ];
 
-/**
- * Filter confessions by category.
- * Returns all if category is null/undefined.
- */
-export function getConfessionsByCategory(category) {
-  if (!category) return CONFESSIONS;
-  return CONFESSIONS.filter((c) => c.category === category);
-}

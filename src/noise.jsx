@@ -15,7 +15,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useReducedMotion } from 'motion/react';
 import { useDialKit } from 'dialkit';
 
-export const GRAIN_KEYFRAMES = `
+const GRAIN_KEYFRAMES = `
 @keyframes lab-grain {
   0%   { transform: translate(0%, 0%); }
   10%  { transform: translate(-7%, -4%); }
@@ -57,7 +57,7 @@ export const noiseUrl = ({
  * Renders as a single absolutely-positioned div with `inset: 0`. Caller is
  * responsible for placing it inside a relatively-positioned parent.
  */
-export function GrainOverlay({ layers, style, ...rest }) {
+function GrainOverlay({ layers, style, ...rest }) {
   return (
     <div
       style={{
@@ -100,16 +100,6 @@ export function GrainOverlay({ layers, style, ...rest }) {
     </div>
   );
 }
-
-// The noise variant chosen for the archive page background.
-export const HEAVY_PAPER = {
-  noise: { baseFrequency: 0.85, numOctaves: 2 },
-  opacity: 0.9,
-  blend: 'overlay',
-  tile: 240,
-  duration: 1.5,
-  steps: 8,
-};
 
 /* ─────────────────────────────────────────────────────────
  * GRAIN STORYBOARD (defaults — tweak live in DialKit panel)

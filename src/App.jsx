@@ -39,10 +39,33 @@ import NoteOpenView, { TILE_PADDING } from './NoteOpenView';
 import { GridImageFilter, GRID_IMAGE_FILTER } from './NoiseDisplaceFilter';
 import { useNoteSound } from './sounds';
 import CubeScene from './CubeScene';
+import { CURSOR_FLOAT, cursorOffset, floatAngles } from './cursorFloat';
 const ease = [0.22, 1, 0.36, 1];
 /** Shared hover / color / opacity transition curve (ease-out-quart). */
 const HOVER_EASE = 'cubic-bezier(0.17, 0.84, 0.44, 1)';
 const HOVER_EASE_ARR = [0.17, 0.84, 0.44, 1];
+
+/**
+ * Leans a hovered grid note toward the cursor and lifts it off the page. Written
+ * straight to the node — with 350+ tiles, routing pointer moves through state
+ * would re-render the whole grid on every frame.
+ *
+ * `paperRotate` is the tile's resting paper skew, kept underneath the lean so a
+ * grid of hovered notes still reads as scattered sheets rather than a uniform
+ * bank. `ms` sets --float-ms, the transform transition the CSS reads.
+ */
+function applyGridFloat(e, paperRotate, ms) {
+  const el = e.currentTarget;
+  const off = cursorOffset(el, e.clientX, e.clientY);
+  if (!off) return;
+  const { yaw, pitch } = floatAngles(off.nx, off.ny);
+  const F = CURSOR_FLOAT;
+  el.style.setProperty('--float-ms', `${ms}ms`);
+  el.style.transform =
+    `perspective(${F.perspective}px) ` +
+    `rotateX(${pitch.toFixed(2)}deg) rotateY(${yaw.toFixed(2)}deg) ` +
+    `translateZ(${F.rise}px) scale(${1 + F.lift}) rotate(${paperRotate}deg)`;
+}
 
 // Matches grid breakpoints in this file; also drives archive top chrome layout.
 const ARCHIVE_NAV_COMPACT_MQ = '(max-width: 760px)';
@@ -159,7 +182,7 @@ const ARCHIVE_LINK_UNDERLINE = {
   textUnderlineOffset: '3px',
 };
 
-function ArchiveNavGradientWash() {
+function ArchiveNavGradientWash({ zIndex = 150 }) {
   return (
     <div
       aria-hidden="true"
@@ -169,7 +192,7 @@ function ArchiveNavGradientWash() {
         left: 0,
         right: 0,
         height: ARCHIVE_NAV_GRADIENT_HEIGHT,
-        zIndex: 150,
+        zIndex,
         pointerEvents: 'none',
         background:
           'linear-gradient(to bottom, rgba(0, 0, 0, 0.88) 0%, rgba(0, 0, 0, 0.42) 52%, rgba(0, 0, 0, 0) 100%)',
@@ -217,28 +240,100 @@ function WordmarkLogo({ onReturnToIntro, onClick, ariaLabel, title, logoHeight =
   );
 }
 
-function SiteTitle({ entranceDelay = 0.2, onReturnToIntro }) {
-  const compactNav = useArchiveNavCompact();
-  if (compactNav) return null;
+/**
+ * Fixed top chrome shared by every archive view — wordmark (left) + INDEX/EXPLORE/
+ * ABOUT (right). Stays mounted when the About panel opens; only handlers and
+ * active states swap so the bar never jumps position.
+ */
+function ArchiveNavBar({
+  compactNav,
+  entranceDelay = 0.2,
+  onReturnToIntro,
+  view,
+  onViewChange,
+  aboutOpen = false,
+  onAboutOpen,
+  onAboutClose,
+  zIndex = 200,
+}) {
+  const wordmarkProps = aboutOpen
+    ? {
+        onClick: onAboutClose,
+        ariaLabel: 'What We Tell AI — close about',
+        title: 'Close about',
+      }
+    : { onReturnToIntro };
+
+  const handleAboutClick = aboutOpen ? onAboutClose : onAboutOpen;
+  const handleViewChange = (v) => {
+    if (aboutOpen) onAboutClose();
+    onViewChange(v);
+  };
+
+  if (compactNav) {
+    return (
+      <div
+        style={{
+          position: 'fixed',
+          top: 24,
+          left: 16,
+          right: 16,
+          zIndex,
+          display: 'flex',
+          flexDirection: 'row',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 12,
+          minHeight: ARCHIVE_NAV_CHROME_HEIGHT,
+          pointerEvents: 'none',
+        }}
+      >
+        <div style={{ pointerEvents: 'auto', flexShrink: 0 }}>
+          <WordmarkLogo logoHeight={34} {...wordmarkProps} />
+        </div>
+        <div style={{ pointerEvents: 'auto', flexShrink: 0 }}>
+          <AboutHeader
+            onClick={handleAboutClick}
+            open={aboutOpen}
+            stacked
+            view={view}
+            onChange={handleViewChange}
+            entranceDelay={entranceDelay}
+            zIndex={zIndex}
+          />
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <motion.div
-      initial={{ opacity: 0, y: -12 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.5, ease, delay: entranceDelay }}
-      style={{
-        position: 'fixed',
-        top: 24,
-        left: 24,
-        zIndex: 200,
-        height: ARCHIVE_NAV_CHROME_HEIGHT,
-        display: 'flex',
-        alignItems: 'center',
-        pointerEvents: 'none',
-      }}
-    >
-      <WordmarkLogo onReturnToIntro={onReturnToIntro} />
-    </motion.div>
+    <>
+      <motion.div
+        initial={{ opacity: 0, y: -12 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.5, ease, delay: entranceDelay }}
+        style={{
+          position: 'fixed',
+          top: 24,
+          left: 24,
+          zIndex,
+          height: ARCHIVE_NAV_CHROME_HEIGHT,
+          display: 'flex',
+          alignItems: 'center',
+          pointerEvents: 'none',
+        }}
+      >
+        <WordmarkLogo {...wordmarkProps} />
+      </motion.div>
+      <AboutHeader
+        onClick={handleAboutClick}
+        open={aboutOpen}
+        view={view}
+        onChange={handleViewChange}
+        entranceDelay={entranceDelay}
+        zIndex={zIndex}
+      />
+    </>
   );
 }
 
@@ -356,6 +451,7 @@ function AboutHeader({
   // explicitly — so the panel nav is the same component as the site chrome.
   menus = !stacked,
   entranceDelay = 0.2,
+  zIndex = 200,
 }) {
   // Desktop top-right chrome: INDEX (2×2 note grid on hover) · EXPLORE (3-card
   // fan) · ABOUT. The compact (stacked) bar has no hover, so it swaps those
@@ -403,7 +499,7 @@ function AboutHeader({
         ...(stacked
           ? { position: 'relative', top: 'auto', right: 'auto' }
           : { position: 'fixed', top: 24, right: 24 }),
-        zIndex: 200,
+        zIndex,
         display: 'flex',
         flexDirection: 'row',
         alignItems: 'center',
@@ -500,15 +596,15 @@ function AboutPeekNotes({ images, reduceMotion }) {
  * / ESC) both exit with opacity only — no scale or drift so it reads as a
  * simple dismiss. prefers-reduced-motion skips transforms on enter too.
  */
-function AboutModal({ open, onClose, view, onNavigate, confessions = [] }) {
+function AboutModal({ open, onClose, confessions = [] }) {
   const reduceMotion = useReducedMotion();
   // Grain <filter> id for the active section-rail arrow (see .about-navlink::before).
   const railGrainId = 'about-rail-grain';
-  // Full-screen takeover that keeps the site nav bar up top. Desktop puts a left
-  // section-nav rail (ABOUT · WHY WE CARE · OUR PROCESS) — sitting where the index
-  // filter rail lives — beside ONE scrolling content column; phones (≤760) stack
-  // the sections. The rail links + the intro pointer scroll the content to each
-  // section, and an IntersectionObserver highlights the section in view.
+  // Full-screen takeover; the site nav bar stays mounted above this panel
+  // (ArchiveNavBar in ArchivePage) so INDEX/EXPLORE/ABOUT never jump position.
+  // Desktop puts a left section-nav rail beside ONE scrolling content column;
+  // phones stack the sections. The rail links scroll the content to each section,
+  // and an IntersectionObserver highlights the section in view.
   const compact = useArchiveNavCompact();
 
   // Mailing-list signup state.
@@ -1040,52 +1136,6 @@ function AboutModal({ open, onClose, view, onNavigate, confessions = [] }) {
             .about-navlink[data-active='true']::before { opacity: 1; transform: translate(0, -50%) scale(1); }
           `}</style>
 
-          {/* Top bar — mirrors the site nav so About keeps the same top-level
-              navigation (wordmark · INDEX · EXPLORE · EXPERIMENT · ABOUT) plus a
-              close control. INDEX/EXPLORE/EXPERIMENT leave About and switch view;
-              the wordmark, ABOUT, and ✕ all close back to the current view. */}
-          <div
-            style={{
-              position: 'relative',
-              zIndex: 5,
-              flexShrink: 0,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              gap: 16,
-              padding: compact ? '12px 12px 24px 16px' : '16px 24px 32px',
-              // Match the archive top nav (ArchiveNavGradientWash): a dark →
-              // transparent scrim that dissolves the bar into the page rather
-              // than a hard hairline.
-              background:
-                'linear-gradient(to bottom, rgba(0, 0, 0, 0.88) 0%, rgba(0, 0, 0, 0.42) 52%, rgba(0, 0, 0, 0) 100%)',
-            }}
-          >
-            {/* Same shared brand mark as the archive nav (WordmarkLogo); here it
-                doubles as the close control instead of the return-to-intro one. */}
-            <WordmarkLogo
-              onClick={onClose}
-              ariaLabel="What We Tell AI — close about"
-              title="Close about"
-              logoHeight={compact ? 26 : 34}
-            />
-            {/* No ✕ — the wordmark, the ABOUT nav item, and ESC all dismiss the
-                panel (mirrors the site chrome on every breakpoint). Reuses the
-                shared AboutHeader: desktop gets the same INDEX/EXPLORE hover
-                menus as the archive, compact falls back to plain toggles. */}
-            <div style={{ display: 'flex', alignItems: 'center' }}>
-              <AboutHeader
-                stacked
-                menus={!compact}
-                open
-                view={view}
-                onChange={(v) => onNavigate?.(v)}
-                onClick={onClose}
-                entranceDelay={0}
-              />
-            </div>
-          </div>
-
           {compact ? (
             /* MOBILE — one scroll column, sections stacked (with anchors so the
                intro pointer links still jump between them). */
@@ -1100,6 +1150,8 @@ function AboutModal({ open, onClose, view, onNavigate, confessions = [] }) {
                 overflowX: 'hidden',
                 WebkitOverflowScrolling: 'touch',
                 outline: 'none',
+                // Clear the shared fixed nav (ArchiveNavBar) — same inset as index.
+                paddingTop: 24 + ARCHIVE_NAV_CHROME_HEIGHT + 16,
               }}
             >
               <div style={{ maxWidth: 680, margin: '0 auto', padding: '26px 22px 8px' }}>
@@ -1161,7 +1213,7 @@ function AboutModal({ open, onClose, view, onNavigate, confessions = [] }) {
                   width: FILTER_SIDEBAR_LEFT + FILTER_SIDEBAR_W,
                   paddingLeft: FILTER_SIDEBAR_LEFT,
                   paddingRight: 24,
-                  paddingTop: 44,
+                  paddingTop: FILTER_SIDEBAR_TOP,
                 }}
               >
                 <NavGrainFilter id={railGrainId} reduceMotion={reduceMotion} />
@@ -1185,7 +1237,7 @@ function AboutModal({ open, onClose, view, onNavigate, confessions = [] }) {
                   flex: 1,
                   minHeight: 0,
                   overflowY: 'auto',
-                  padding: '44px 40px 96px',
+                  padding: `${FILTER_SIDEBAR_TOP}px 40px 96px`,
                   // Chrome makes overflow:auto regions keyboard-focusable and
                   // paints a :focus-visible ring around them — suppress it.
                   outline: 'none',
@@ -1209,19 +1261,6 @@ function AboutModal({ open, onClose, view, onNavigate, confessions = [] }) {
                   <div className="about-fade" style={{ animationDelay: '0.23s' }}>{connectBlock}</div>
                 </div>
               </div>
-              {/* Bottom fade hints the column keeps scrolling. */}
-              <div
-                aria-hidden="true"
-                style={{
-                  position: 'absolute',
-                  left: 0,
-                  right: 0,
-                  bottom: 0,
-                  height: 56,
-                  pointerEvents: 'none',
-                  background: 'linear-gradient(to bottom, rgba(17,17,17,0), rgba(17,17,17,0.9))',
-                }}
-              />
             </div>
           )}
 
@@ -2887,9 +2926,24 @@ function GridView({
         }
         .grid-tile:hover .grid-tile-num,
         .grid-tile:hover .grid-tile-cat { color: #CFCAB7; }
+        /* At rest the note is clipped to its square cell. On hover the clip drops
+           and the tile lifts over its neighbours so the cursor-float (see
+           cursorFloat.js) can actually leave the cell — a note pinned inside its
+           own box doesn't read as floating. */
+        .grid-tile { overflow: hidden; }
+        .grid-tile:hover { overflow: visible; z-index: 3; }
+        /* --float-ms is swapped per pointer event: short while tracking the
+           cursor so the lean stays attached, longer on enter/leave so the lift
+           and the drop back both breathe. Lives here rather than inline so a
+           re-render (a lazy image committing) can't reset it mid-hover. */
+        .grid-tile img {
+          transition: transform var(--float-ms, ${CURSOR_FLOAT.settleMs}ms) ${HOVER_EASE},
+                      opacity 0.5s ${HOVER_EASE};
+        }
         @media (prefers-reduced-motion: reduce) {
           .grid-tile-num, .grid-tile-cat { transition: none; }
           .grid-tile { transition: none; }
+          .grid-tile img { transition: none; }
           .grid-tile-loading { animation: none; }
         }
       `}</style>
@@ -3480,6 +3534,9 @@ function GridView({
               const settled = entranceStage === 'settled';
               const exitDelay = exitDelaysRef.current.get(c.id) || 0;
               const loaded = loadedIds.has(c.id);
+              // Resting paper skew, alternating per tile so a run of hovered
+              // notes doesn't all lean the same way.
+              const paperRotate = i % 2 === 0 ? -2 : 2;
               return (
               <motion.div
                 key={c.id}
@@ -3532,7 +3589,8 @@ function GridView({
                 style={{
                   position: 'relative',
                   aspectRatio: '1 / 1',
-                  overflow: 'hidden',
+                  // overflow lives in .grid-tile so :hover can unclip it — an
+                  // inline value would win over the stylesheet.
                   cursor: 'pointer',
                 }}
               >
@@ -3574,21 +3632,27 @@ function GridView({
                     // displacement warp is applied on hover only.
                     // Filter isn't transitioned: swapping to/from the url() noise
                     // filter can't interpolate, so we apply it crisply on hover.
-                    transition: `transform 0.3s ${HOVER_EASE}, opacity 0.5s ${HOVER_EASE}`,
+                    // transform / transition live in .grid-tile img (CSS) so the
+                    // float can be written imperatively without React clobbering it.
                   }}
                   onMouseEnter={(e) => {
-                    // Slight paper-tilt on hover; alternate direction per tile
-                    // so the grid reads like scattered notes lifting, not a
-                    // uniform mechanical spin. The noise + displacement warp
-                    // switches on here (and only here) to focus the hovered note.
-                    e.currentTarget.style.transform = `scale(1.04) rotate(${
-                      i % 2 === 0 ? -2 : 2
-                    }deg)`;
+                    // The note lifts off the grid and starts leaning toward the
+                    // cursor. The noise + displacement warp switches on here (and
+                    // only here) to focus the hovered note — it's a static filter
+                    // swap, so it stays on under reduced motion; the lift doesn't.
                     e.currentTarget.style.filter = GRID_IMAGE_FILTER;
+                    if (!reduceMotion) applyGridFloat(e, paperRotate, CURSOR_FLOAT.settleMs);
                   }}
+                  onMouseMove={
+                    reduceMotion
+                      ? undefined
+                      : (e) => applyGridFloat(e, paperRotate, CURSOR_FLOAT.trackMs)
+                  }
                   onMouseLeave={(e) => {
-                    e.currentTarget.style.transform = 'scale(1) rotate(0deg)';
-                    e.currentTarget.style.filter = 'none';
+                    const el = e.currentTarget;
+                    el.style.setProperty('--float-ms', `${CURSOR_FLOAT.settleMs}ms`);
+                    el.style.transform = '';
+                    el.style.filter = 'none';
                   }}
                 />
                 <span className="grid-tile-num" style={{ opacity: settled ? 1 : 0 }}>
@@ -5276,68 +5340,31 @@ function ArchivePage({ confessionQuery, initialEmotion = null, initialView = 'th
       transition={{ duration: 0.6, ease }}
       style={{ height: '100vh', position: 'relative', overflow: 'hidden', background: '#111' }}
     >
-      <ArchiveNavGradientWash />
-      {/* Top chrome (wordmark + INDEX/ABOUT nav). Recedes while the grid's
-          Lightbox is open so the focused note owns the frame — opacity on this
-          wrapper dims its fixed-position children together. */}
+      <ArchiveNavGradientWash zIndex={aboutOpen ? 1010 : 150} />
+      {/* Top chrome (wordmark + INDEX/EXPLORE/ABOUT). Stays fixed in place when
+          About opens — elevated above the panel so it never re-mounts or jumps.
+          Recedes while the grid Lightbox is open. */}
       <motion.div
         initial={false}
         animate={{ opacity: gridLightboxOpen ? 0.22 : 1 }}
         transition={{ duration: 0.32, ease }}
       >
-      <SiteTitle entranceDelay={navChromeEntranceDelay} onReturnToIntro={onReturnToIntro} />
-      {compactNav ? (
-        <div
-          style={{
-            position: 'fixed',
-            top: 24,
-            left: 16,
-            right: 16,
-            zIndex: 200,
-            display: 'flex',
-            flexDirection: 'row',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: 12,
-            minHeight: ARCHIVE_NAV_CHROME_HEIGHT,
-            pointerEvents: 'none',
-          }}
-        >
-          {/* Brand mark holds the left cell on every compact view; INDEX ·
-              EXPLORE · ABOUT cluster flush-right in the AboutHeader beside it. */}
-          <div style={{ pointerEvents: 'auto', flexShrink: 0 }}>
-            <WordmarkLogo onReturnToIntro={onReturnToIntro} logoHeight={34} />
-          </div>
-          <div style={{ pointerEvents: 'auto', flexShrink: 0 }}>
-            <AboutHeader
-              onClick={() => setAboutOpen(true)}
-              open={aboutOpen}
-              stacked
-              view={view}
-              onChange={setView}
-              entranceDelay={navChromeEntranceDelay}
-            />
-          </div>
-        </div>
-      ) : (
-        <AboutHeader
-          onClick={() => setAboutOpen(true)}
-          open={aboutOpen}
-          view={view}
-          onChange={setView}
+        <ArchiveNavBar
+          compactNav={compactNav}
           entranceDelay={navChromeEntranceDelay}
+          onReturnToIntro={onReturnToIntro}
+          view={view}
+          onViewChange={setView}
+          aboutOpen={aboutOpen}
+          onAboutOpen={() => setAboutOpen(true)}
+          onAboutClose={() => setAboutOpen(false)}
+          zIndex={aboutOpen ? 1010 : 200}
         />
-      )}
       </motion.div>
       <AboutModal
         open={aboutOpen}
         onClose={() => setAboutOpen(false)}
-        view={view}
         confessions={confessions}
-        onNavigate={(v) => {
-          setAboutOpen(false);
-          setView(v);
-        }}
       />
 
       <AnimatePresence mode="wait">

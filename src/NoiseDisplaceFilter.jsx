@@ -29,7 +29,7 @@
 import { useDialKit } from 'dialkit';
 
 /** Default filter id + ready-made `url(#…)` string for the shared grid effect. */
-export const GRID_IMAGE_FILTER_ID = 'archive-noise-displace';
+const GRID_IMAGE_FILTER_ID = 'archive-noise-displace';
 export const GRID_IMAGE_FILTER = `url(#${GRID_IMAGE_FILTER_ID})`;
 
 export function NoiseDisplaceFilter({
@@ -177,7 +177,7 @@ export function NoiseDisplaceFilter({
  * so simply opening the panel never shifts the look. Tweaks persist
  * in localStorage (DialKit), so a dialed-in look survives reloads.
  * ───────────────────────────────────────────────────────── */
-export const GRID_IMAGE_FILTER_DEFAULTS = {
+const GRID_IMAGE_FILTER_DEFAULTS = {
   displaceFreqX: 0.065, // higher freq = fine, tight warp (dialed-in look)
   displaceFreqY: 0.077, // a touch tighter vertically so notes ripple top-to-bottom
   scale: 3, //            px — max displacement push at full noise deflection
@@ -197,7 +197,7 @@ export const GRID_IMAGE_FILTER_DEFAULTS = {
  * NOTE: SVG `baseFrequency` wants an "x y" pair, so we expose two numeric
  * sliders (freqX / freqY) and recompose the string here.
  */
-export function useGridImageFilterParams({ animate = true } = {}) {
+function useGridImageFilterParams({ animate = true } = {}) {
   const D = GRID_IMAGE_FILTER_DEFAULTS;
   // Sliders carry an explicit step (4th tuple element) so the defaults land
   // exactly on their shipped values — otherwise DialKit's inferred step snaps

@@ -8,7 +8,7 @@ const ease = [0.22, 1, 0.36, 1];
 export const SIDEBAR_WIDTH = 'max(260px, 25vw)';
 // How much of the sidebar peeks past the left edge when collapsed. Acts as
 // the visible affordance/handle and the inset the main content respects.
-export const SIDEBAR_PEEK = '28px';
+const SIDEBAR_PEEK = '28px';
 
 /**
  * Sidebar can be controlled (pass `collapsed` + `onToggle`) or uncontrolled

@@ -10,6 +10,7 @@ import {
 import { TRANSCRIPTION_TEXT } from './text';
 import { formatCategoryLabel } from './themes';
 import { useNoteSound } from './sounds';
+import { CURSOR_FLOAT, cursorOffset, floatAngles } from './cursorFloat';
 
 export const EMOTIONS = [
   { id: 'therapist', label: 'Therapist', gradient: 'linear-gradient(to left, #2a1a4a, #111 70%)' },
@@ -589,8 +590,6 @@ export const BOTTOM_DIAL_SIZE = SIZE;
  * Returns the rendered (visible/clipped) height of BottomCompassDial at a
  * given canvas size. The dial shows the top half of its canvas.
  */
-export const getBottomDialVisibleHeight = (size) => size / 2;
-
 /**
  * Slot of `activeConfession` within its category (for dial `n/total notes` label).
  * Returns null when the category has 0 or 1 note. Includes `category` so
@@ -625,7 +624,7 @@ export function getCategoryBreadcrumbInfo(confessions, activeConfession) {
  * the note-index breadcrumb under the transcript instead.) Returns null when
  * there's a single category, i.e. nothing to count against.
  */
-export function getCategorySlotInfo(confessions, activeConfession) {
+function getCategorySlotInfo(confessions, activeConfession) {
   if (!activeConfession) return null;
   const order = [];
   const seen = new Set();
@@ -754,13 +753,14 @@ const COURIER = '"Courier New", Courier, ui-monospace, SFMono-Regular, Menlo, mo
 // Keyboard-navigation mini guide for the confession stack.
 // Top-of-view keyboard legend for the dial. Each item is a label above a dark
 // key box: EXIT sits apart from the LEFT/RIGHT pair. The boxes show plain Courier
-// glyphs for the physical key — ESC for exit, ← / → for left/right (the arrow
-// keys or A/D both flip through notes). Pressing the physical key — or clicking a
-// box — darkens that box (see `pressedKey` → `keyPressed`).
+// glyphs for the physical key — ESC for exit, <- / -> for left/right (the arrow
+// keys or A/D both flip through notes). ASCII arrows rather than ← / → so the
+// legend reads as typed text, matching the About rail. Pressing the physical
+// key — or clicking a box — darkens that box (see `pressedKey` → `keyPressed`).
 const DIAL_NAV_ITEMS = [
   { id: 'esc', label: 'EXIT', kind: 'exit', aria: 'Exit view (Esc)' },
-  { id: 'left', label: 'LEFT', kind: 'arrow', dir: 'left', glyph: '←', aria: 'Previous note (left arrow)' },
-  { id: 'right', label: 'RIGHT', kind: 'arrow', dir: 'right', glyph: '→', aria: 'Next note (right arrow)' },
+  { id: 'left', label: 'LEFT', kind: 'arrow', dir: 'left', glyph: '<-', aria: 'Previous note (left arrow)' },
+  { id: 'right', label: 'RIGHT', kind: 'arrow', dir: 'right', glyph: '->', aria: 'Next note (right arrow)' },
 ];
 
 // Optional theme-nav pair for the explore stack: ↑ / ↓ step between themes.
@@ -861,9 +861,10 @@ export function DialNavHint({
   const grainId = `nav-grain-${useId().replace(/:/g, '')}`;
 
   // A single dark key box (its caption lives in the wrapping item). Glyph is the
-  // item's own `glyph` — ← / → for the note flippers, ↑ / ↓ for the theme keys —
-  // falling back to ESC for exit. Grain rides the arrow + theme glyphs when
-  // opted in; EXIT always stays crisp.
+  // item's own `glyph` — <- / -> for the note flippers, ↑ / ↓ for the theme keys
+  // (no ASCII equivalent reads cleanly on the vertical pair) — falling back to
+  // ESC for exit. Grain rides the arrow + theme glyphs when opted in; EXIT always
+  // stays crisp.
   const keyButton = (item) => {
     const pressed = pressedKey === item.id;
     const grained = grainArrows && (item.kind === 'arrow' || item.kind === 'cat');
@@ -891,7 +892,7 @@ export function DialNavHint({
             ...(grained ? { filter: `url(#${grainId})` } : null),
           }}
         >
-          {item.glyph ?? (item.kind === 'exit' ? 'ESC' : item.dir === 'left' ? '←' : '→')}
+          {item.glyph ?? (item.kind === 'exit' ? 'ESC' : item.dir === 'left' ? '<-' : '->')}
         </span>
       </button>
     );
@@ -966,7 +967,7 @@ const dialNavHintStyles = {
     letterSpacing: '0.16em',
     lineHeight: 1,
     textTransform: 'uppercase',
-    color: 'rgba(255, 255, 255, 0.92)',
+    color: 'rgba(255, 255, 255, 0.96)',
     paddingLeft: 1,
   },
   key: {
@@ -994,12 +995,14 @@ const dialNavHintStyles = {
   },
   keyGlyph: {
     // ESC / <- / -> as plain Courier glyphs (typewriter arrows) so the legend
-    // reads as monospaced text rather than drawn icons.
+    // reads as monospaced text rather than drawn icons. White rather than the
+    // parchment cream used elsewhere, and near-opaque, since the grain filter
+    // (see NAV_GRAIN) eats these 12px edges and costs perceived brightness.
     fontFamily: COURIER,
     fontSize: 12,
     letterSpacing: '0.04em',
     lineHeight: 1,
-    color: 'rgba(207, 202, 183, 0.82)',
+    color: 'rgba(255, 255, 255, 0.96)',
   },
 };
 
@@ -1235,6 +1238,10 @@ export function HorizontalConfessionStack({
   const tiltCurrentRef = useRef(new WeakMap());
   const warpRef = useRef({ depth: 0 });
   const updateCardTiltsRef = useRef(() => {});
+  // Cursor-float hover (see cursorFloat.js): which card's tilt-target the pointer
+  // is over and the lean it's asking for. A ref, not state — the tilt loop reads
+  // it every frame, so tracking the pointer costs no re-renders.
+  const floatRef = useRef({ el: null, yaw: 0, pitch: 0 });
 
   // Keep ref aligned with props on every render so useLayoutEffect (mount)
   // and timeouts see the latest index — parent may align activeIndex to the
@@ -1393,13 +1400,14 @@ export function HorizontalConfessionStack({
   // One tilt pass. `k` is the per-frame lerp fraction (0..1); k >= 1 snaps to
   // target (immediate applies on mount / resize / dial change). Returns the
   // largest remaining tilt delta so the loop can tell when it has settled.
-  const applyTiltPass = (k) => {
+  const applyTiltPass = (k, kFloat = k) => {
     const el = scrollRef.current;
     if (!el) return 0;
     const cards = el.querySelectorAll('[data-card]');
     if (cards.length === 0) return 0;
     const rm = reduceMotion;
     const { depth } = warpRef.current;
+    const float = floatRef.current;
     const containerCenter = el.scrollLeft + el.offsetWidth / 2;
     const rot = rm ? 0 : scrollRotateDegRef.current;
     const halfRange = Math.max(1, el.offsetWidth * WARP_RANGE_FRAC);
@@ -1425,10 +1433,18 @@ export function HorizontalConfessionStack({
       const tEased = Math.sign(tRaw) * Math.pow(Math.abs(tRaw), WARP_EASE);
       const tzT = rm ? 0 : -Math.abs(tEased) * depth;
 
+      // Cursor float: the hovered card leans toward the pointer and rises; every
+      // other card sits at zero. `hov` ramps 0→1 so the lift and rise fade in
+      // with the lean instead of snapping on at pointer-enter.
+      const hovered = !rm && float.el === tiltTarget;
+      const yawT = hovered ? float.yaw : 0;
+      const pitchT = hovered ? float.pitch : 0;
+      const hovT = hovered ? 1 : 0;
+
       let cur = store.get(tiltTarget);
       if (!cur) {
         // First sighting of this card: start already on target (no glide-in).
-        cur = { tz: tzT, drop: dropT };
+        cur = { tz: tzT, drop: dropT, yaw: yawT, pitch: pitchT, hov: hovT };
         store.set(tiltTarget, cur);
       }
       if (k >= 1) {
@@ -1444,10 +1460,43 @@ export function HorizontalConfessionStack({
         const d = Math.max(Math.abs(dZ) * 0.1, Math.abs(dD));
         if (d > maxDelta) maxDelta = d;
       }
-      // translateZ (push back) = the coverflow depth; translateY/rotate carry the
-      // arc-drop + scroll-momentum spin. No rotateY — the notes stay flat.
+      // The float eases on its own (snappier) time constant so the lean stays
+      // glued to the pointer while the coverflow depth keeps its slower glide.
+      if (kFloat >= 1) {
+        cur.yaw = yawT;
+        cur.pitch = pitchT;
+        cur.hov = hovT;
+      } else {
+        const dY = yawT - cur.yaw;
+        const dP = pitchT - cur.pitch;
+        const dH = hovT - cur.hov;
+        cur.yaw += dY * kFloat;
+        cur.pitch += dP * kFloat;
+        cur.hov += dH * kFloat;
+        // Angles are degrees and hov is 0..1; scale hov up so a lift still in
+        // flight keeps the loop awake.
+        const d = Math.max(Math.abs(dY), Math.abs(dP), Math.abs(dH) * 4);
+        if (d > maxDelta) maxDelta = d;
+      }
+      // translateZ (push back) = the coverflow depth plus the hover rise;
+      // translateY/rotate carry the arc-drop + scroll-momentum spin; rotateX/
+      // rotateY are the cursor lean.
+      //
+      // A leaning card gets its OWN perspective so the lean matches INDEX exactly.
+      // Left to the scroller's shared perspective it would pivot around the
+      // viewport centre instead of its own, shearing the note as it tips. This is
+      // only safe because the card that can lean is always the active, centred one,
+      // whose coverflow depth is ~0 — so the local perspective has no depth of its
+      // own to foreshorten and can't disturb the coverflow. Prepended only while
+      // actually leaning, to keep every other card's projection untouched.
+      const z = cur.tz + cur.hov * CURSOR_FLOAT.rise;
+      const leaning = cur.hov > 0.001;
       tiltTarget.style.transform =
-        `translateY(${cur.drop.toFixed(2)}px) translateZ(${cur.tz.toFixed(2)}px) rotate(${rot.toFixed(2)}deg)`;
+        (leaning ? `perspective(${CURSOR_FLOAT.perspective}px) ` : '') +
+        `translateY(${cur.drop.toFixed(2)}px) translateZ(${z.toFixed(2)}px) ` +
+        `rotate(${rot.toFixed(2)}deg) ` +
+        `rotateX(${cur.pitch.toFixed(2)}deg) rotateY(${cur.yaw.toFixed(2)}deg) ` +
+        `scale(${(1 + cur.hov * CURSOR_FLOAT.lift).toFixed(4)})`;
     });
     return maxDelta;
   };
@@ -1455,9 +1504,25 @@ export function HorizontalConfessionStack({
   // Immediate (un-eased) apply — mount / resize / dial change want the tilt to
   // be correct on the very next paint, not glide in from wherever it was.
   const applyTiltsImmediate = () => {
-    applyTiltPass(1);
+    applyTiltPass(1, 1);
   };
   updateCardTiltsRef.current = applyTiltsImmediate;
+
+  // Pointer moved over a card: record the lean it's asking for and wake the loop.
+  const trackCardFloat = (e) => {
+    if (reduceMotion) return;
+    const off = cursorOffset(e.currentTarget, e.clientX, e.clientY);
+    if (!off) return;
+    const { yaw, pitch } = floatAngles(off.nx, off.ny);
+    floatRef.current = { el: e.currentTarget, yaw, pitch };
+    ensureTiltLoop();
+  };
+
+  const clearCardFloat = () => {
+    if (!floatRef.current.el) return;
+    floatRef.current = { el: null, yaw: 0, pitch: 0 };
+    ensureTiltLoop();
+  };
 
   const tiltLoop = (ts) => {
     let dt = (ts - (tiltLastTsRef.current || ts)) / 1000;
@@ -1472,12 +1537,13 @@ export function HorizontalConfessionStack({
       scrollRotateDegRef.current = 0;
     }
     const k = 1 - Math.exp(-dt / TILT_TAU);
-    const maxDelta = applyTiltPass(k);
+    const kFloat = 1 - Math.exp(-dt / CURSOR_FLOAT.tau);
+    const maxDelta = applyTiltPass(k, kFloat);
     const rotActive = Math.abs(scrollRotateDegRef.current) > 0.02;
     if (maxDelta > 0.02 || rotActive) {
       tiltRafRef.current = requestAnimationFrame(tiltLoop);
     } else {
-      applyTiltPass(1); // land exactly on target, then rest
+      applyTiltPass(1, 1); // land exactly on target, then rest
       tiltRafRef.current = null;
       tiltLastTsRef.current = 0;
     }
@@ -1929,6 +1995,9 @@ export function HorizontalConfessionStack({
             : 0;
         const canEnlargeImage =
           !!onImageClick && isActive && item.copy === MIDDLE_COPY;
+        // The cursor float rides the centred note whether or not clicking it
+        // enlarges — it's hover feedback, not an affordance for the click.
+        const canFloat = isActive && item.copy === MIDDLE_COPY;
         return (
           <motion.div
             key={cardKey}
@@ -1986,21 +2055,36 @@ export function HorizontalConfessionStack({
                     }
                   : undefined
               }
-              // Active card only: trail a "VIEW NOTE" hint by the cursor since
-              // clicking the image opens the full note.
+              // Active card only: float the note toward the cursor, and — when the
+              // click actually enlarges — trail a "VIEW NOTE" hint alongside it.
               onMouseEnter={
-                canEnlargeImage
-                  ? (e) =>
-                      setInactiveTipPos({ x: e.clientX, y: e.clientY, label: ACTIVE_CARD_TOOLTIP })
+                canFloat
+                  ? (e) => {
+                      if (canEnlargeImage) {
+                        setInactiveTipPos({ x: e.clientX, y: e.clientY, label: ACTIVE_CARD_TOOLTIP });
+                      }
+                      trackCardFloat(e);
+                    }
                   : undefined
               }
               onMouseMove={
-                canEnlargeImage
-                  ? (e) =>
-                      setInactiveTipPos({ x: e.clientX, y: e.clientY, label: ACTIVE_CARD_TOOLTIP })
+                canFloat
+                  ? (e) => {
+                      if (canEnlargeImage) {
+                        setInactiveTipPos({ x: e.clientX, y: e.clientY, label: ACTIVE_CARD_TOOLTIP });
+                      }
+                      trackCardFloat(e);
+                    }
                   : undefined
               }
-              onMouseLeave={canEnlargeImage ? () => setInactiveTipPos(null) : undefined}
+              onMouseLeave={
+                canFloat
+                  ? () => {
+                      if (canEnlargeImage) setInactiveTipPos(null);
+                      clearCardFloat();
+                    }
+                  : undefined
+              }
             >
               <img
                 ref={
@@ -2183,7 +2267,7 @@ function MetaCrossfadeSlot({ confession, reduceMotion, columnWidth, anchorEl }) 
   if (!confession) return null;
   const date = confession?.metadata?.date || '';
   const location = confession?.metadata?.location || '';
-  if (!date && !location && !confession?.category) return null;
+  if (!date && !location) return null;
 
   return (
     <div
@@ -2206,7 +2290,6 @@ function MetaCrossfadeSlot({ confession, reduceMotion, columnWidth, anchorEl }) 
           reduceMotion={reduceMotion}
           columnWidth="100%"
           crossfadeBlock
-          showTheme
         />
       </AnimatePresence>
     </div>
@@ -2214,39 +2297,62 @@ function MetaCrossfadeSlot({ confession, reduceMotion, columnWidth, anchorEl }) 
 }
 
 /**
+ * Reveals a metadata value with the same stagger the transcription uses: tokens
+ * appear one at a time on TRANSCRIPT_REVEAL.wordStagger beats, each fading over
+ * wordFadeS. Split per CHARACTER rather than per word (TranscriptReveal splits on
+ * whitespace) because these values are only a token or two long — a date like
+ * "4/22/2026" is a single word and would get no stagger at all.
+ */
+function MetaValueReveal({ text, reduceMotion }) {
+  if (!text || reduceMotion) return <span style={st.sideMetaValue}>{text}</span>;
+  return (
+    <span style={st.sideMetaValue}>
+      {[...text].map((ch, i) => (
+        <motion.span
+          key={i}
+          // `pre` keeps the spaces inside a value from collapsing now that each
+          // character is its own span.
+          style={{ whiteSpace: 'pre' }}
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{
+            duration: TRANSCRIPT_REVEAL.wordFadeS,
+            ease: EASE_OUT,
+            delay: i * TRANSCRIPT_REVEAL.wordStagger,
+          }}
+        >
+          {ch}
+        </motion.span>
+      ))}
+    </span>
+  );
+}
+
+/**
  * Date + Location shown above the note image as a two-row labelled key/value
  * block: a DATE row and a LOCATION row, each split 50/50 — the label fills the
  * left half and the value is left-aligned from the horizontal midpoint.
- * Sourced from sheet columns P (Date) and Q (Location). Rows with no value are
- * dropped. The whole block fades in together (no stagger).
+ * Sourced from sheet columns P (Date) and Q (Location). On the EXPLORE tab the
+ * values stagger in per character (see MetaValueReveal); the dial page fades each
+ * value in as one piece after META_TIMING.metaRow.
  */
-function NoteMeta({
-  confession,
-  reduceMotion,
-  columnWidth = '100%',
-  crossfadeBlock = false,
-  showTheme = false,
-}) {
+function NoteMeta({ confession, reduceMotion, columnWidth = '100%', crossfadeBlock = false }) {
   const date = confession?.metadata?.date || '';
   const location = confession?.metadata?.location || '';
-  const category = confession?.category || '';
-  if (!date && !location && !(showTheme && category)) return null;
+  if (!date && !location) return null;
 
   // Always render BOTH labels (even if a value is blank) so the scaffold's
   // height never changes note-to-note — a missing value must not drop a row and
-  // shift the divider up. Only the values differ. THEME is appended for the
-  // EXPLORE tab (showTheme); the dial page keeps just DATE / LOCATION.
+  // shift the divider up. Only the values differ.
   const rows = [
     ['DATE', date],
     ['LOCATION', location],
   ];
-  if (showTheme && category) {
-    rows.push(['THEME', formatCategoryLabel(category)]);
-  }
 
   if (crossfadeBlock) {
-    // EXPLORE tab: the entire block (labels, values, divider) crossfades as one
-    // unit when the active note changes — parent wraps in AnimatePresence.
+    // EXPLORE tab: the label scaffold and divider crossfade as one unit when the
+    // active note changes (parent wraps in AnimatePresence), while the values
+    // reveal on the transcript's stagger so the whole block reads as one gesture.
     return (
       <motion.div
         style={{ ...st.metaAboveRow, width: columnWidth }}
@@ -2261,7 +2367,7 @@ function NoteMeta({
         {rows.map(([label, value]) => (
           <div key={label} style={st.metaAboveItem}>
             <span style={st.sideMetaLabel}>{label}</span>
-            <span style={st.sideMetaValue}>{value}</span>
+            <MetaValueReveal text={value} reduceMotion={reduceMotion} />
           </div>
         ))}
       </motion.div>
