@@ -1,5 +1,6 @@
 import { useState, useMemo, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
 import {
+  animate,
   motion,
   AnimatePresence,
   useReducedMotion,
@@ -34,6 +35,7 @@ import {
   useInactiveCardParams,
 } from './noise';
 import { INK, inkA } from './colors';
+import { LINK_UNDERLINE, LINK_UNDERLINE_CSS } from './linkUnderline';
 import { subscribeToKit } from './kit';
 import NoteOpenView, { TILE_PADDING } from './NoteOpenView';
 import { GridImageFilter, GRID_IMAGE_FILTER } from './NoiseDisplaceFilter';
@@ -171,16 +173,9 @@ const ARCHIVE_NAV_TEXT = {
   color: INK,
 };
 
-// Plain-text nav items read as hyperlinks, so they carry a persistent dotted
-// underline (kept consistent with the About contact links + the onboarding
-// Skip Intro / Enter the archive links). Pill / icon CTAs stay undecorated so
-// they still read as buttons.
-const ARCHIVE_LINK_UNDERLINE = {
-  textDecorationLine: 'underline',
-  textDecorationStyle: 'dotted',
-  textDecorationThickness: '1px',
-  textUnderlineOffset: '3px',
-};
+// Plain-text nav items read as hyperlinks, so they carry the site's dotted
+// underline. Pill / icon CTAs stay undecorated so they still read as buttons.
+const ARCHIVE_LINK_UNDERLINE = LINK_UNDERLINE;
 
 function ArchiveNavGradientWash({ zIndex = 150 }) {
   return (
@@ -201,9 +196,11 @@ function ArchiveNavGradientWash({ zIndex = 150 }) {
   );
 }
 
-/** Hand-lettered "What We / Tell AI" wordmark button — the same outline art the
- *  onboarding hero uses, dropped into the nav. Tapping it returns to the intro
- *  onboarding. `logoHeight` lets the mobile chrome render it a touch smaller. */
+/** Hand-lettered "What We / Tell AI" wordmark button — the onboarding hero's
+ *  brush art, dropped into the nav. It reads from a baked PNG rather than
+ *  wordmark.svg because the source carries the hero's grain detail at 1.19MB;
+ *  see scripts/wordmark-logo.mjs. Tapping it returns to the intro onboarding.
+ *  `logoHeight` lets the mobile chrome render it a touch smaller. */
 function WordmarkLogo({ onReturnToIntro, onClick, ariaLabel, title, logoHeight = 48 }) {
   return (
     <button
@@ -231,7 +228,7 @@ function WordmarkLogo({ onReturnToIntro, onClick, ariaLabel, title, logoHeight =
       }}
     >
       <img
-        src="/What%20We%20Tell%20AI.png"
+        src="/wordmark-144.png"
         alt="What We Tell AI"
         draggable={false}
         style={{ height: logoHeight, width: 'auto', display: 'block' }}
@@ -679,6 +676,15 @@ function AboutModal({ open, onClose, confessions = [] }) {
     return () => window.removeEventListener('keydown', onKey);
   }, [open, onClose]);
 
+  // Where a jumped-to section lands, measured from the top of the scrollport.
+  //
+  // The content scrolls UNDER the fixed nav chrome (which is why both layouts pad
+  // their top by it), so a small offset parked a heading behind the wordmark row.
+  // This is the panel's own resting top inset instead — the same one the first
+  // section sits at — so jumping to a section puts its heading exactly where the
+  // top of the document sits when the panel opens.
+  const sectionInset = compact ? 24 + ARCHIVE_NAV_CHROME_HEIGHT + 16 : FILTER_SIDEBAR_TOP;
+
   // Smooth-scroll the content container to a section (used by the rail links and
   // the inline "our process" / "why we care" pointers in the intro).
   const scrollToSection = useCallback(
@@ -690,10 +696,10 @@ function AboutModal({ open, onClose, confessions = [] }) {
         el.getBoundingClientRect().top -
         root.getBoundingClientRect().top +
         root.scrollTop -
-        (compact ? 12 : 20);
+        sectionInset;
       root.scrollTo({ top: Math.max(0, top), behavior: reduceMotion ? 'auto' : 'smooth' });
     },
-    [compact, reduceMotion]
+    [sectionInset, reduceMotion]
   );
 
   // Fresh open always starts on the first section.
@@ -756,14 +762,17 @@ function AboutModal({ open, onClose, confessions = [] }) {
     letterSpacing: '0.01em',
     color: BODY_COLOR,
   };
+  // Tracking eases off as the size goes up — 0.16em reads as an eyebrow at 11px
+  // but gets airy and hard to scan at 16px.
   const headStyle = {
     margin: '0 0 16px',
     fontFamily: MONO_FONT,
-    fontSize: 11,
+    fontSize: compact ? 14 : 16,
     fontWeight: 400,
-    letterSpacing: '0.16em',
+    letterSpacing: '0.11em',
+    lineHeight: 1.25,
     textTransform: 'uppercase',
-    color: inkA(0.55),
+    color: '#fff',
   };
   const captionStyle = {
     margin: '8px 0 0',
@@ -808,7 +817,6 @@ function AboutModal({ open, onClose, confessions = [] }) {
   const processIntro =
     'WWTAI collects anonymous confessions by installing a makeshift confession booth across more than twenty sites in California, Massachusetts, Colorado, and New York. Locations range from ordinary public space (e.g. parks, shopping malls) to gatherings where AI is already the explicit subject (e.g. workshops, conferences).';
   const processParas = [
-    'The setup is deliberately scrappy: a big red sign, table, pen & paper, and box for secrets. The instructions say: “Write an anonymous confession about your relationship with AI. Write it down. Fold it up. Slip it in. Walk away.” A small display shows 5–6 example confessions along with how to learn more about the project. We also disclose that confessions may be published as a part of an art-research project, but always anonymously (we do not collect any personal information from participants).',
     'Most often, we’d sit about 6ft from the booth for three to five hours. This was close enough to chat occasionally or reset the booth when the wind knocked it over, but far enough to keep the writing private. Other times we’d leave the booth entirely unattended, sitting on the other side of the park. Unmanned booths drew noticeably more pranks — young boys, in particular, filling the box with lewd jokes — but they also drew longer, more vulnerable disclosures. Context shaped the encounter in other ways too: in some places, Washington Square among them, people assumed by default that they were being filmed and this was a content creator scheme.',
   ];
 
@@ -997,10 +1005,54 @@ function AboutModal({ open, onClose, confessions = [] }) {
           {subscribeError}
         </p>
       )}
-      <p style={{ margin: '20px 0 0', fontFamily: MONO_FONT, fontSize: 11, letterSpacing: '0.06em', color: inkA(0.45) }}>
-        © What We Tell AI 2026
-      </p>
     </div>
+  );
+
+  const copyrightLine = (
+    <p style={{ margin: 0, fontFamily: MONO_FONT, fontSize: 11, letterSpacing: '0.06em', color: inkA(0.45) }}>
+      © What We Tell AI 2026
+    </p>
+  );
+
+  // Typefaces are the ones actually loaded in index.html and used in the app:
+  // Faktory (body), Reckless (pull-quotes), TRJN Da Vinci (intro display).
+  const credits = [
+    { role: 'Project conceptualized by', name: 'Olivia Tai' },
+    { role: 'Site designed by', name: 'Arin Pantja' },
+    { role: 'Typefaces', name: 'Faktory, Reckless, TRJN Da Vinci' },
+  ];
+
+  const creditsBlock = (
+    <div style={{ marginBottom: 20 }}>
+      <h2 style={{ ...headStyle, margin: '0 0 14px' }}>Credits</h2>
+      <dl style={{ margin: 0 }}>
+        {credits.map((c) => (
+          <div
+            key={c.role}
+            style={{
+              display: 'flex',
+              flexWrap: 'wrap',
+              gap: '0 6px',
+              fontFamily: MONO_FONT,
+              fontSize: 11,
+              lineHeight: 1.9,
+              letterSpacing: '0.06em',
+            }}
+          >
+            <dt style={{ color: inkA(0.45) }}>{c.role}</dt>
+            <dd style={{ color: inkA(0.75) }}>{c.name}</dd>
+          </div>
+        ))}
+      </dl>
+    </div>
+  );
+
+  // Foot of the panel on both breakpoints: credits, then the copyright line.
+  const footerBlock = (
+    <>
+      {creditsBlock}
+      {copyrightLine}
+    </>
   );
 
   // The three reading sections, in order. The rail links + scroll-spy key off
@@ -1075,18 +1127,16 @@ function AboutModal({ open, onClose, confessions = [] }) {
           <AboutPeekNotes images={peekImages} reduceMotion={reduceMotion} />
 
           <style>{`
+            /* No underline, unlike the site's other text links: these two sit
+               alone on their own row as mono caps, so they read as links from
+               position rather than needing the rule. */
             .about-contact-link {
               display: inline-block; color: ${inkA(0.72)};
-              text-decoration: underline; text-decoration-style: dotted;
-              text-decoration-thickness: 1px;
-              text-underline-offset: 3px; transition: color 0.18s ${HOVER_EASE};
+              text-decoration: none;
+              transition: color 0.18s ${HOVER_EASE};
             }
             .about-contact-link:hover { color: #CFCAB7; }
-            .about-emph {
-              color: ${inkA(0.85)}; text-decoration: underline;
-              text-decoration-style: dotted; text-decoration-thickness: 1px;
-              text-underline-offset: 3px;
-            }
+            .about-emph { color: ${inkA(0.85)}; ${LINK_UNDERLINE_CSS} }
             .about-col::-webkit-scrollbar { width: 9px; }
             .about-col::-webkit-scrollbar-thumb {
               background: ${inkA(0.14)}; border-radius: 4px;
@@ -1105,7 +1155,9 @@ function AboutModal({ open, onClose, confessions = [] }) {
             /* Inline pointers in the intro copy ("our process" / "why we care")
                reuse the dotted .about-emph underline but scroll on click. */
             .about-inline-link {
-              background: none; border: none; padding: 0; margin: 0;
+              /* background-color, not the background shorthand — this is worn
+                 alongside .about-emph, whose underline is a background image. */
+              background-color: transparent; border: none; padding: 0; margin: 0;
               font: inherit; color: inherit; cursor: pointer;
             }
             /* Left section-nav rail — styled to echo the index filter rail:
@@ -1167,25 +1219,30 @@ function AboutModal({ open, onClose, confessions = [] }) {
                         sectionRefs.current[s.id] = el;
                       }}
                       className="about-fade"
-                      style={{ animationDelay: `${0.05 + i * 0.08}s`, scrollMarginTop: 16 }}
+                      style={{ animationDelay: `${0.05 + i * 0.08}s`, scrollMarginTop: sectionInset }}
                     >
                       {s.node}
                     </section>
+                    {s.id === 'about' && (
+                      <div className="about-fade" style={{ animationDelay: '0.13s' }}>{connectBlock}</div>
+                    )}
                   </div>
                 ))}
-                <div className="about-fade" style={{ animationDelay: '0.29s' }}>{connectBlock}</div>
               </div>
               <div
                 aria-hidden="true"
                 style={{ display: 'flex', justifyContent: 'flex-end', padding: '32px 22px 26px' }}
               >
                 <img
-                  src="/What%20We%20Tell%20AI.png"
+                  src="/wordmark-420.png"
                   alt=""
                   aria-hidden="true"
                   draggable={false}
                   style={{ height: 'clamp(90px, 26vw, 140px)', width: 'auto', opacity: 0.85, userSelect: 'none' }}
                 />
+              </div>
+              <div className="about-fade" style={{ padding: '0 22px 32px', animationDelay: '0.2s' }}>
+                {footerBlock}
               </div>
             </div>
           ) : (
@@ -1245,20 +1302,30 @@ function AboutModal({ open, onClose, confessions = [] }) {
               >
                 <div style={{ maxWidth: 720 }}>
                   {sections.map((s, i) => (
-                    <section
-                      key={s.id}
-                      id={`about-sec-${s.id}`}
-                      data-section={s.id}
-                      ref={(el) => {
-                        sectionRefs.current[s.id] = el;
-                      }}
-                      className="about-fade"
-                      style={{ animationDelay: `${0.05 + i * 0.06}s`, scrollMarginTop: 24, marginBottom: 44 }}
-                    >
-                      {s.node}
-                    </section>
+                    <div key={s.id}>
+                      <section
+                        id={`about-sec-${s.id}`}
+                        data-section={s.id}
+                        ref={(el) => {
+                          sectionRefs.current[s.id] = el;
+                        }}
+                        className="about-fade"
+                        style={{
+                          animationDelay: `${0.05 + i * 0.06}s`,
+                          scrollMarginTop: sectionInset,
+                          marginBottom: 44,
+                        }}
+                      >
+                        {s.node}
+                      </section>
+                      {s.id === 'about' && (
+                        <div className="about-fade" style={{ animationDelay: '0.11s', marginBottom: 44 }}>{connectBlock}</div>
+                      )}
+                    </div>
                   ))}
-                  <div className="about-fade" style={{ animationDelay: '0.23s' }}>{connectBlock}</div>
+                  <div className="about-fade" style={{ animationDelay: '0.25s', paddingTop: 24, borderTop: `1px solid ${inkA(0.08)}` }}>
+                    {footerBlock}
+                  </div>
                 </div>
               </div>
             </div>
@@ -1866,7 +1933,7 @@ const cityLabel = (loc) => String(loc || '').split(',')[0].trim();
  * surface. Trackpad / touch keep native momentum scrolling; mouse + pen get
  * grab-to-pan. Hover reveals a small metadata caption; click opens the Lightbox.
  */
-function WallView({ confessions, sidebarInset = SIDEBAR_WIDTH }) {
+function WallView({ confessions, sidebarInset = SIDEBAR_WIDTH, onExplore }) {
   const [selected, setSelected] = useState(null);
   const reduceMotion = useReducedMotion();
   // Tiles whose image failed to load (e.g. file not yet on disk for that
@@ -2204,6 +2271,7 @@ function WallView({ confessions, sidebarInset = SIDEBAR_WIDTH }) {
         onClose={() => setSelected(null)}
         onPrev={visible.length > 1 ? goPrev : undefined}
         onNext={visible.length > 1 ? goNext : undefined}
+        onExplore={onExplore}
       />
     </motion.div>
   );
@@ -2320,6 +2388,68 @@ const filterBarScrim = (dir) =>
   ' rgba(17,17,17,0.04) 93%,' +
   ' rgba(17,17,17,0) 100%)';
 
+/**
+ * The grid tally's number, counted rather than swapped: applying a filter runs
+ * 165 down to 40 in front of you, so the header reads as the archive re-counting
+ * itself instead of cutting to a new figure. Any change tweens — narrowing the
+ * set counts down, clearing filters counts back up.
+ *
+ * A fixed duration (not a spring) on the page's shared ease-out: a spring would
+ * overshoot, and briefly showing 38 when the answer is 40 reads as a glitch in
+ * something whose whole job is to be a correct count. The first value jumps
+ * (the archive loads async, so animating that would count up from a placeholder)
+ * and reduced motion always jumps.
+ */
+const COUNT_TWEEN = { durS: 0.55, ease };
+
+function AnimatedCount({ value, reduceMotion }) {
+  const [shown, setShown] = useState(value);
+  // The tween starts from whatever is currently on screen, so a filter changed
+  // mid-count continues from there instead of jumping back.
+  const shownRef = useRef(value);
+  shownRef.current = shown;
+  const firstRef = useRef(true);
+
+  useEffect(() => {
+    if (firstRef.current || reduceMotion) {
+      firstRef.current = false;
+      setShown(value);
+      return undefined;
+    }
+    const controls = animate(shownRef.current, value, {
+      duration: COUNT_TWEEN.durS,
+      ease: COUNT_TWEEN.ease,
+      onUpdate: (v) => setShown(Math.round(v)),
+    });
+    return () => controls.stop();
+  }, [value, reduceMotion]);
+
+  return shown;
+}
+
+/* ── ASCII grid lattice ────────────────────────────────────────────────
+ * Contact-sheet hairlines drawn as monospace glyphs instead of 1px rules.
+ * Each line gets a deterministic scramble from its key so the grid doesn't
+ * reshuffle on re-render or filter changes. */
+
+const LATTICE_ASCII = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@#$%&*+-=.:;!?';
+const LATTICE_H_CHARS = 360;
+const LATTICE_V_CHARS = 120;
+
+function latticeAscii(key, count) {
+  let t = 0;
+  for (let i = 0; i < key.length; i++) t = (t * 31 + key.charCodeAt(i)) >>> 0;
+  let out = '';
+  for (let n = 0; n < count; n++) {
+    t = (t + 0x6d2b79f5) >>> 0;
+    let x = Math.imul(t ^ (t >>> 15), 1 | t);
+    x = (x + Math.imul(x ^ (x >>> 7), 61 | x)) ^ x;
+    const r = ((x ^ (x >>> 14)) >>> 0) / 4294967296;
+    out += LATTICE_ASCII[Math.floor(r * LATTICE_ASCII.length)];
+  }
+  return out;
+}
+
 function GridView({
   confessions,
   sidebarInset = SIDEBAR_WIDTH,
@@ -2331,6 +2461,7 @@ function GridView({
   /** When true, skip the fly-in entrance (e.g. returning from dial → grid). */
   skipEntrance = false,
   onEntranceSettled,
+  onExplore,
 }) {
   const [selected, setSelected] = useState(null);
   const [query, setQuery] = useState('');
@@ -2618,8 +2749,7 @@ function GridView({
   const FACETS = [
     { id: 'category', label: 'Category', active: selectedCats.size > 0 },
     { id: 'location', label: 'Location', active: selectedLocs.size > 0 },
-    // Recency tab hidden — restore this entry to bring the sort dropdown back.
-    // { id: 'recency', label: 'Recency', active: sortOrder != null },
+    { id: 'recency', label: 'Recency', active: sortOrder != null },
   ];
 
   // The selectable rows shown inside a tab's dropdown. Category/Location are
@@ -2740,6 +2870,7 @@ function GridView({
         main: k < cols ? `${(k / cols) * 100}%` : 'calc(100% - 1px)',
         lenPct: (yEnd / rows) * 100,
         delay: BASE + (cols ? (k / cols) * V_SPREAD : 0),
+        glyphs: latticeAscii(`lattice-v${k}`, LATTICE_V_CHARS).split('').join('\n'),
       });
     }
     const topWidth = rows > 1 ? cols : last; // single partial row → top edge = last
@@ -2752,6 +2883,7 @@ function GridView({
         main: m < rows ? `${(m / rows) * 100}%` : 'calc(100% - 1px)',
         lenPct: (xEnd / cols) * 100,
         delay: BASE + (rows ? (m / rows) * H_SPREAD : 0),
+        glyphs: latticeAscii(`lattice-h${m}`, LATTICE_H_CHARS),
       });
     }
     return lines;
@@ -2804,13 +2936,11 @@ function GridView({
       </div>
 
       <style>{`
-        /* Contact-sheet lattice — the hairline grid. It lives on its OWN layer
+        /* Contact-sheet lattice — monospace glyphs on their own layer
            (.grid-lattice), a sibling of the tiles rather than borders riding on
-           each flying tile, so the grid can draw on independently instead of
-           assembling out of the notes as they fly in. It's an overlay of solid
-           1px <div> lines (see GridView / latticeLines) positioned by percentage
-           onto the square-cell grid, so every line pins to a cell edge and draws
-           on by scaling from one end — solid strokes, never dashed. */
+           each flying tile, so the grid can draw on independently. Each hairline
+           is a seeded scramble of ASCII (see latticeAscii) that scales in from
+           one end — same stagger as before, but the lines read as texture. */
         /* Fills the available width (rail + gutters aside) up to a generous cap,
            so wide monitors get a denser sheet rather than a fixed 1100px column
            floating with dead space. Column count steps up with the min-width
@@ -2831,7 +2961,23 @@ function GridView({
         }
         .grid-lattice-line {
           position: absolute;
-          background: rgba(207, 202, 183, 0.07);
+          overflow: hidden;
+          color: rgba(207, 202, 183, 0.11);
+        }
+        .grid-lattice-glyphs {
+          display: block;
+          font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+          font-size: 8px;
+          line-height: 1;
+          letter-spacing: 0.06em;
+          white-space: nowrap;
+          pointer-events: none;
+          user-select: none;
+        }
+        .grid-lattice-glyphs-v {
+          white-space: pre;
+          letter-spacing: 0;
+          line-height: 0.92;
         }
         .grid-tile { box-sizing: border-box; transition: filter 0.4s ${HOVER_EASE}; }
         /* Loading skeleton — a faint warm fill that breathes until the note's
@@ -3435,9 +3581,7 @@ function GridView({
                   fontSize: 12,
                   letterSpacing: '0.1em',
                   textTransform: 'uppercase',
-                  textDecoration: 'underline',
-                  textDecorationStyle: 'dotted',
-                  textUnderlineOffset: 3,
+                  ...LINK_UNDERLINE,
                   cursor: 'pointer',
                 }}
               >
@@ -3476,18 +3620,27 @@ function GridView({
                   pointerEvents: 'none',
                 }}
               >
-                <span style={{ color: 'rgba(255,255,255,0.92)' }}>{noteCount}</span>
+                <span
+                  style={{
+                    color: 'rgba(255,255,255,0.92)',
+                    // Equal digit advance, so the count doesn't wobble as it runs.
+                    fontVariantNumeric: 'tabular-nums',
+                  }}
+                >
+                  <AnimatedCount value={noteCount} reduceMotion={reduceMotion} />
+                </span>
+                {/* The noun follows the settled count, not the tweening one, so
+                    it doesn't flicker to "Confession" while passing through 1. */}
                 <span style={{ color: 'rgba(255,255,255,0.92)' }}>
                   {` ${noteCount === 1 ? 'Confession' : 'Confessions'}`}
                 </span>
               </motion.div>
             )}
-            {/* Lattice layer — the hairline grid drawn on independently of the
-                tiles. Each line is a solid 1px <div> pinned to a cell edge by
-                percentage; it "draws on" by scaling from one end (top→down for
-                verticals, left→right for horizontals), staggered so the grid
-                constructs itself a beat after the notes land. No stroke-dasharray
-                anywhere, so the lines are always solid, never dashed. */}
+            {/* Lattice layer — ASCII hairlines drawn on independently of the
+                tiles. Each line is a seeded scramble of mono glyphs pinned to a
+                cell edge; it draws on by scaling from one end (top→down for
+                verticals, left→right for horizontals), staggered after the notes
+                land. */}
             <motion.div
               className="grid-lattice"
               aria-hidden="true"
@@ -3511,8 +3664,8 @@ function GridView({
                     style={{
                       transformOrigin: v ? 'top center' : 'left center',
                       ...(v
-                        ? { top: 0, left: ln.main, width: 1, height: `${ln.lenPct}%` }
-                        : { left: 0, top: ln.main, height: 1, width: `${ln.lenPct}%` }),
+                        ? { top: 0, left: ln.main, width: '0.72em', height: `${ln.lenPct}%` }
+                        : { left: 0, top: ln.main, height: '0.92em', width: `${ln.lenPct}%` }),
                     }}
                     initial={v ? { scaleY: reduceMotion ? 1 : 0 } : { scaleX: reduceMotion ? 1 : 0 }}
                     animate={v ? { scaleY: latticeDrawn ? 1 : 0 } : { scaleX: latticeDrawn ? 1 : 0 }}
@@ -3521,7 +3674,14 @@ function GridView({
                         ? { duration: 0.6, ease: GRID_ENTRANCE.ease, delay: ln.delay }
                         : { duration: 0 }
                     }
-                  />
+                  >
+                    <span
+                      className={`grid-lattice-glyphs${v ? ' grid-lattice-glyphs-v' : ''}`}
+                      aria-hidden="true"
+                    >
+                      {ln.glyphs}
+                    </span>
+                  </motion.div>
                 );
               })}
             </motion.div>
@@ -3676,6 +3836,7 @@ function GridView({
         onClose={() => setSelected(null)}
         onPrev={visible.length > 1 ? goPrev : undefined}
         onNext={visible.length > 1 ? goNext : undefined}
+        onExplore={onExplore}
       />
     </motion.div>
   );
@@ -3697,7 +3858,21 @@ function GridView({
 // Lightbox is ever mounted, so a constant id is safe (no clobbering).
 const LB_ARROW_GRAIN_ID = 'lb-arrow-grain';
 
-function Lightbox({ confession, onClose, onPrev, onNext }) {
+/**
+ * The frame every previewed note is displayed inside — a constant box, not a
+ * per-image limit.
+ *
+ * The notes are all 1600px wide but run from 800 to 2046 tall (0.78–2.0 aspect),
+ * so sizing the layout to each image swung the column's height by ~200px: a
+ * 2.0-aspect note rendered 720x360 where a portrait one rendered 437x560. Since
+ * the column is vertically centred, that moved the metadata above and the
+ * transcript below on every note. Holding the frame constant and containing the
+ * image inside it keeps both pinned while each note still displays as large as
+ * its shape allows.
+ */
+const PREVIEW_FRAME = { w: 'min(90vw, 720px)', h: 'min(62vh, 560px)' };
+
+function Lightbox({ confession, onClose, onPrev, onNext, onExplore }) {
   const reduceMotion = useReducedMotion();
   const compact = useArchiveNavCompact();
   const open = !!confession;
@@ -3782,7 +3957,7 @@ function Lightbox({ confession, onClose, onPrev, onNext }) {
   const metaRows = [
     ['DATE', meta.date],
     ['LOCATION', meta.location],
-    ['THEME', confession?.category ? confession.category.toUpperCase() : null],
+    ['THEME', confession?.category ? confession.category.toUpperCase() : null, 'theme'],
   ].filter(([, v]) => v);
 
   return (
@@ -3884,15 +4059,10 @@ function Lightbox({ confession, onClose, onPrev, onNext }) {
                   maxWidth: 'min(88vw, 560px)',
                 }}
               >
-                {metaRows.map(([label, value]) => (
+                {metaRows.map(([label, value, kind]) => (
                   <div
                     key={label}
                     style={{
-                      // Match the confession stack's NoteMeta: each row is split
-                      // 50/50 (label fills the left half, value left-aligned from
-                      // the horizontal midpoint) rather than pushed to opposite
-                      // edges — so DATE / LOCATION / THEME values line up in a
-                      // column at 50% width, left-aligned.
                       display: 'grid',
                       gridTemplateColumns: '1fr 1fr',
                       alignItems: 'baseline',
@@ -3913,42 +4083,122 @@ function Lightbox({ confession, onClose, onPrev, onNext }) {
                     >
                       {label}
                     </span>
-                    <span
-                      style={{
-                        fontFamily: 'var(--font-mono)',
-                        fontSize: TRANSCRIPTION_FONT_SIZE,
-                        letterSpacing: '0.02em',
-                        lineHeight: 1.45,
-                        color: 'rgba(207,202,183,0.85)',
-                      }}
-                    >
-                      {value}
-                    </span>
+                    {kind === 'theme' && onExplore ? (
+                      <button
+                        type="button"
+                        title="Explore notes in this category"
+                        onClick={(e) => { e.stopPropagation(); onExplore(confession.category); }}
+                        style={{
+                          background: 'none',
+                          border: 'none',
+                          padding: 0,
+                          margin: 0,
+                          font: 'inherit',
+                          color: 'inherit',
+                          cursor: 'pointer',
+                          textAlign: 'left',
+                        }}
+                      >
+                        <span
+                          style={{
+                            fontFamily: 'var(--font-mono)',
+                            fontSize: TRANSCRIPTION_FONT_SIZE,
+                            letterSpacing: '0.02em',
+                            lineHeight: 1.45,
+                            color: 'rgba(207,202,183,0.85)',
+                            ...LINK_UNDERLINE,
+                          }}
+                        >
+                          {value}
+                        </span>
+                      </button>
+                    ) : (
+                      <span
+                        style={{
+                          fontFamily: 'var(--font-mono)',
+                          fontSize: TRANSCRIPTION_FONT_SIZE,
+                          letterSpacing: '0.02em',
+                          lineHeight: 1.45,
+                          color: 'rgba(207,202,183,0.85)',
+                        }}
+                      >
+                        {value}
+                      </span>
+                    )}
                   </div>
                 ))}
               </motion.div>
             ) : null}
 
-            <motion.img
-              key="lightbox-img"
-              src={confession.image}
-              alt={`Confession ${confession.id}`}
-              draggable={false}
-              onClick={onClose}
-              {...imageMotion}
-              transition={{ duration: 0.24, ease: easeOut, exit: { duration: 0.18 } }}
+            {/* Constant frame (see PREVIEW_FRAME). The tilt wrapper inside still
+                hugs the image itself, so the hover float pivots on the note
+                rather than on the frame's empty margins. */}
+            <div
               style={{
-                maxWidth: 'min(90vw, 720px)',
-                maxHeight: 'min(62vh, 560px)',
-                width: 'auto',
-                height: 'auto',
-                objectFit: 'contain',
-                display: 'block',
-                boxShadow: 'none',
-                willChange: 'transform, opacity',
-                cursor: 'zoom-out',
+                width: PREVIEW_FRAME.w,
+                height: PREVIEW_FRAME.h,
+                flexShrink: 0,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
               }}
-            />
+            >
+              <motion.div
+                key="lightbox-img"
+                {...imageMotion}
+                transition={{ duration: 0.24, ease: easeOut, exit: { duration: 0.18 } }}
+                onClick={onClose}
+                onMouseEnter={reduceMotion ? undefined : (e) => {
+                  const el = e.currentTarget;
+                  const F = CURSOR_FLOAT;
+                  el.style.setProperty('--float-ms', '420ms');
+                  const off = cursorOffset(el, e.clientX, e.clientY);
+                  if (!off) return;
+                  const { yaw, pitch } = floatAngles(off.nx, off.ny);
+                  el.style.transform =
+                    `perspective(${F.perspective}px) rotateX(${pitch.toFixed(2)}deg) rotateY(${yaw.toFixed(2)}deg) translateZ(${F.rise}px) scale(1.05)`;
+                }}
+                onMouseMove={reduceMotion ? undefined : (e) => {
+                  const el = e.currentTarget;
+                  const F = CURSOR_FLOAT;
+                  el.style.setProperty('--float-ms', '160ms');
+                  const off = cursorOffset(el, e.clientX, e.clientY);
+                  if (!off) return;
+                  const { yaw, pitch } = floatAngles(off.nx, off.ny);
+                  el.style.transform =
+                    `perspective(${F.perspective}px) rotateX(${pitch.toFixed(2)}deg) rotateY(${yaw.toFixed(2)}deg) translateZ(${F.rise}px) scale(1.05)`;
+                }}
+                onMouseLeave={reduceMotion ? undefined : (e) => {
+                  const el = e.currentTarget;
+                  el.style.setProperty('--float-ms', '420ms');
+                  el.style.transform = '';
+                }}
+                style={{
+                  display: 'inline-block',
+                  cursor: 'zoom-out',
+                  willChange: 'transform, opacity',
+                  transition: 'transform var(--float-ms, 420ms) cubic-bezier(0.165,0.84,0.44,1)',
+                }}
+              >
+                <img
+                  src={confession.image}
+                  alt={`Confession ${confession.id}`}
+                  draggable={false}
+                  style={{
+                    // Absolute rather than 100%: the wrapper shrink-wraps the
+                    // image, so a percentage here would have nothing to resolve
+                    // against. Every source is 1600px wide, well past the cap, so
+                    // each note lands exactly on one edge of the frame.
+                    maxWidth: PREVIEW_FRAME.w,
+                    maxHeight: PREVIEW_FRAME.h,
+                    width: 'auto',
+                    height: 'auto',
+                    objectFit: 'contain',
+                    display: 'block',
+                  }}
+                />
+              </motion.div>
+            </div>
 
             {transcription ? (
               <motion.div
@@ -4784,7 +5034,7 @@ function ExperimentStage({ note, reduceMotion, onPrev, onNext, canNav }) {
  * The heavy three.js scene lives in CubeScene.jsx (no App import → no cycle);
  * this wrapper just owns the data + the shared Lightbox.
  */
-function CubeView({ confessions }) {
+function CubeView({ confessions, onExplore }) {
   const notes = useMemo(
     () => confessions.filter((c) => c.image),
     [confessions]
@@ -4863,6 +5113,7 @@ function CubeView({ confessions }) {
         onClose={() => setSelected(null)}
         onPrev={notes.length > 1 ? () => step(-1) : undefined}
         onNext={notes.length > 1 ? () => step(1) : undefined}
+        onExplore={onExplore}
       />
     </motion.div>
   );
@@ -5030,7 +5281,7 @@ function ExperimentView({ confessions }) {
         .exp-arrow:hover{opacity:1;background:rgba(207,202,183,0.14);}
         .exp-cat{display:block;width:100%;text-align:left;background:none;border:none;padding:5px 0;font-family:var(--font-mono);font-size:11px;letter-spacing:0.06em;text-transform:uppercase;color:rgba(207,202,183,0.5);cursor:pointer;transition:color .18s ${HOVER_EASE};}
         .exp-cat:hover{color:rgba(207,202,183,0.85);}
-        .exp-cat.is-active{color:#CFCAB7;text-decoration:underline;text-decoration-style:dotted;text-underline-offset:3px;}
+        .exp-cat.is-active{color:#CFCAB7;${LINK_UNDERLINE_CSS}}
       `}</style>
 
       {/* Left category-filter rail — single-select (click again to clear). */}
@@ -5230,6 +5481,7 @@ function ArchivePage({ confessionQuery, initialEmotion = null, initialView = 'th
   // (NoteOpenView). `{ confession, rect }`; null when closed. Desktop grid taps
   // use the Lightbox instead (see GridView tile onClick).
   const [openNote, setOpenNote] = useState(null);
+  const handleExplore = useCallback(() => setView('explore'), []);
   // Grid fly-in runs once per session; returning from dial → grid stays settled.
   const gridEntranceDoneRef = useRef(false);
   const compactNav = useArchiveNavCompact();
@@ -5411,9 +5663,9 @@ function ArchivePage({ confessionQuery, initialEmotion = null, initialView = 'th
         ) : view === 'cube' ? (
           /* CUBE tab — every note mapped onto the six faces of a rotating
              three.js cube; click a face tile to open the INDEX-style close-up. */
-          <CubeView key="cube" confessions={confessions} />
+          <CubeView key="cube" confessions={confessions} onExplore={handleExplore} />
         ) : view === 'wall' ? (
-          <WallView key="wall" confessions={confessions} sidebarInset={sidebarInset} />
+          <WallView key="wall" confessions={confessions} sidebarInset={sidebarInset} onExplore={handleExplore} />
         ) : (
           <GridView
             key="grid"
@@ -5426,6 +5678,7 @@ function ArchivePage({ confessionQuery, initialEmotion = null, initialView = 'th
             onEntranceSettled={() => {
               gridEntranceDoneRef.current = true;
             }}
+            onExplore={handleExplore}
           />
         )}
       </AnimatePresence>
@@ -5444,6 +5697,7 @@ function ArchivePage({ confessionQuery, initialEmotion = null, initialView = 'th
             onExit={() => setOpenNote(null)}
             onAbout={() => setAboutOpen(true)}
             onIndex={() => setOpenNote(null)}
+            onExplore={() => { setOpenNote(null); setView('explore'); }}
           />
         )}
       </AnimatePresence>

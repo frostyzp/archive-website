@@ -18,6 +18,7 @@ import { NOISE_GRADIENT } from './NoiseGradient';
 import { NoiseDisplaceFilter } from './NoiseDisplaceFilter';
 import { HorizontalConfessionStack, VerticalConfessionStack, DialNavHint, NavGrainFilter } from './SideDial';
 import { themeStats, sortConfessionsByEmotions, formatCategoryLabel } from './themes';
+import { LINK_UNDERLINE } from './linkUnderline';
 
 /* ─────────────────────────────────────────────────────────
  * NOTE-OPEN VIEW
@@ -211,7 +212,7 @@ const CATEGORY_DEFINITIONS = {
     'Letting AI be your voice or representative by allowing it to draft or fully respond on your behalf in professional and personal contexts.',
 };
 
-function LeftThemeDial({ emotions, activeId, onChange, reduceMotion, delay }) {
+function LeftThemeDial({ emotions, activeId, onChange, onExplore, reduceMotion, delay }) {
   const idx = Math.max(0, emotions.findIndex((e) => e.id === activeId));
   const active = emotions[idx];
 
@@ -326,6 +327,18 @@ function LeftThemeDial({ emotions, activeId, onChange, reduceMotion, delay }) {
                 onClick={() => onChange(emo.id)}
                 aria-label={`Show ${emo.label}`}
                 style={st.slotButton}
+                {...(hover || {})}
+              >
+                <span ref={setWordEl(emo.id)} style={st.word}>
+                  {formatCategoryLabel(emo.label)}
+                </span>
+              </button>
+            ) : isActive && onExplore ? (
+              <button
+                type="button"
+                onClick={() => onExplore(emo.label)}
+                title="Explore notes in this category"
+                style={{ ...st.slotButton, cursor: 'pointer' }}
                 {...(hover || {})}
               >
                 <span ref={setWordEl(emo.id)} style={st.word}>
@@ -516,6 +529,7 @@ export default function NoteOpenView({
   onExit,
   onAbout,
   onIndex,
+  onExplore,
   // When true, this renders as a persistent top-level view (the EXPLORE tab)
   // rather than a grid-click overlay: no shared-element morph, it opens on the
   // first note, sits BELOW the app's nav chrome (so the tab bar shows through),
@@ -993,6 +1007,7 @@ export default function NoteOpenView({
               emotions={emotions}
               activeId={activeId}
               onChange={handleCategoryChange}
+              onExplore={standalone ? undefined : onExplore}
               reduceMotion={reduceMotion}
               delay={reduceMotion ? 0 : CATEGORY_REVEAL_DELAY_S}
             />
@@ -1335,11 +1350,8 @@ const st = {
     opacity: 0.5,
     cursor: 'pointer',
     transition: 'opacity 0.2s ease',
-    // Reads as a hyperlink → persistent dotted underline, matching the index nav.
-    textDecorationLine: 'underline',
-    textDecorationStyle: 'dotted',
-    textDecorationThickness: '1px',
-    textUnderlineOffset: '3px',
+    // Reads as a hyperlink → the site's dotted underline, as in the index nav.
+    ...LINK_UNDERLINE,
   },
 
   // Left rotary dial — a full-height positioning context on the left edge; the

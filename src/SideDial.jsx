@@ -8,6 +8,8 @@ import {
   useInactiveCardParams,
 } from './noise.jsx';
 import { TRANSCRIPTION_TEXT } from './text';
+import { BASELINE_PROBE_STYLE, useTextDissolve } from './textDissolve';
+import { INK } from './colors';
 import { formatCategoryLabel } from './themes';
 import { useNoteSound } from './sounds';
 import { CURSOR_FLOAT, cursorOffset, floatAngles } from './cursorFloat';
@@ -684,10 +686,46 @@ const META_TIMING = {
   transcriptStart: 800, // ms to wait before the transcription reveal begins
 };
 
-/* Transcription — word-by-word stagger-fade (snappy) */
+/* Transcription — word-by-word stagger-fade (snappy). Now the no-WebGL fallback
+ * for the dissolve below; still the reveal every visitor gets if the context
+ * can't be had. */
 const TRANSCRIPT_REVEAL = {
   wordStagger: 0.018, // s between each successive word beginning to fade
   wordFadeS: 0.28, // s for a single word's opacity fade
+};
+
+/**
+ * Transcription — the WebGL mask dissolve (textDissolve.js), the same move the
+ * onboarding copy arrives on. The transcription is the one piece of handwriting
+ * on the page that has been turned into type, so having it condense out of a
+ * cloudy field rather than tick in word by word suits what it is: something
+ * being read off the note, not printed.
+ *
+ * Retuned for body copy, which the onboarding settings are actively wrong for:
+ *
+ *   maxBlur   The hero is 40px display type, where a 14px un-blur radius reads
+ *             as a soft edge. At 12.5px that radius spans a whole line and the
+ *             block dissolves in as a glow with no letters in it. 6px is about
+ *             one character here.
+ *   chroma    Off. The front's chromatic split is 2x the blur radius, so at this
+ *             size it pulled red and blue clean off strokes ~1px wide and left
+ *             the green channel sitting on them alone — the transcript came in
+ *             green. The warm flare glow, which is the nicer half of that
+ *             effect, is untouched by this.
+ *   doneAt    Early (0.88, vs 0.94), so the cross-fade to the DOM carries the
+ *             last of the resolve. Canvas type has no hinting and grayscale AA,
+ *             which at this size reads as coarse, pixelated letterforms — so
+ *             the raster is never left standing in for finished text.
+ *   stiffness Up from 9 to 14 (~1.2s rather than ~1.5s) so the transcript
+ *             resolves close to the beat the old word stagger took (~0.8s) and
+ *             the note doesn't sit half-legible.
+ */
+const TRANSCRIPT_DISSOLVE = {
+  maxBlur: 6, //     px of un-blur at the front — roughly one character wide
+  stiffness: 14, //  ~1.2s for the front to clear the block
+  chroma: 0, //      no colour split on 1px strokes
+  doneAt: 0.88, //   hand off with some blur still on, and resolve in the DOM
+  handoffS: 0.34, // longer than the default, since it is doing real work now
 };
 
 /* Inactive card opacity by ring distance from the active/centered note.
@@ -753,14 +791,14 @@ const COURIER = '"Courier New", Courier, ui-monospace, SFMono-Regular, Menlo, mo
 // Keyboard-navigation mini guide for the confession stack.
 // Top-of-view keyboard legend for the dial. Each item is a label above a dark
 // key box: EXIT sits apart from the LEFT/RIGHT pair. The boxes show plain Courier
-// glyphs for the physical key — ESC for exit, <- / -> for left/right (the arrow
-// keys or A/D both flip through notes). ASCII arrows rather than ← / → so the
-// legend reads as typed text, matching the About rail. Pressing the physical
-// key — or clicking a box — darkens that box (see `pressedKey` → `keyPressed`).
+// glyphs for the physical key — ESC for exit, ← / → for left/right (the arrow
+// keys or A/D both flip through notes). Same Unicode arrows as the theme pair
+// (↑ / ↓) so all four read as one family. Pressing the physical key — or
+// clicking a box — darkens that box (see `pressedKey` → `keyPressed`).
 const DIAL_NAV_ITEMS = [
   { id: 'esc', label: 'EXIT', kind: 'exit', aria: 'Exit view (Esc)' },
-  { id: 'left', label: 'LEFT', kind: 'arrow', dir: 'left', glyph: '<-', aria: 'Previous note (left arrow)' },
-  { id: 'right', label: 'RIGHT', kind: 'arrow', dir: 'right', glyph: '->', aria: 'Next note (right arrow)' },
+  { id: 'left', label: 'LEFT', kind: 'arrow', dir: 'left', glyph: '←', aria: 'Previous note (left arrow)' },
+  { id: 'right', label: 'RIGHT', kind: 'arrow', dir: 'right', glyph: '→', aria: 'Next note (right arrow)' },
 ];
 
 // Optional theme-nav pair for the explore stack: ↑ / ↓ step between themes.
@@ -861,10 +899,9 @@ export function DialNavHint({
   const grainId = `nav-grain-${useId().replace(/:/g, '')}`;
 
   // A single dark key box (its caption lives in the wrapping item). Glyph is the
-  // item's own `glyph` — <- / -> for the note flippers, ↑ / ↓ for the theme keys
-  // (no ASCII equivalent reads cleanly on the vertical pair) — falling back to
-  // ESC for exit. Grain rides the arrow + theme glyphs when opted in; EXIT always
-  // stays crisp.
+  // item's own `glyph` — ← / → for the note flippers, ↑ / ↓ for the theme keys
+  // — falling back to ESC for exit. Grain rides all four arrow glyphs when opted
+  // in; EXIT always stays crisp.
   const keyButton = (item) => {
     const pressed = pressedKey === item.id;
     const grained = grainArrows && (item.kind === 'arrow' || item.kind === 'cat');
@@ -892,7 +929,7 @@ export function DialNavHint({
             ...(grained ? { filter: `url(#${grainId})` } : null),
           }}
         >
-          {item.glyph ?? (item.kind === 'exit' ? 'ESC' : item.dir === 'left' ? '<-' : '->')}
+          {item.glyph ?? (item.kind === 'exit' ? 'ESC' : item.dir === 'left' ? '←' : '→')}
         </span>
       </button>
     );
@@ -994,8 +1031,8 @@ const dialNavHintStyles = {
     transform: 'translateY(1px)',
   },
   keyGlyph: {
-    // ESC / <- / -> as plain Courier glyphs (typewriter arrows) so the legend
-    // reads as monospaced text rather than drawn icons. White rather than the
+    // ESC / ← / → / ↑ / ↓ as plain Courier glyphs so the legend reads as
+    // monospaced text rather than drawn icons. White rather than the parchment
     // parchment cream used elsewhere, and near-opaque, since the grain filter
     // (see NAV_GRAIN) eats these 12px edges and costs perceived brightness.
     fontFamily: COURIER,
@@ -1047,7 +1084,7 @@ export function HorizontalConfessionStack({
   const scrollRef = useRef(null);
   const reduceMotion = useReducedMotion();
   const playNote = useNoteSound();
-  // Active card image box — anchors the crossfading meta overlay above the note.
+  // Active card wrapper — anchors the crossfading meta overlay above the note.
   const [metaAnchorEl, setMetaAnchorEl] = useState(null);
   const inactive = useInactiveCardParams();
   // Live-tunable coverflow depth (Z recession on inactive cards). The per-side
@@ -1393,6 +1430,13 @@ export function HorizontalConfessionStack({
   // scrolls (smaller = snappier); ROT_TAU decays the scroll-momentum lean.
   const TILT_TAU = 0.075;
   const ROT_TAU = 0.11;
+  // Frames per second the stack's transforms are allowed to redraw at, matching
+  // the dissolve's DISSOLVE_FPS so the whole archive steps at one film rate
+  // rather than the copy being filmic and the notes being smooth video. The
+  // easing above is time-constant based, so a coarser sample rate changes how
+  // finely the coverflow and lean are drawn, not how fast they settle. See
+  // textDissolve.js for the caveat on which rates a given display can hit.
+  const STACK_FRAME_MS = 1000 / 24 - 1;
   // Mirror the (dial-tunable) warp params so a running rAF frame — whose closure
   // was captured on an earlier render — always eases toward the current targets.
   warpRef.current = { depth: warp.depth };
@@ -1525,7 +1569,15 @@ export function HorizontalConfessionStack({
   };
 
   const tiltLoop = (ts) => {
-    let dt = (ts - (tiltLastTsRef.current || ts)) / 1000;
+    const lastTs = tiltLastTsRef.current;
+    // Hold the transforms already on screen until the next film frame is due.
+    // A woken loop (lastTs 0) always draws immediately, so a pointer landing on
+    // a card still leans on the very next paint rather than waiting out a frame.
+    if (lastTs && ts - lastTs < STACK_FRAME_MS) {
+      tiltRafRef.current = requestAnimationFrame(tiltLoop);
+      return;
+    }
+    let dt = (ts - (lastTs || ts)) / 1000;
     tiltLastTsRef.current = ts;
     if (!(dt > 0)) dt = 1 / 60;
     if (dt > 0.1) dt = 0.1; // clamp long gaps (tab away) so nothing lurches
@@ -2006,6 +2058,18 @@ export function HorizontalConfessionStack({
             // morph reads this to fly the bridge image onto the *right* card
             // (not merely whichever card is momentarily nearest centre mid-scroll).
             data-active={isActive || undefined}
+            // Anchors the meta block above this note. Deliberately the WRAPPER
+            // and not the image box inside it: the image box is the tilt target,
+            // so its box carries the cursor lean, the hover rise and the
+            // scroll-momentum spin, and a block measured off it jitters up and
+            // down while you hover the note. The wrapper is never transformed
+            // and — with the image box as its only in-flow child here — sits at
+            // exactly the same place, so the resting position is unchanged.
+            ref={
+              metaBlockCrossfade && isActive && item.copy === MIDDLE_COPY
+                ? (el) => setMetaAnchorEl(el)
+                : undefined
+            }
             initial={reduceMotion || !mountEntrance ? false : { opacity: 0, scale: 0.92 }}
             animate={{ opacity: 1, scale: 1 }}
             transition={
@@ -2038,11 +2102,6 @@ export function HorizontalConfessionStack({
             ) : null}
             <div
               data-tilt-target
-              ref={
-                metaBlockCrossfade && isActive && item.copy === MIDDLE_COPY
-                  ? (el) => setMetaAnchorEl(el)
-                  : undefined
-              }
               style={{
                 ...st.cardImageBox,
                 ...(canEnlargeImage ? { cursor: 'zoom-in' } : null),
@@ -2223,30 +2282,60 @@ export function HorizontalConfessionStack({
 /** Gap between the crossfading meta block and the note image top (px). */
 const META_CROSSFADE_GAP = 24;
 
+/** How long the block takes to glide to the incoming note's measure. */
+const META_SLOT_MOVE_S = 0.42;
+/** How long the outgoing value takes to clear before the new one types in. */
+const META_VALUE_EXIT_S = 0.14;
+
 /**
- * Pins a crossfading NoteMeta above the active card's image. The anchor element
- * is the active card's image box; position is recomputed on scroll/resize so the
- * meta stays locked above the centred note while the whole block (labels,
- * values, divider) fades out/in on note change.
+ * Pins the DATE / LOCATION block above the active card's image.
+ *
+ * The block is a PERSISTENT frame: labels and divider mount once and stay put,
+ * and only the values swap as the centred note changes (see NoteMeta's
+ * `crossfadeBlock` branch). Its measure still tracks the active note — the
+ * column is 80% of that note's width, so the divider and the value column both
+ * shift — but it animates there rather than cutting.
+ *
+ * Position comes from the centred card, with one wrinkle: on the axis the stack
+ * scrolls, the centred card is by definition at the scrollport's midpoint, so we
+ * read the midpoint instead of the card. Reading the card there would catch the
+ * incoming note wherever it currently sits off-screen and throw the block out to
+ * meet it, then drag it back as the stack scrolls in.
  */
 function MetaCrossfadeSlot({ confession, reduceMotion, columnWidth, anchorEl }) {
   const slotRef = useRef(null);
   const [pos, setPos] = useState(null);
+  // Until the first measurement lands the block has no meaningful position, so
+  // it snaps there; only later moves are worth animating.
+  const placed = useRef(false);
 
   useLayoutEffect(() => {
     if (!anchorEl) {
       setPos(null);
       return undefined;
     }
+    const scrollEl = anchorEl.closest('[data-card], [data-vcard]')?.parentElement;
     const update = () => {
-      const anchor = anchorEl.getBoundingClientRect();
       const parent = slotRef.current?.offsetParent?.getBoundingClientRect();
       if (!parent) return;
+      const anchor = anchorEl.getBoundingClientRect();
+      const port = scrollEl?.getBoundingClientRect();
       const metaH = slotRef.current?.offsetHeight ?? 0;
-      setPos({
-        top: anchor.top - parent.top - META_CROSSFADE_GAP - metaH,
-        left: anchor.left - parent.left + anchor.width / 2,
-      });
+      const scrollsX = !!port && scrollEl.scrollWidth > scrollEl.clientWidth + 1;
+      const scrollsY = !!port && scrollEl.scrollHeight > scrollEl.clientHeight + 1;
+      const midX = scrollsX ? port.left + port.width / 2 : anchor.left + anchor.width / 2;
+      const cardTop = scrollsY ? port.top + (port.height - anchor.height) / 2 : anchor.top;
+      const next = {
+        top: cardTop - parent.top - META_CROSSFADE_GAP - metaH,
+        left: midX - parent.left,
+      };
+      // Scroll fires this every frame; bail on no-ops so a scroll in progress
+      // can't keep restarting the glide out from under itself.
+      setPos((prev) =>
+        prev && Math.abs(prev.top - next.top) < 0.5 && Math.abs(prev.left - next.left) < 0.5
+          ? prev
+          : next
+      );
     };
     update();
     const raf = requestAnimationFrame(update);
@@ -2254,7 +2343,6 @@ function MetaCrossfadeSlot({ confession, reduceMotion, columnWidth, anchorEl }) 
     ro?.observe(anchorEl);
     if (slotRef.current) ro?.observe(slotRef.current);
     window.addEventListener('resize', update);
-    const scrollEl = anchorEl.closest('[data-card], [data-vcard]')?.parentElement;
     scrollEl?.addEventListener('scroll', update, { passive: true });
     return () => {
       cancelAnimationFrame(raf);
@@ -2264,35 +2352,41 @@ function MetaCrossfadeSlot({ confession, reduceMotion, columnWidth, anchorEl }) 
     };
   }, [anchorEl, confession?.id, columnWidth]);
 
+  useEffect(() => {
+    if (pos) placed.current = true;
+  }, [pos]);
+
   if (!confession) return null;
   const date = confession?.metadata?.date || '';
   const location = confession?.metadata?.location || '';
   if (!date && !location) return null;
 
   return (
-    <div
+    <motion.div
       ref={slotRef}
-      style={{
-        position: 'absolute',
+      // `x` rather than a `transform` string: motion owns the transform on its
+      // own elements, so the centring offset has to go through it.
+      style={{ position: 'absolute', x: '-50%', zIndex: 6, pointerEvents: 'none' }}
+      initial={false}
+      animate={{
         top: pos?.top ?? -9999,
-        left: pos?.left ?? '50%',
-        transform: 'translateX(-50%)',
+        left: pos?.left ?? 0,
         width: columnWidth,
-        zIndex: 6,
-        pointerEvents: 'none',
-        visibility: pos ? 'visible' : 'hidden',
+        opacity: pos ? 1 : 0,
       }}
+      transition={
+        reduceMotion || !placed.current
+          ? { duration: 0 }
+          : { duration: META_SLOT_MOVE_S, ease: EASE_OUT }
+      }
     >
-      <AnimatePresence mode="wait">
-        <NoteMeta
-          key={confession.id}
-          confession={confession}
-          reduceMotion={reduceMotion}
-          columnWidth="100%"
-          crossfadeBlock
-        />
-      </AnimatePresence>
-    </div>
+      <NoteMeta
+        confession={confession}
+        reduceMotion={reduceMotion}
+        columnWidth="100%"
+        crossfadeBlock
+      />
+    </motion.div>
   );
 }
 
@@ -2304,27 +2398,34 @@ function MetaCrossfadeSlot({ confession, reduceMotion, columnWidth, anchorEl }) 
  * "4/22/2026" is a single word and would get no stagger at all.
  */
 function MetaValueReveal({ text, reduceMotion }) {
-  if (!text || reduceMotion) return <span style={st.sideMetaValue}>{text}</span>;
   return (
-    <span style={st.sideMetaValue}>
-      {[...text].map((ch, i) => (
-        <motion.span
-          key={i}
-          // `pre` keeps the spaces inside a value from collapsing now that each
-          // character is its own span.
-          style={{ whiteSpace: 'pre' }}
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={{
-            duration: TRANSCRIPT_REVEAL.wordFadeS,
-            ease: EASE_OUT,
-            delay: i * TRANSCRIPT_REVEAL.wordStagger,
-          }}
-        >
-          {ch}
-        </motion.span>
-      ))}
-    </span>
+    // A motion root so the outgoing value can clear itself before the incoming
+    // one types in (the caller swaps these inside an AnimatePresence).
+    <motion.span
+      style={st.sideMetaValue}
+      exit={{ opacity: 0 }}
+      transition={{ duration: reduceMotion ? 0 : META_VALUE_EXIT_S, ease: EASE_OUT }}
+    >
+      {!text || reduceMotion
+        ? text
+        : [...text].map((ch, i) => (
+            <motion.span
+              key={i}
+              // `pre` keeps the spaces inside a value from collapsing now that each
+              // character is its own span.
+              style={{ whiteSpace: 'pre' }}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              transition={{
+                duration: TRANSCRIPT_REVEAL.wordFadeS,
+                ease: EASE_OUT,
+                delay: i * TRANSCRIPT_REVEAL.wordStagger,
+              }}
+            >
+              {ch}
+            </motion.span>
+          ))}
+    </motion.span>
   );
 }
 
@@ -2333,8 +2434,9 @@ function MetaValueReveal({ text, reduceMotion }) {
  * block: a DATE row and a LOCATION row, each split 50/50 — the label fills the
  * left half and the value is left-aligned from the horizontal midpoint.
  * Sourced from sheet columns P (Date) and Q (Location). On the EXPLORE tab the
- * values stagger in per character (see MetaValueReveal); the dial page fades each
- * value in as one piece after META_TIMING.metaRow.
+ * frame persists across notes and only the values swap, staggering in per
+ * character (see MetaValueReveal); the dial page fades each value in as one
+ * piece after META_TIMING.metaRow.
  */
 function NoteMeta({ confession, reduceMotion, columnWidth = '100%', crossfadeBlock = false }) {
   const date = confession?.metadata?.date || '';
@@ -2350,27 +2452,26 @@ function NoteMeta({ confession, reduceMotion, columnWidth = '100%', crossfadeBlo
   ];
 
   if (crossfadeBlock) {
-    // EXPLORE tab: the label scaffold and divider crossfade as one unit when the
-    // active note changes (parent wraps in AnimatePresence), while the values
-    // reveal on the transcript's stagger so the whole block reads as one gesture.
+    // EXPLORE tab: the label scaffold and divider are a fixed frame that stays
+    // mounted across note changes — only the values swap, so the block reads as
+    // one continuous object being relabelled rather than something that blinks
+    // out and back. Values reveal on the transcript's stagger, which is why the
+    // outgoing one clears first (mode="wait") instead of crossfading under it.
     return (
-      <motion.div
-        style={{ ...st.metaAboveRow, width: columnWidth }}
-        initial={reduceMotion ? false : { opacity: 0 }}
-        animate={{ opacity: 1 }}
-        exit={reduceMotion ? undefined : { opacity: 0 }}
-        transition={{
-          duration: reduceMotion ? 0 : TRANSCRIPT_FADE_S,
-          ease: EASE_OUT,
-        }}
-      >
+      <div style={{ ...st.metaAboveRow, width: columnWidth }}>
         {rows.map(([label, value]) => (
           <div key={label} style={st.metaAboveItem}>
             <span style={st.sideMetaLabel}>{label}</span>
-            <MetaValueReveal text={value} reduceMotion={reduceMotion} />
+            <AnimatePresence mode="wait" initial={false}>
+              <MetaValueReveal
+                key={`${confession?.id}-${label}`}
+                text={value}
+                reduceMotion={reduceMotion}
+              />
+            </AnimatePresence>
           </div>
         ))}
-      </motion.div>
+      </div>
     );
   }
 
@@ -2428,6 +2529,11 @@ function transcriptFadeMask(fadeTop, fadeBottom) {
 function TranscriptReveal({ text, reduceMotion, instantWords = false }) {
   const words = useMemo(() => text.trim().split(/\s+/), [text]);
   const scrollRef = useRef(null);
+  // The dissolve paints into `hostRef` (a positioned wrapper sized to the full
+  // transcript, so a scrolled-off tail is rasterized too) from the words laid
+  // out inside `textRef`.
+  const hostRef = useRef(null);
+  const textRef = useRef(null);
   // Whether there's clipped (scrollable) text above / below the current view.
   const [fade, setFade] = useState({ top: false, bottom: false });
 
@@ -2455,6 +2561,25 @@ function TranscriptReveal({ text, reduceMotion, instantWords = false }) {
 
   const maskImage = transcriptFadeMask(fade.top, fade.bottom);
 
+  // Mounted per note (both stacks key this component by confession id), so the
+  // dissolve replays from the top every time the active note changes. The delay
+  // is the storyboard's own transcript beat, which also puts the raster safely
+  // after the card's entrance has settled — measuring a mid-transform host
+  // would rasterize at the wrong size.
+  const { live, engaged } = useTextDissolve({
+    hostRef,
+    textRef,
+    seedText: text,
+    delayS: META_TIMING.transcriptStart / 1000,
+    maxBlur: TRANSCRIPT_DISSOLVE.maxBlur,
+    stiffness: TRANSCRIPT_DISSOLVE.stiffness,
+    chroma: TRANSCRIPT_DISSOLVE.chroma,
+    doneAt: TRANSCRIPT_DISSOLVE.doneAt,
+    handoffS: TRANSCRIPT_DISSOLVE.handoffS,
+    glow: INK, // the site's warm off-white, so the front's flare reads as ink
+    disabled: reduceMotion,
+  });
+
   return (
     <>
       <style>{'.transcript-reveal::-webkit-scrollbar{width:0;height:0;display:none}'}</style>
@@ -2464,26 +2589,46 @@ function TranscriptReveal({ text, reduceMotion, instantWords = false }) {
         onScroll={updateFade}
         style={{ ...st.transcriptReveal, WebkitMaskImage: maskImage, maskImage }}
       >
-        {reduceMotion
-          ? text
-          : words.map((word, i) => (
-              <motion.span
-                key={i}
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                transition={{
-                  // EXPLORE: each word pops in at full opacity on its beat (no
-                  // per-word fade). Dial page keeps the staggered fade-in.
-                  duration: instantWords || reduceMotion ? 0 : TRANSCRIPT_REVEAL.wordFadeS,
-                  ease: EASE_OUT,
-                  delay:
-                    META_TIMING.transcriptStart / 1000 +
-                    i * TRANSCRIPT_REVEAL.wordStagger,
-                }}
-              >
-                {i < words.length - 1 ? `${word} ` : word}
-              </motion.span>
-            ))}
+        {reduceMotion ? (
+          text
+        ) : (
+          <div ref={hostRef} style={{ position: 'relative' }}>
+            <div ref={textRef}>
+              {words.map((word, i) => (
+                <motion.span
+                  key={i}
+                  data-word=""
+                  initial={{ opacity: 0 }}
+                  // Held at 0 while the canvas has the floor; `live` is the
+                  // hand-off (dissolve done) or, with no WebGL, the cue to run
+                  // the word stagger that used to be the only reveal.
+                  animate={{ opacity: live ? 1 : 0 }}
+                  transition={
+                    engaged
+                      ? // Cross-fade under the canvas fading out, in step with it.
+                        { duration: TRANSCRIPT_DISSOLVE.handoffS, ease: 'linear' }
+                      : {
+                          // EXPLORE: each word pops in at full opacity on its beat
+                          // (no per-word fade). Dial page keeps the staggered
+                          // fade-in. No transcriptStart delay here — `live` only
+                          // flips at that beat.
+                          duration: instantWords ? 0 : TRANSCRIPT_REVEAL.wordFadeS,
+                          ease: EASE_OUT,
+                          delay: i * TRANSCRIPT_REVEAL.wordStagger,
+                        }
+                  }
+                >
+                  {word}
+                  {/* Reports this line's true baseline to the rasterizer; see
+                      BASELINE_PROBE_STYLE. Must sit between the word and its
+                      trailing space. */}
+                  <i data-baseline="" aria-hidden="true" style={BASELINE_PROBE_STYLE} />
+                  {i < words.length - 1 ? ' ' : ''}
+                </motion.span>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </>
   );

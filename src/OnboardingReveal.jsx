@@ -1,11 +1,29 @@
 import { createElement, useEffect, useId, useMemo, useRef, useState } from 'react';
-import { AnimatePresence, motion, useInView, useReducedMotion, useScroll, useSpring } from 'motion/react';
+import {
+  AnimatePresence,
+  motion,
+  useInView,
+  useReducedMotion,
+  useScroll,
+  useSpring,
+  useTransform,
+} from 'motion/react';
 import * as opentype from 'opentype.js';
 import { useDialKit } from 'dialkit';
 import { INK, inkA } from './colors';
-import { INK_UNDERLINE, InkUnderline, markPhrases, splitWordCore, underlineDelay } from './InkUnderline';
-import { TunableGrainBackground } from './noise';
+import { LINK_UNDERLINE } from './linkUnderline';
+import {
+  CARD_FILTER_ID,
+  CardNoiseFilterDefs,
+  TunableGrainBackground,
+  useInactiveCardParams,
+} from './noise';
 import { NOTE_STILL_IDS } from './noteStills';
+import AsciiWall from './AsciiWall';
+import RevealWordsGL from './RevealWordsGL';
+import WordmarkGL from './WordmarkGL';
+import WordmarkDraw from './WordmarkDraw';
+import BodyKicker from './BodyKicker';
 
 /* ─────────────────────────────────────────────────────────────────────
  * ONBOARDING SCROLL STORYBOARD  (mobile-first editorial reveal)
@@ -17,14 +35,18 @@ import { NOTE_STILL_IDS } from './noteStills';
  *   HERO      title "What We Tell AI" (Figma 280:71) reveals word-by-word in
  *             TRJN DaVinci on two lines; opening question fades in beneath, then
  *             the scroll arrow fades in last
- *   CUBE      the glowing cube fades in as its blur / grayscale filter
- *             resolves over ~1.9s, then the intro line reveals word-by-word
+ *   BOOTH     the Dolores Park booth still slides in from the left, then the
+ *             intro line materializes through the WebGL mask dissolve
  *   NOTE ①    a handwritten confession fades in through the filter
- *   BODY      "AI is entering into the most personal aspects…" word-by-word
+ *   BODY      "AI is entering into the most personal aspects…" dissolves in
  *   NOTE ②    confession fades in through the filter
- *   FRAGMENT  "And even substituting our human relationships…" (word-by-word)
+ *   FRAGMENT  "And even substituting our human relationships…" dissolves in
  *   NOTE ③    confession fades in through the filter
  *   QUESTION  the closing statement + ENTER cta
+ *
+ * The four display copy blocks use RevealWordsGL (one-shot WebGL mask dissolve,
+ * then a hand-off to live DOM text); RevealWords below is the word-by-word
+ * cascade they used to use, kept as the drop-in alternative.
  *
  * A SKIP control is sticky (fixed) top-right the whole way down.
  * ───────────────────────────────────────────────────────────────────── */
@@ -33,16 +55,9 @@ const ease = [0.22, 1, 0.36, 1];
 const SERIF = "'Faktory', Georgia, serif";
 const MONO = 'var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace)';
 
-// Dotted hyperlink underline — matches the archive nav (ARCHIVE_LINK_UNDERLINE in
-// App.jsx) so the Skip Intro / Enter the archive links read as the same kind of
-// text link. Applied to the label <span> (not the flex anchor) so it underlines
-// only the word, not the icon gap.
-const ONBOARDING_LINK_UNDERLINE = {
-  textDecorationLine: 'underline',
-  textDecorationStyle: 'dotted',
-  textDecorationThickness: '1px',
-  textUnderlineOffset: '3px',
-};
+// Applied to the label <span> rather than to the flex anchor, so it underlines
+// only the word and not the icon gap.
+const ONBOARDING_LINK_UNDERLINE = LINK_UNDERLINE;
 
 /** How words fade in (per-word cascade — opacity only, no rise/blur). One place
  *  for all text timing. */
@@ -205,11 +220,25 @@ const HERO_GLITCH_EFFECTS = [
 ];
 const HERO_GLITCH_WEIGHT_TOTAL = HERO_GLITCH_EFFECTS.reduce((n, e) => n + e.w, 0);
 
-// When true the hero wordmark is drawn on letter-by-letter (SVG trim path) via
-// `HeroTitleDraw` instead of the word-by-word opacity fade of `HeroTitleText`.
-// Flip to false to restore the plain webfont reveal.
-// Trace-path draw disabled for now — falls back to the plain webfont reveal.
-const HERO_DRAW_ON = false;
+// Which treatment plays the hero wordmark. All three sit in the same beat and
+// take the same props, so this is a one-word swap.
+//
+//   'hand'  the wordmark art written on stroke by stroke — see WordmarkDraw.
+//           Each of the art's 22 pen strokes is uncovered along its own axis, so
+//           the brush texture survives and the cadence reads as handwriting.
+//   'gl'    the same art materialized through the WebGL mask dissolve — see
+//           WordmarkGL. Also texture-preserving, but it blooms rather than writes.
+//   'draw'  letter-by-letter SVG trim path off the TRJN DaVinci outlines. Only
+//           works on monoline type — it throws texture away.
+//   'text'  the plain word-by-word webfont fade.
+const HERO_MODE = 'hand';
+
+/* Tick rhythm for the scroll progress rule at the top of the page. Applied as a
+   mask so the dashes are cut out of whatever the bar is painted with, leaving
+   its faint-to-bright ramp intact. ~11px period puts roughly 85 ticks across a
+   laptop, fine enough to read as a measured rule rather than as segments. */
+const PROGRESS_DASHES =
+  'repeating-linear-gradient(90deg, #000 0 5px, transparent 5px 11px)';
 // Letter-by-letter reveal, one glyph after the next. Glyph outlines are pulled
 // from the TRJN DaVinci face (opentype.js). Two modes:
 //   'fill'    — sweep the SOLID letter in behind a per-letter clip that wipes
@@ -945,27 +974,24 @@ function HeroTitleDraw({ hold = false, onRevealComplete, reduceMotion = false })
 
 const INTRO_LINE =
   'We asked strangers to write a confession about their relationship with AI — artificial intelligence.';
-const BODY_LINE =
-  'AI is entering into the most personal aspects of our lives, changing how we communicate, work, and think…';
+// Left hanging on purpose — BodyKicker finishes the sentence with the three
+// verbs, each set at its own angle. Line breaks are authored, not wrapped, so
+// the rag matches the Figma comp at every viewport width.
+const BODY_LINE = [
+  'AI',
+  'is entering',
+  'into the most personal',
+  'aspects of our lives,',
+  'changing how',
+  'we',
+].join('\n');
 const FRAGMENT_LINE = 'And even substituting our human relationships…';
-const FINAL_QUESTION = 'Every note is a real story, from a real person, about living with this new technology.';
-
-/**
- * The phrases each beat underlines (see InkUnderline). Kept beside the copy so a
- * rewrite can't silently orphan a mark — a phrase that no longer appears in its
- * line just draws nothing.
- *
- * Deliberately sparse: one mark per beat (two in the closing statement, where
- * the parallel "real story / real person" IS the point). Punctuation is ignored
- * when matching, so these stay plain prose.
- *
- * Module-level constants rather than inline arrays so the prop is referentially
- * stable across renders.
- */
-const INTRO_MARKS = ['relationship with AI'];
-const BODY_MARKS = ['personal aspects'];
-const FRAGMENT_MARKS = ['human relationships'];
-const FINAL_MARKS = ['real story', 'real person'];
+const FINAL_QUESTION = [
+  'Every note is a real story',
+  'from a real person',
+  'about living with',
+  'this new technology',
+].join('\n');
 
 const NOTES = [
   {
@@ -995,11 +1021,6 @@ const noteSrc = (id) => `/confession_notes_2/${id}.webp`;
  * to reveal it one character at a time at a steady cadence instead (no caret).
  * The whole string is exposed once to assistive tech via aria-label; the
  * animated fragments are aria-hidden.
- *
- * `underline` takes plain-prose phrases ("relationship with AI") and draws a
- * hand-drawn ink stroke under each one once the line has finished revealing —
- * see InkUnderline. Matching ignores punctuation, so the phrase doesn't have to
- * mirror the sentence's commas.
  */
 function RevealWords({
   text,
@@ -1008,7 +1029,6 @@ function RevealWords({
   delayStart = 0,
   typewriter = false,
   hold = false,
-  underline,
   style,
 }) {
   const ref = useRef(null);
@@ -1019,13 +1039,6 @@ function RevealWords({
   const show = inView && !hold;
 
   const words = useMemo(() => text.split(' '), [text]);
-  // Keyed on the joined phrases so an inline array literal at the callsite
-  // doesn't invalidate this every render.
-  const phraseKey = underline?.join('|') ?? '';
-  const marks = useMemo(
-    () => markPhrases(words, phraseKey ? phraseKey.split('|') : null),
-    [words, phraseKey]
-  );
 
   // Typewriter: reveal each glyph in reading order at a steady cadence. Chars
   // are laid out (invisible) from the first frame, so the line breaks are fixed
@@ -1056,50 +1069,66 @@ function RevealWords({
   return createElement(
     as,
     { ref, 'aria-label': text, style: { margin: 0, ...style } },
-    words.map((w, i) => {
-      const mark = marks.get(i);
-      // Marked words keep their punctuation OUTSIDE the stroke, so the line
-      // runs under the letters only.
-      const [pre, core, post] = mark ? splitWordCore(w) : ['', w, ''];
-      return (
-        <motion.span
-          key={i}
-          aria-hidden="true"
-          initial={reduce ? false : { opacity: 0 }}
-          animate={show ? { opacity: 1 } : undefined}
-          transition={{
-            duration: reduce ? 0 : cfg.durS,
-            ease,
-            delay: reduce ? 0 : delayStart + i * cfg.staggerS,
-          }}
-          style={{ display: 'inline-block', marginRight: '0.28em' }}
-        >
-          {mark ? (
-            <>
-              {pre}
-              <InkUnderline
-                show={show}
-                instant={reduce}
-                seedKey={text}
-                delayS={underlineDelay({ mark, delayStart, cfg: INK_UNDERLINE, wordCfg: cfg })}
-              >
-                {core}
-              </InkUnderline>
-              {post}
-            </>
-          ) : (
-            w
-          )}
-        </motion.span>
-      );
-    })
+    words.map((w, i) => (
+      <motion.span
+        key={i}
+        aria-hidden="true"
+        initial={reduce ? false : { opacity: 0 }}
+        animate={show ? { opacity: 1 } : undefined}
+        transition={{
+          duration: reduce ? 0 : cfg.durS,
+          ease,
+          delay: reduce ? 0 : delayStart + i * cfg.staggerS,
+        }}
+        style={{ display: 'inline-block', marginRight: '0.28em' }}
+      >
+        {w}
+      </motion.span>
+    ))
   );
 }
 
 /**
- * A confession still (or the hero cube) that fades in WHILE a blur / grayscale
- * / brightness filter resolves over time — like a print developing. Driven by
- * scroll-into-view.
+ * The EXPLORE page's inactive→active card treatment, replayed on a note as it
+ * slides in. Values are lifted from the stack's own source so the two stay
+ * recognizably the same move: the degraded start comes from
+ * `useInactiveCardParams` (blur / grayscale / opacity), the curves from
+ * `st.cardImg`'s transition, and the grain hold from `GRAIN_HOLD_MS` — all in
+ * src/SideDial.jsx.
+ *
+ * Three differences. On EXPLORE the note is already on screen when you select
+ * it, so it sharpens the instant you do; here it is still travelling, so the
+ * resolve is held until `activateAtS` and lands as the note settles. EXPLORE
+ * snaps the blur/grayscale off, because CSS can't interpolate a filter chain
+ * that contains a `url()` — this splits the two across nested elements (grain on
+ * the wrapper, blur/grayscale on the image) in the same order, so the resolve
+ * can actually animate. And the stack's scale-up is dropped entirely: the note
+ * is already moving across the page, so growing it as well read as two moves at
+ * once. It develops at its final size.
+ */
+const CARD_ACTIVATE = {
+  // Fallbacks only — the live values come from the shared "Inactive Cards"
+  // DialKit panel, so dialing the stack's degraded look dials this too.
+  // No `fromScale`: the note travels and develops, but never resizes — see below.
+  fromOpacity: 0.75,
+  fromBlur: 4, //         px
+  fromGrayscale: 1,
+  resolveS: 0.4, //       st.cardImg transform duration
+  resolveEase: [0.33, 1, 0.68, 1],
+  opacityS: 0.3, //       st.cardImg opacity duration
+  opacityEase: [0.4, 0, 0.2, 1],
+  opacityDelayS: 0.12, // opacity trails the transform
+  grainHoldS: 0.35, //    GRAIN_HOLD_MS — noise lingers after the note is sharp
+  activateAtS: 0.34, //   beat into the slide where it becomes "active"
+};
+
+/**
+ * A confession still (or the hero cube) that reveals on scroll-into-view.
+ *
+ * Default is a develop-in-place fade — blur / grayscale / brightness resolving
+ * over time, like a print coming up. With `slideFrom`, the note instead travels
+ * in from that side and runs the EXPLORE page's inactive→active card treatment
+ * as it arrives (see CARD_ACTIVATE).
  */
 function RevealImage({ src, alt = '', width, maxHeight, aspectRatio, cfg = IMAGE, glow = false, serial, transcript, hold = false, slideFrom }) {
   const ref = useRef(null);
@@ -1117,8 +1146,33 @@ function RevealImage({ src, alt = '', width, maxHeight, aspectRatio, cfg = IMAGE
   const sliding = slideFrom === 'left' || slideFrom === 'right';
   const dir = slideFrom === 'left' ? -1 : 1;
 
+  // Shared "Inactive Cards" DialKit panel — tuning the stack tunes this too.
+  const inactive = useInactiveCardParams();
+  const activating = sliding && !reduce;
+  const grainEnabled = activating && (inactive.noise?.enabled ?? true);
+  const [grainHeld, setGrainHeld] = useState(true);
+
+  // Same shape as the stack's grain hold: the note is sharp first, then the
+  // noise wears off a beat later.
+  useEffect(() => {
+    if (!grainEnabled || !show) return undefined;
+    setGrainHeld(true);
+    const t = setTimeout(
+      () => setGrainHeld(false),
+      (CARD_ACTIVATE.activateAtS + CARD_ACTIVATE.resolveS + CARD_ACTIVATE.grainHoldS) * 1000
+    );
+    return () => clearTimeout(t);
+  }, [grainEnabled, show]);
+
+  const showGrain = grainEnabled && grainHeld;
+
   const from = sliding
-    ? { opacity: 0, x: dir * SLIDE.x, rotate: dir * SLIDE.rotate }
+    ? {
+        opacity: inactive.opacity ?? CARD_ACTIVATE.fromOpacity,
+        filter: `blur(${inactive.blur ?? CARD_ACTIVATE.fromBlur}px) grayscale(${
+          inactive.grayscale ?? CARD_ACTIVATE.fromGrayscale
+        })`,
+      }
     : {
         opacity: 0,
         y: cfg.riseY ?? IMAGE.riseY,
@@ -1126,9 +1180,50 @@ function RevealImage({ src, alt = '', width, maxHeight, aspectRatio, cfg = IMAGE
         filter: `blur(${cfg.fromBlur ?? IMAGE.fromBlur}px) grayscale(${cfg.fromGrayscale ?? IMAGE.fromGrayscale}) brightness(${cfg.fromBrightness ?? IMAGE.fromBrightness})`,
       };
   const to = sliding
-    ? { opacity: 1, x: 0, rotate: 0 }
+    ? { opacity: 1, filter: 'blur(0px) grayscale(0)' }
     : { opacity: 1, y: 0, scale: 1, filter: 'blur(0px) grayscale(0) brightness(1)' };
-  const durS = sliding ? SLIDE.durS : (cfg.fadeS ?? IMAGE.fadeS);
+
+  const imgTransition = sliding
+    ? {
+        filter: { duration: CARD_ACTIVATE.resolveS, ease: CARD_ACTIVATE.resolveEase, delay: CARD_ACTIVATE.activateAtS },
+        opacity: {
+          duration: CARD_ACTIVATE.opacityS,
+          ease: CARD_ACTIVATE.opacityEase,
+          delay: CARD_ACTIVATE.activateAtS + CARD_ACTIVATE.opacityDelayS,
+        },
+      }
+    : { duration: reduce ? 0 : (cfg.fadeS ?? IMAGE.fadeS), ease, delay: reduce ? 0 : cfg.delayS ?? 0 };
+
+  const img = (
+    <motion.img
+      src={src}
+      alt={alt}
+      draggable={false}
+      loading="eager"
+      onLoad={() => setDecoded(true)}
+      onError={() => setDecoded(true)}
+      initial={reduce ? false : from}
+      animate={show ? to : undefined}
+      transition={imgTransition}
+      style={{
+        display: 'block',
+        // `maxHeight` → height-driven: contain the image within a viewport-tall
+        // box, letting width follow the aspect ratio. Uses a viewport-relative
+        // max width (not 100%) so the hero can break out of the narrow text
+        // column to reach its height cap, while never overflowing the screen.
+        // Otherwise fall back to width-driven sizing.
+        ...(maxHeight
+          ? { width: 'auto', height: 'auto', maxWidth: '96vw', maxHeight }
+          : { width: width || 'min(100%, 560px)', height: 'auto' }),
+        aspectRatio,
+        objectFit: 'contain',
+        borderRadius: 2,
+        // Sliding notes animate their own filter (blur/grayscale), so leave it
+        // to motion rather than pinning it here.
+        ...(sliding ? null : { filter: glow ? 'drop-shadow(0 0 40px rgba(120,150,255,0.14))' : 'none' }),
+      }}
+    />
+  );
 
   return (
     <figure
@@ -1142,32 +1237,28 @@ function RevealImage({ src, alt = '', width, maxHeight, aspectRatio, cfg = IMAGE
         width: '100%',
       }}
     >
-      <motion.img
-        src={src}
-        alt={alt}
-        draggable={false}
-        loading="eager"
-        onLoad={() => setDecoded(true)}
-        onError={() => setDecoded(true)}
-        initial={reduce ? false : from}
-        animate={show ? to : undefined}
-        transition={{ duration: reduce ? 0 : durS, ease, delay: reduce ? 0 : cfg.delayS ?? 0 }}
-        style={{
-          display: 'block',
-          // `maxHeight` → height-driven: contain the image within a viewport-tall
-          // box, letting width follow the aspect ratio. Uses a viewport-relative
-          // max width (not 100%) so the hero can break out of the narrow text
-          // column to reach its height cap, while never overflowing the screen.
-          // Otherwise fall back to width-driven sizing.
-          ...(maxHeight
-            ? { width: 'auto', height: 'auto', maxWidth: '96vw', maxHeight }
-            : { width: width || 'min(100%, 560px)', height: 'auto' }),
-          aspectRatio,
-          objectFit: 'contain',
-          borderRadius: 2,
-          filter: glow ? 'drop-shadow(0 0 40px rgba(120,150,255,0.14))' : 'none',
-        }}
-      />
+      {sliding ? (
+        <>
+          {/* Mounted only while the grain is up, so the filter's animated seed
+              isn't driving a rAF loop for the whole page. */}
+          {showGrain && <CardNoiseFilterDefs params={inactive} />}
+          <motion.div
+            initial={reduce ? false : { opacity: 0, x: dir * SLIDE.x, rotate: dir * SLIDE.rotate }}
+            animate={show ? { opacity: 1, x: 0, rotate: 0 } : undefined}
+            transition={{ duration: reduce ? 0 : SLIDE.durS, ease }}
+            style={{
+              width: '100%',
+              display: 'flex',
+              justifyContent: 'center',
+              filter: showGrain ? `url(#${CARD_FILTER_ID})` : 'none',
+            }}
+          >
+            {img}
+          </motion.div>
+        </>
+      ) : (
+        img
+      )}
       {(transcript || serial) && (
         <motion.figcaption
           initial={reduce ? false : { opacity: 0 }}
@@ -1283,21 +1374,16 @@ function PlaceholderBox({ width, aspectRatio = '1024 / 729', label = 'placeholde
   );
 }
 
-/** The two confession-booth stills that open the intro (the Dolores Park
- *  "Confession Box" sign + the example-secrets table). Laid out like a scrapbook
- *  — a taller portrait print on the left, a wider landscape print dropped a
- *  little lower on the right. Each slides in from its own side (left from left,
- *  right from right) with a slight tilt, matching the confession-note slide-in.
- *  The assets already carry their own white border + tilt on a black field, so
- *  the corners melt into the near-black page and no extra frame is needed. */
-function IntroBoothCollage({ width }) {
+/** The confession-booth still that opens the intro — the Dolores Park
+ *  "Confession Box" sign. Centered, sliding in from the left with a slight tilt
+ *  (matching the confession-note slide-in, and setting up the alternation with
+ *  the first note, which arrives from the right). The asset already carries its
+ *  own white border + tilt on a black field, so the corners melt into the
+ *  near-black page and no extra frame is needed. */
+function IntroBoothStill({ width }) {
   const ref = useRef(null);
   const inView = useInView(ref, IN_VIEW);
   const reduce = useReducedMotion();
-  const fromL = { opacity: 0, x: -SLIDE.x, rotate: -SLIDE.rotate };
-  const fromR = { opacity: 0, x: SLIDE.x, rotate: SLIDE.rotate };
-  const to = { opacity: 1, x: 0, rotate: 0 };
-  const dur = reduce ? 0 : SLIDE.durS;
   return (
     <div
       ref={ref}
@@ -1306,7 +1392,6 @@ function IntroBoothCollage({ width }) {
         maxWidth: '100%',
         display: 'flex',
         justifyContent: 'center',
-        alignItems: 'flex-start',
       }}
     >
       <motion.img
@@ -1314,29 +1399,10 @@ function IntroBoothCollage({ width }) {
         alt="A hand-painted “Confession Box — everyone has an AI secret” sign staked in Dolores Park."
         draggable={false}
         loading="eager"
-        initial={reduce ? false : fromL}
-        animate={inView ? to : undefined}
-        transition={{ duration: dur, ease }}
+        initial={reduce ? false : { opacity: 0, x: -SLIDE.x, rotate: -SLIDE.rotate }}
+        animate={inView ? { opacity: 1, x: 0, rotate: 0 } : undefined}
+        transition={{ duration: reduce ? 0 : SLIDE.durS, ease }}
         style={{ flex: '0 0 auto', width: '56%', height: 'auto', display: 'block' }}
-      />
-      <motion.img
-        src="/intro-booth-table.png"
-        alt="The booth table: framed example confessions, a drop box, and a “follow along” QR code."
-        draggable={false}
-        loading="eager"
-        initial={reduce ? false : fromR}
-        animate={inView ? to : undefined}
-        transition={{ duration: dur, ease, delay: reduce ? 0 : 0.15 }}
-        style={{
-          flex: '0 0 auto',
-          width: '62%',
-          height: 'auto',
-          display: 'block',
-          marginTop: 'clamp(18px, 5vw, 52px)',
-          // Pull the close-up left so it overlaps the park shot — a stacked,
-          // scattered-photo look rather than two tiles with a gutter.
-          marginLeft: '-18%',
-        }}
       />
     </div>
   );
@@ -1363,9 +1429,10 @@ const SERIAL_STYLE = {
 };
 
 /** A vertically-generous section so each block reveals as its own beat. */
-function Beat({ children, minVh = 0, style }) {
+function Beat({ children, minVh = 0, style, ref }) {
   return (
     <section
+      ref={ref}
       style={{
         width: '100%',
         display: 'flex',
@@ -1399,10 +1466,9 @@ function Beat({ children, minVh = 0, style }) {
  *            on exactly `totalMs` no matter how many `flips` there are. So
  *            `flips` sets the CADENCE (more flips = quicker cuts), while
  *            firstHold / lastHold only shape the acceleration curve.
- *   ~2700ms  ENDGAME — the last `shrinkCount` stills stop settling in place
- *            and instead whip DOWN in scale (1.0 → shrinkTo, stepped so each
- *            picks up where the last landed) on a fast ease-out, so the run
- *            visibly collapses away instead of just stopping.
+ *   ~2500ms  COLLAPSE — the whole stack scales down hard (1.0 → collapseTo)
+ *            over the last `collapseMs` (500ms), so the riffle visibly recedes
+ *            before the hero crossfade.
  *   ~3000ms  the card crossfades out (fadeOutS) → the hero title reveals.
  *
  * Every knob lives in the LOADER config below and is exposed live in the
@@ -1422,9 +1488,12 @@ const LOADER = {
   maxTilt: 3, //       deg of random ± rotation per still
   fadeOutS: 0.22, //   loader → hero crossfade-out
   grayscale: true, //  render the stills black & white
-  // Endgame collapse. The trailing stills abandon the settle-in-place and snap
-  // DOWN instead, stepping toward shrinkTo so the stack reads as receding.
-  shrinkCount: 5, //   how many trailing stills get the fast scale-down
+  // Final collapse — whole stack shrinks away in the last beat before handoff.
+  collapseMs: 500, //  ms window for the final scale-down
+  collapseTo: 0.12, // scale the stack lands on (much smaller than the riffle)
+  collapseEase: [0.55, 0, 1, 0.45], // ease-in: accelerates away
+  // Endgame collapse (per-flip stepping — optional extra punch before collapse).
+  shrinkCount: 0, //   0 = rely on collapseMs alone
   shrinkTo: 0.82, //   scale the very last still lands on (1 = no collapse)
   shrinkS: 0.16, //    s per step — deliberately quicker than developS
   // ease-out-expo: all the travel up front, then a hard settle.
@@ -1442,6 +1511,7 @@ function OpeningLoader({ onDone, config }) {
   const cfg = { ...LOADER, ...config };
   const flips = Math.max(2, Math.round(cfg.flips));
   const [frame, setFrame] = useState(0);
+  const [stackScale, setStackScale] = useState(1);
   // Which stills have decoded. The stills are full-size webps (~170KB each), so
   // on a slow connection the run's worth of them can't possibly land inside
   // totalMs — the schedule below stays fixed regardless and simply shows the most
@@ -1468,6 +1538,7 @@ function OpeningLoader({ onDone, config }) {
     }
     setFrame(0);
     setReady(new Set());
+    setStackScale(1);
     shots.forEach((s, i) => {
       const im = new Image();
       // A still that errors is deliberately left un-ready, so it gets skipped
@@ -1492,13 +1563,15 @@ function OpeningLoader({ onDone, config }) {
       acc += h * scale;
       timers.push(setTimeout(() => setFrame(idx + 1), acc));
     });
+    const collapseAt = Math.max(0, cfg.totalMs - cfg.collapseMs);
+    timers.push(setTimeout(() => setStackScale(cfg.collapseTo), collapseAt));
     const done = setTimeout(onDone, cfg.totalMs);
     return () => {
       timers.forEach(clearTimeout);
       clearTimeout(done);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shots, cfg.firstHold, cfg.lastHold, cfg.totalMs]);
+  }, [shots, cfg.firstHold, cfg.lastHold, cfg.totalMs, cfg.collapseMs, cfg.collapseTo]);
 
   // Walk back from the scheduled beat to the most recent still that has decoded.
   // On a fast connection that's the scheduled one; on a slow one the previous
@@ -1565,11 +1638,18 @@ function OpeningLoader({ onDone, config }) {
             the next — no opacity crossfade, no blur (a tiny scale settle keeps
             each still from feeling static), until the trailing stills take over
             and collapse the stack down instead. */}
-        <div
+        <motion.div
+          animate={{ scale: stackScale }}
+          transition={
+            stackScale === 1
+              ? { duration: 0 }
+              : { duration: cfg.collapseMs / 1000, ease: cfg.collapseEase }
+          }
           style={{
             position: 'relative',
             width: 'clamp(190px, 40vw, 330px)',
             height: 'clamp(210px, 40vh, 300px)',
+            willChange: 'transform',
           }}
         >
           <AnimatePresence>
@@ -1626,7 +1706,7 @@ function OpeningLoader({ onDone, config }) {
             </motion.div>
             ) : null}
           </AnimatePresence>
-        </div>
+        </motion.div>
       </div>
     </motion.div>
   );
@@ -1666,6 +1746,8 @@ export default function OnboardingReveal({
       startScale: [LOADER.startScale, 1, 1.2, 0.01],
       maxTilt: [LOADER.maxTilt, 0, 15, 0.5],
       fadeOutS: [LOADER.fadeOutS, 0, 1, 0.02],
+      collapseMs: [LOADER.collapseMs, 100, 1500, 25],
+      collapseTo: [LOADER.collapseTo, 0.05, 1, 0.01],
       shrinkCount: [LOADER.shrinkCount, 0, 8, 1],
       shrinkTo: [LOADER.shrinkTo, 0.3, 1, 0.01],
       shrinkS: [LOADER.shrinkS, 0.04, 0.6, 0.01],
@@ -1682,9 +1764,26 @@ export default function OnboardingReveal({
     }
   );
 
+  // The skip control steps aside once the closing beat is up: that beat carries
+  // the archive's own way in, and offering two entrances at once makes the
+  // reader choose between them at the exact moment the piece is trying to land.
+  // The negative bottom margin holds it until the beat is properly on screen
+  // rather than the instant its top edge clears the fold.
+  const enterBeatRef = useRef(null);
+  const atClosingBeat = useInView(enterBeatRef, { margin: '0px 0px -45% 0px' });
+
   // Thin top progress hairline for the whole scroll.
   const { scrollYProgress } = useScroll();
   const progress = useSpring(scrollYProgress, { stiffness: 120, damping: 30, mass: 0.3 });
+  // Reveal the rule by clipping it rather than scaling it: the ticks are painted
+  // across the full width, so clipping fills a fixed row of them while scaling
+  // would stretch the dash pattern itself and slide every tick as you scroll.
+  // The spring can overshoot either end, hence the clamp — a negative inset
+  // grows the box instead of shrinking it.
+  const progressClip = useTransform(
+    progress,
+    (v) => `inset(0 ${(1 - Math.min(1, Math.max(0, v))) * 100}% 0 0)`
+  );
 
   useEffect(() => {
     window.scrollTo(0, 0);
@@ -1765,7 +1864,10 @@ export default function OnboardingReveal({
         <TunableGrainBackground />
       </div>
 
-      {/* Scroll progress hairline. */}
+      {/* Scroll progress hairline — a measured row of ticks filling left to
+          right. The gradient keeps the original ramp from faint to bright, and
+          the mask is what cuts it into dashes; masking (not a repeating
+          background) is what lets the two stay independent. */}
       <motion.div
         aria-hidden="true"
         style={{
@@ -1774,23 +1876,34 @@ export default function OnboardingReveal({
           left: 0,
           right: 0,
           height: 2,
-          transformOrigin: '0% 50%',
-          scaleX: progress,
+          clipPath: progressClip,
           background: 'linear-gradient(90deg, rgba(207,202,183,0.15), rgba(207,202,183,0.7))',
+          WebkitMaskImage: PROGRESS_DASHES,
+          maskImage: PROGRESS_DASHES,
           zIndex: 60,
         }}
       />
 
       {/* STICKY SKIP — a real hyperlink to the archive index (grid) page, fixed
-          so it rides along the entire scroll. A normal click runs the smooth
-          in-app transition; the href keeps it a genuine link (open-in-new-tab,
-          middle-click, keyboard). */}
-      <a
+          so it rides along the scroll until the closing beat. A normal click
+          runs the smooth in-app transition; the href keeps it a genuine link
+          (open-in-new-tab, middle-click, keyboard).
+
+          Faded out rather than unmounted, so it can come back if you scroll up.
+          Hidden from the pointer AND from tab order while it's invisible —
+          otherwise it stays a click target over the closing copy and a keyboard
+          user lands on something nobody can see. */}
+      <motion.a
         href="/?view=grid"
         onClick={(e) => {
           e.preventDefault();
           onEnter();
         }}
+        aria-hidden={atClosingBeat}
+        tabIndex={atClosingBeat ? -1 : 0}
+        initial={false}
+        animate={{ opacity: atClosingBeat ? 0 : 1 }}
+        transition={{ duration: reduce ? 0 : 0.4, ease }}
         style={{
           position: 'fixed',
           top: 'clamp(16px, 3.4vh, 30px)',
@@ -1815,6 +1928,7 @@ export default function OnboardingReveal({
           // rule across the gaps — the per-word spans carry the underline.
           textDecoration: 'none',
           transition: 'color 0.2s ease',
+          pointerEvents: atClosingBeat ? 'none' : 'auto',
         }}
         onMouseEnter={(e) => {
           e.currentTarget.style.color = INK;
@@ -1824,7 +1938,7 @@ export default function OnboardingReveal({
         }}
       >
         <span style={ONBOARDING_LINK_UNDERLINE}>Skip Intro</span>
-      </a>
+      </motion.a>
 
       {/* Content column — a narrow editorial measure, centered on the page. */}
       <main
@@ -1839,18 +1953,17 @@ export default function OnboardingReveal({
       >
         {/* HERO */}
         <Beat minVh={100} style={{ paddingTop: 'clamp(24px, 6vh, 80px)', gap: 'clamp(26px, 5vh, 52px)' }}>
-          {HERO_DRAW_ON ? (
-            <HeroTitleDraw
-              hold={loading || !titleGate}
-              reduceMotion={reduce}
-              onRevealComplete={() => setHeroTitleRevealed(true)}
-            />
-          ) : (
-            <HeroTitleText
-              hold={loading || !titleGate}
-              reduceMotion={reduce}
-              onRevealComplete={() => setHeroTitleRevealed(true)}
-            />
+          {createElement(
+            {
+              hand: WordmarkDraw,
+              gl: WordmarkGL,
+              draw: HeroTitleDraw,
+            }[HERO_MODE] || HeroTitleText,
+            {
+              hold: loading || !titleGate,
+              reduceMotion: reduce,
+              onRevealComplete: () => setHeroTitleRevealed(true),
+            }
           )}
           <HeroOpeningQuestion
             hold={loading || !heroTitleRevealed}
@@ -1869,17 +1982,14 @@ export default function OnboardingReveal({
           <ScrollCue show={!loading && heroQuestionRevealed} />
         </Beat>
 
-        {/* CUBE + INTRO */}
+        {/* BOOTH + INTRO */}
         <Beat style={{ gap: 'clamp(30px, 6vh, 60px)' }}>
-          {/* The confession-booth stills (Dolores Park sign + example-secrets
-              table) develop in as a scrapbook pair, then the intro line reveals
-              word-by-word beneath them. */}
-          <IntroBoothCollage width="min(100%, 900px)" />
-          <RevealWords
+          {/* The Dolores Park booth still slides in, then the intro line
+              materializes through the mask dissolve beneath it. */}
+          <IntroBoothStill width="min(100%, 900px)" />
+          <RevealWordsGL
             text={INTRO_LINE}
             as="h2"
-            cfg={WORD_DISPLAY}
-            underline={INTRO_MARKS}
             // Same display treatment as the section[3] fragments, just a touch
             // smaller since the intro is a longer full sentence.
             style={{ ...FRAGMENT_STYLE, fontSize: 'clamp(26px, 5vw, 46px)' }}
@@ -1896,16 +2006,16 @@ export default function OnboardingReveal({
           />
         </Beat>
 
-        {/* BODY — the whole sentence is one emphasized statement, parallel to the
-            FRAGMENT_LINE fragment below. */}
-        <Beat>
-          <RevealWords
+        {/* BODY — the statement dissolves in and stops short; the three verbs
+            that finish it land off-axis, and ascii noise creeps in around them
+            (see BodyKicker). */}
+        <Beat style={{ gap: 'clamp(10px, 2vh, 20px)' }}>
+          <RevealWordsGL
             text={BODY_LINE}
             as="h2"
-            cfg={WORD_DISPLAY}
-            underline={BODY_MARKS}
             style={FRAGMENT_STYLE}
           />
+          <BodyKicker style={FRAGMENT_STYLE} />
         </Beat>
 
         {/* NOTE ② — slides in from the left. */}
@@ -1920,11 +2030,9 @@ export default function OnboardingReveal({
 
         {/* FRAGMENT */}
         <Beat>
-          <RevealWords
+          <RevealWordsGL
             text={FRAGMENT_LINE}
             as="h2"
-            cfg={WORD_DISPLAY}
-            underline={FRAGMENT_MARKS}
             style={FRAGMENT_STYLE}
           />
         </Beat>
@@ -1939,15 +2047,20 @@ export default function OnboardingReveal({
           />
         </Beat>
 
-        {/* QUESTION + ENTER */}
-        <Beat minVh={100} style={{ gap: 'clamp(34px, 7vh, 68px)' }}>
-          <RevealWords
+        {/* QUESTION + ENTER — over the confession field (see AsciiWall). Also
+            what the sticky skip watches for, to get out of its way. */}
+        <Beat
+          ref={enterBeatRef}
+          minVh={100}
+          style={{ gap: 'clamp(34px, 7vh, 68px)', position: 'relative' }}
+        >
+          <AsciiWall />
+          <RevealWordsGL
             text={FINAL_QUESTION}
             as="h2"
-            cfg={WORD_DISPLAY}
-            underline={FINAL_MARKS}
+            justify
             style={{
-              maxWidth: 620,
+              maxWidth: 480,
               fontFamily: SERIF,
               fontWeight: 400,
               fontSize: 'clamp(26px, 4.4vw, 42px)',
