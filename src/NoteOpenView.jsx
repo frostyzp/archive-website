@@ -593,6 +593,12 @@ export function LeftThemeDial({
  * Crossfades as the centred note's category / position change while the user
  * swipes the vertical carousel — keyed on both, so stepping category re-reads
  * even when the position number happens to be unchanged.
+ *
+ * EXPLORE tab only. There the number is your place inside the category the
+ * stepper is parked on, so it belongs to the stepper it sits under. In the
+ * grid overlay it counted the whole tapped list instead — "01/165" against a
+ * single note, which reads as the length of the archive rather than as
+ * anything about the note you opened. See where this is rendered.
  */
 function MobileThemeCaption({ label, position, total, reduceMotion }) {
   const fade = {
@@ -1203,25 +1209,37 @@ export default function NoteOpenView({
       {revealed && (
         <>
           {isMobile ? (
-            <>
-              {/* Explore tab (standalone): a centered category stepper is the
-                  phone's stand-in for the desktop rotary dial. The grid-tap
-                  overlay keeps just the counter (its own chrome owns the top). */}
-              {standalone && emotions.length > 1 ? (
-                <MobileThemeStepper
+            /* Explore tab (standalone): a centered category stepper is the
+               phone's stand-in for the desktop rotary dial, with the note
+               counter reading the position inside that category directly
+               below it.
+
+               The grid-tap overlay gets neither. It has no category frame to
+               count within — you tapped a tile in a list that is mostly
+               uncategorised — so the counter could only report your place in
+               the whole archive, which tells you nothing about the note you
+               are reading and puts a second number under one already busy
+               bottom edge. The overlay is a reader: BACK, the note, and the
+               two chevrons. Desktop is unaffected either way; its counter is
+               rendered separately below. */
+            standalone ? (
+              <>
+                {emotions.length > 1 ? (
+                  <MobileThemeStepper
+                    label={activeLabel}
+                    onStep={stepCategory}
+                    reduceMotion={reduceMotion}
+                    delay={reduceMotion ? 0 : CATEGORY_REVEAL_DELAY_S}
+                  />
+                ) : null}
+                <MobileThemeCaption
                   label={activeLabel}
-                  onStep={stepCategory}
+                  position={position}
+                  total={total}
                   reduceMotion={reduceMotion}
-                  delay={reduceMotion ? 0 : CATEGORY_REVEAL_DELAY_S}
                 />
-              ) : null}
-              <MobileThemeCaption
-                label={activeLabel}
-                position={position}
-                total={total}
-                reduceMotion={reduceMotion}
-              />
-            </>
+              </>
+            ) : null
           ) : (
             <LeftThemeDial
               emotions={emotions}
@@ -1281,7 +1299,13 @@ export default function NoteOpenView({
               down = next). Overlay only: on the standalone EXPLORE tab the top
               strip belongs to the theme chips, and note-stepping is by vertical
               swipe / tapping the dimmed prev-next peeks, so the chevrons would
-              only crowd the chips + meta. */}
+              only crowd the chips + meta.
+
+              The up chevron rides the BACK line rather than sitting on a row of
+              its own underneath it — see M_NAV_ROW_TOP. Both chevrons stay
+              centred on the screen's vertical axis, which is what makes them
+              read as one pair pointing through the note rather than as two
+              unrelated buttons. */}
           {isMobile && !standalone && total > 1 ? (
             <>
               <NavGrainFilter id={MOBILE_NAV_GRAIN_ID} reduceMotion={reduceMotion} />
@@ -1414,6 +1438,23 @@ const MONO = 'var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace)';
 const M_COUNTER_BOTTOM = 76;
 const M_STEPPER_GAP = 30; // counter line → stepper
 
+/* Phone overlay chrome, top row. BACK and the ˄ (previous note) chevron share
+   one line. The chevron used to sit on its own row below BACK, which spent a
+   whole band of the screen on a single glyph and pushed the note down for it;
+   there is nothing else on that line, so the two can share it without either
+   crowding the other (BACK ends around x=70, the chevron is centred).
+
+   The chevron stays a full 44px target and stays CENTRED rather than tucking in
+   beside BACK: it is one of a pair with the ˅ at the bottom, and the two only
+   read as prev/next through the note while they sit on the same vertical axis.
+   Pulled left against BACK it would read as part of the back control instead. */
+const M_CHROME_INSET = 24; // px — matches the index nav's own edge inset
+const M_BACK_LINE = 28; //    px — NAV_LINK: 16px text at 1.5, plus 2px padding
+const M_NAV_BTN = 44; //      px — chevron hit area (thumb-sized floor)
+/* Chevron top that lands its 44px box's centre on the BACK line's centre, so
+   the glyph is optically on the row however the two boxes differ in height. */
+const M_NAV_ROW_TOP = M_CHROME_INSET + M_BACK_LINE / 2 - M_NAV_BTN / 2;
+
 /* Text-link chrome, mirroring the index nav's ABOUT button: ARCHIVE_NAV_TEXT
    (mono, bodySmall 16px, no letter-spacing, white) under the site's dotted
    underline. Callers set their own resting opacity. */
@@ -1522,17 +1563,18 @@ const st = {
     transform: 'none',
   },
 
-  // Mobile explore: fixed up/down chevrons (grain-filtered) for the vertical
-  // carousel. Up sits top-centre (below the nav chrome), down bottom-centre
-  // (clear of the note counter). No top A/D legend.
+  // Mobile: fixed up/down chevrons (grain-filtered) for the vertical carousel.
+  // Up sits top-centre ON the BACK line (M_NAV_ROW_TOP); down sits
+  // bottom-centre, now the only thing on that edge since the overlay dropped
+  // its note counter. No top A/D legend.
   mobileNavBtnUp: {
     position: 'fixed',
     left: '50%',
     transform: 'translateX(-50%)',
-    top: 'max(64px, 8vh)',
+    top: M_NAV_ROW_TOP,
     zIndex: 45,
-    width: 44,
-    height: 44,
+    width: M_NAV_BTN,
+    height: M_NAV_BTN,
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
@@ -1551,8 +1593,8 @@ const st = {
     transform: 'translateX(-50%)',
     bottom: 'max(72px, 9vh)',
     zIndex: 45,
-    width: 44,
-    height: 44,
+    width: M_NAV_BTN,
+    height: M_NAV_BTN,
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
@@ -1573,8 +1615,8 @@ const st = {
   mobileBack: {
     ...NAV_LINK,
     position: 'absolute',
-    top: 24,
-    left: 24,
+    top: M_CHROME_INSET,
+    left: M_CHROME_INSET,
     zIndex: 40,
     opacity: 0.72,
   },

@@ -125,6 +125,26 @@ function useArchiveNavCompact() {
   return compact;
 }
 
+// A pointer that can actually hover. Asked by capability rather than by width:
+// a phone held in landscape is wider than the compact breakpoint but still has
+// nothing to hover with, and a tap on a touchscreen fires the emulated
+// mouseenter and then leaves the note lifted, dimmed neighbours and all, until
+// you tap somewhere else.
+const HOVER_CAPABLE_MQ = '(hover: hover) and (pointer: fine)';
+
+function useHoverCapable() {
+  const [capable, setCapable] = useState(() =>
+    typeof window !== 'undefined' && window.matchMedia(HOVER_CAPABLE_MQ).matches
+  );
+  useEffect(() => {
+    const mq = window.matchMedia(HOVER_CAPABLE_MQ);
+    const onChange = () => setCapable(mq.matches);
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
+  return capable;
+}
+
 // Smallest phones. Together with ARCHIVE_NAV_COMPACT_MQ (and the wide tiers
 // below) this mirrors the grid's responsive column count exactly (see
 // .confession-grid media queries): 2 at ≤460px, 2 at ≤760px, 3 by default,
@@ -818,6 +838,12 @@ const ABOUT_DRAWER = {
   // Air between index-card tabs — the angled clip already notches each edge,
   // but a real gap is what sells them as separate pieces.
   tabGap: 8,
+  // How far right of its resting place a tab starts as it slides in — out from
+  // under the drawer's spine and away to the left. Short on purpose: the strip
+  // hangs outside the panel with nothing to hide behind, so a long travel reads
+  // as a tab drifting across the page rather than one coming out from under the
+  // drawer. Most of the distance is covered while it is still nearly clear.
+  tabInX: 18,
   // Trapezoid: outer (left) edge pinched at top/bottom, spine (right) square.
   tabClip: 'polygon(0 14%, 100% 0, 100% 100%, 0 86%)',
   tabRadius: '5px 0 0 5px',
@@ -833,10 +859,20 @@ const ABOUT_DRAWER = {
   tabInStepS: 0.09,
 };
 
+/* A hidden tab can't animate its way to nothing: `box-sizing: border-box` keeps
+   its own padding and borders no matter what height it is given, so `height: 0`
+   still leaves this much of it standing. The hidden tabs pull that remainder
+   back out of the strip with a negative margin — otherwise the shut drawer would
+   show ABOUT with 60px of reserved nothing hanging underneath it. */
+const ABOUT_TAB_COLLAPSED_H = ABOUT_DRAWER.tabPadY * 2 + 2;
+
+/* `label` is the tab; `title` is the heading the panel shows for it. The two are
+   different words on purpose — a tab is a marker and wants to be short, while the
+   heading is read as a sentence's worth of the section. */
 const ABOUT_TABS = [
-  { id: 'about', label: 'ABOUT' },
-  { id: 'process', label: 'PROCESS' },
-  { id: 'why', label: 'THE WHY' },
+  { id: 'about', label: 'ABOUT', title: 'About' },
+  { id: 'process', label: 'PROCESS', title: 'Our process' },
+  { id: 'why', label: 'THE WHY', title: 'The Why' },
 ];
 
 /**
@@ -1016,9 +1052,11 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false }) {
   );
 
   // ABOUT column — the project blurb + a pointer into the other two columns.
+  // Headings live in the panel's header beside the close button, not here: they
+  // belong to the tab you are on rather than to the copy, and a heading inside
+  // the swapped body would fade out and back in on every tab change.
   const sectionAbout = (
     <>
-      <h2 style={headStyle}>About</h2>
       {introParas.map(renderPara)}
       <p style={{ ...bodyStyle, color: inkA(0.6), marginTop: 4 }}>
       </p>
@@ -1028,7 +1066,6 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false }) {
   // WHY WE CARE column — a McLuhan pull-quote, a thesis line, then the essay.
   const sectionWhy = (
     <>
-      <h2 style={headStyle}>The Why</h2>
       {/* The rule rides on the blockquote rather than being its own element, so it
           can't drift from the attribution if the quote's spacing changes. Same
           weight as the rules inside the credits card — the drawer only has one. */}
@@ -1078,7 +1115,6 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false }) {
   // OUR PROCESS column — how the booth works + an installation image.
   const sectionProcess = (
     <>
-      <h2 style={headStyle}>Our process</h2>
       {renderPara(processIntro, 'p-intro')}
       <figure style={{ margin: '4px 0 16px' }}>
         <img
@@ -1256,6 +1292,7 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false }) {
   // the panel, tilted with the section headings, holding a title line over a
   // hairline, a rule-only field, and a filled button across the foot. Rendered
   // once per breakpoint, so the <style> block is safe here.
+  const emailArmed = email.trim().length > 0;
   const mailingListBlock = () => (
     <div
       className="about-subscribe"
@@ -1272,9 +1309,14 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false }) {
     >
       <style>{`
         .about-subscribe input:focus { border-bottom-color: ${inkA(0.55)}; }
-        .about-subscribe button:hover:not(:disabled),
-        .about-subscribe button:focus-visible:not(:disabled) {
+        .about-subscribe button:not(.is-armed):hover:not(:disabled),
+        .about-subscribe button:not(.is-armed):focus-visible:not(:disabled) {
           background: ${ABOUT_DRAWER.cardBtnHover}; color: #fff;
+        }
+        /* Already lit, so hover brightens the fill rather than swapping it. */
+        .about-subscribe button.is-armed:hover:not(:disabled),
+        .about-subscribe button.is-armed:focus-visible:not(:disabled) {
+          background: #EDEDD2;
         }
         .about-subscribe button:disabled { opacity: 0.55; cursor: default; }
         .about-subscribe input:disabled { opacity: 0.55; }
@@ -1359,15 +1401,21 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false }) {
               transition: `border-color 0.18s ${HOVER_EASE}`,
             }}
           />
+          {/* Dark and quiet until there is an address to send: the button lights
+              into the accent the moment the field has something in it, so the
+              card shows you it is ready rather than looking equally clickable
+              empty or full. Still submittable when empty — the field's own
+              `required` message is more use than a button that ignores you. */}
           <button
             type="submit"
+            className={emailArmed ? 'is-armed' : undefined}
             disabled={subscribing}
             style={{
               width: '100%',
               marginTop: 14,
               padding: '11px 12px',
-              background: ABOUT_DRAWER.cardBtn,
-              color: inkA(0.88),
+              background: emailArmed ? ACCENT_INK : ABOUT_DRAWER.cardBtn,
+              color: emailArmed ? '#1c1c18' : inkA(0.55),
               border: 'none',
               borderRadius: 8,
               fontFamily: MONO_FONT,
@@ -1402,16 +1450,6 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false }) {
     </div>
   );
 
-  /** Hairline + air above a block that follows another in one scroll. */
-  const ruledBlock = (key, body) => (
-    <div
-      key={key}
-      style={{ marginTop: 36, paddingTop: 24, borderTop: `1px solid ${inkA(0.08)}` }}
-    >
-      {body}
-    </div>
-  );
-
   // Tab → panel body. About carries mailing + credits; the other two are just
   // their reading blocks. Swapped with a fade rather than scrolled.
   const sectionBody = {
@@ -1425,21 +1463,6 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false }) {
     process: sectionProcess,
     why: sectionWhy,
   };
-
-  // Phone has nowhere to hang the file-folder tabs — they sit off the panel's
-  // left edge, which on a full-bleed takeover is the edge of the screen, so the
-  // other two sections were unreachable. Rather than invent a second navigation
-  // for one breakpoint, the whole panel becomes one scroll: about with its
-  // mailing list under it, then the other sections, then the footer.
-  const stackedBody = (
-    <>
-      {sectionAbout}
-      {mailingListBlock()}
-      {ruledBlock('process', sectionProcess)}
-      {ruledBlock('why', sectionWhy)}
-      {footerBlock}
-    </>
-  );
 
   const selectTab = (id) => {
     setActiveSection(id);
@@ -1463,7 +1486,124 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false }) {
     : `calc(100% + ${-ABOUT_DRAWER.peekSliver}px)`;
   const peekHiddenX = `calc(100% + ${ABOUT_DRAWER.tabW}px)`;
 
+  // Phone's section navigation: three markers on a hairline, the one you are
+  // reading sitting on the panel's own surface with the rule broken under it, the
+  // way the file-folder tabs read against the drawer on desktop. Only on this
+  // breakpoint — the folder tabs hang off the panel's left edge, which on a
+  // full-bleed takeover is the edge of the screen, so without these the other two
+  // sections would be unreachable.
+  const activeTab = ABOUT_TABS.find((t) => t.id === activeSection) || ABOUT_TABS[0];
+  const topTabs = !compact ? null : (
+    <div
+      role="tablist"
+      aria-label="About sections"
+      style={{
+        display: 'flex',
+        alignItems: 'stretch',
+        gap: 2,
+        // The rule runs the width of the column and the live tab covers its own
+        // stretch of it, so the selected marker joins the page below the line.
+        borderBottom: `1px solid ${inkA(0.16)}`,
+        marginBottom: 16,
+      }}
+    >
+      {ABOUT_TABS.map((tab) => {
+        const on = activeSection === tab.id;
+        return (
+          <button
+            key={tab.id}
+            id={`about-tab-${tab.id}`}
+            type="button"
+            role="tab"
+            aria-selected={on}
+            aria-controls="about-panel-body"
+            className="about-top-tab"
+            onClick={() => selectTab(tab.id)}
+            style={{
+              position: 'relative',
+              // Sits a hairline low so its own bottom edge lands on the rule and
+              // hides it, rather than stopping a pixel short of it.
+              marginBottom: -1,
+              padding: '8px 11px 7px',
+              border: '1px solid transparent',
+              borderColor: on ? ABOUT_DRAWER.tabOutline : 'transparent',
+              borderBottomColor: on ? ABOUT_DRAWER.bg : 'transparent',
+              borderRadius: '5px 5px 0 0',
+              background: on ? ABOUT_DRAWER.bg : 'transparent',
+              color: on ? '#fff' : inkA(0.42),
+              cursor: 'pointer',
+              fontFamily: MONO_FONT,
+              fontSize: 10,
+              letterSpacing: '0.14em',
+              lineHeight: 1,
+              whiteSpace: 'nowrap',
+              transition: `color 0.18s ${HOVER_EASE}, background 0.18s ${HOVER_EASE}`,
+            }}
+          >
+            {tab.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+
+  // The section's name, and on phone the way out of the drawer beside it. Hoisted
+  // out of the section bodies so neither fades when you change tabs.
+  //
+  // Phone only, like the tab row above it: that breakpoint is a full-bleed
+  // takeover with nothing of the page left showing to tap, so the ✕ is the way
+  // back. The desktop drawer keeps the exits it already had — the dimmed page
+  // behind it, ESC, and the wordmark — and none of them cost the header a mark.
+  const titleRow = (
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: 12,
+      }}
+    >
+      <h2 style={{ ...headStyle, margin: 0 }}>{activeTab.title}</h2>
+      {compact ? (
+        <button
+          type="button"
+          className="about-close"
+          aria-label="Close about"
+          onClick={onClose}
+          style={{
+            flex: '0 0 auto',
+            // Out into the panel's own padding: the glyph lines up with the right
+            // edge of the copy, and the hit area it needs spills into the margin
+            // rather than pushing the mark in off the column.
+            marginRight: -7,
+            width: 34,
+            height: 34,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: 0,
+            border: 'none',
+            borderRadius: 6,
+            background: 'none',
+            color: inkA(0.55),
+            cursor: 'pointer',
+            fontFamily: MONO_FONT,
+            fontSize: 16,
+            lineHeight: 1,
+            transition: `color 0.18s ${HOVER_EASE}, background 0.18s ${HOVER_EASE}`,
+          }}
+        >
+          ✕
+        </button>
+      ) : null}
+    </div>
+  );
+
   const sharedStyles = `
+    .about-top-tab:hover:not([aria-selected='true']) { color: ${inkA(0.7)}; }
+    .about-close:hover, .about-close:focus-visible {
+      color: #fff; background: ${inkA(0.08)};
+    }
     .about-contact-link {
       display: inline-block; color: ${inkA(0.72)};
       text-decoration: none;
@@ -1496,9 +1636,10 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false }) {
     <>
       <style>{sharedStyles}</style>
 
-      {/* File-folder tabs on the left edge — flush to the top. Desktop only:
-          they hang outside the panel, which a phone hasn't got room for (see
-          stackedBody). */}
+      {/* File-folder tabs on the left edge — flush to the top, and the section
+          navigation on desktop. They hang outside the panel, which a phone's
+          full-bleed takeover has no room for, so that breakpoint gets the tab row
+          across the top of the header instead (see topTabs). */}
       {compact ? null : (
       <div
         role="tablist"
@@ -1507,11 +1648,21 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false }) {
           position: 'absolute',
           left: 0,
           top: 0,
+          // Explicit rather than shrink-to-fit: the open tab's -1px right margin
+          // would otherwise pull the strip a pixel narrower than the tabs in it,
+          // and the clip below is measured off this edge.
+          width: ABOUT_DRAWER.tabW,
           transform: 'translateX(-100%)',
           display: 'flex',
           flexDirection: 'column',
           gap: ABOUT_DRAWER.tabGap,
           overflow: 'visible',
+          // Cuts the strip off at the drawer's spine, so a tab sliding in from
+          // the right is only seen from the moment it clears the panel — it
+          // comes out from under the drawer rather than gliding over it. The
+          // −1px lets the open tab keep the overhang that seals it to the panel.
+          clipPath: 'inset(0px -1px 0px 0px)',
+          WebkitClipPath: 'inset(0px -1px 0px 0px)',
           zIndex: 2,
         }}
       >
@@ -1530,29 +1681,51 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false }) {
           // Only on the way in. Closing runs them all out at once: a drawer
           // being put away shouldn't leave its tabs hanging in the air behind
           // it, one at a time, after the thing they belong to has gone.
+          const arriveDelay =
+            reduceMotion || !open || n === 0
+              ? 0
+              : ABOUT_DRAWER.slideS + (n - 1) * ABOUT_DRAWER.tabInStepS;
           const arrive = {
             duration: reduceMotion ? 0 : ABOUT_DRAWER.fadeS,
             ease: easeOut,
-            delay:
-              reduceMotion || !open || n === 0
-                ? 0
-                : ABOUT_DRAWER.slideS + (n - 1) * ABOUT_DRAWER.tabInStepS,
+            delay: arriveDelay,
+          };
+
+          // The slot a tab occupies in the strip is switched, not animated: it
+          // opens the instant that tab's beat comes up so there is something for
+          // the tab to slide into, and on the way out it stays open until the
+          // fade has finished so nothing shrinks while you can still see it.
+          // Either way the change lands under a transparent tab, so the strip
+          // never appears to grow or drop a step.
+          const slot = {
+            duration: 0,
+            delay: reduceMotion ? 0 : open ? arriveDelay : ABOUT_DRAWER.fadeS,
           };
           return (
             <motion.button
               key={tab.id}
+              // Same id the phone's top tabs use — only one of the two sets is
+              // ever mounted, so the panel body can point its aria-labelledby at
+              // whichever navigation this breakpoint has.
+              id={`about-tab-${tab.id}`}
               type="button"
               role="tab"
               className="about-drawer-tab"
               aria-label={tab.label}
               aria-selected={isActive}
+              aria-controls="about-panel-body"
               disabled={!shown}
               onClick={() => shown && selectTab(tab.id)}
               initial={false}
               animate={{
                 opacity: shown ? 1 : 0,
+                // Sideways, not downwards: a tab comes out from under the panel's
+                // spine and travels left into place, and leaves the same way.
+                x: shown ? 0 : ABOUT_DRAWER.tabInX,
                 height: shown ? ABOUT_DRAWER.tabH : 0,
-                marginBottom: shown ? 0 : -ABOUT_DRAWER.tabGap,
+                marginBottom: shown
+                  ? 0
+                  : -(ABOUT_DRAWER.tabGap + ABOUT_TAB_COLLAPSED_H),
                 pointerEvents: shown ? 'auto' : 'none',
                 // Animated rather than set in `style` so the tab lights with the
                 // panel it belongs to instead of snapping ahead of the slide.
@@ -1565,9 +1738,10 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false }) {
                 // Only the tab's arrival is held back. Its colours keep the
                 // panel's own clock, so the section you are reading lights up
                 // with the surface it belongs to rather than half a beat later.
-                height: arrive,
+                x: arrive,
                 opacity: arrive,
-                marginBottom: arrive,
+                height: slot,
+                marginBottom: slot,
               }}
               style={{
                 position: 'relative',
@@ -1609,27 +1783,47 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false }) {
       </div>
       )}
 
+      {/* Header out of the scroll, copy inside it: the tabs and the close button
+          are how you get around the drawer, so they stay put while a long section
+          runs under them. Side padding is shared by both, which keeps the tab rule
+          the same width as the copy it sits over. */}
       <div
-        className="about-col"
         style={{
           position: 'relative',
           zIndex: 1,
           height: '100%',
-          overflowY: 'auto',
-          overflowX: 'hidden',
-          WebkitOverflowScrolling: 'touch',
-          outline: 'none',
+          display: 'flex',
+          flexDirection: 'column',
           // Modest inset — the drawer is full-bleed under the chrome, so matching
           // the grid's 112px top left a dead band above the copy.
           padding: compact
-            ? `${24 + ARCHIVE_NAV_CHROME_HEIGHT + 16}px 22px 72px`
-            : `28px 28px 48px`,
+            ? `${24 + ARCHIVE_NAV_CHROME_HEIGHT + 16}px 22px 0`
+            : `28px 28px 0`,
           boxSizing: 'border-box',
         }}
       >
-        {compact ? (
-          stackedBody
-        ) : (
+        <div style={{ flex: '0 0 auto' }}>
+          {topTabs}
+          {titleRow}
+        </div>
+
+        <div
+          id="about-panel-body"
+          role="tabpanel"
+          aria-labelledby={`about-tab-${activeSection}`}
+          className="about-col"
+          style={{
+            flex: '1 1 auto',
+            minHeight: 0,
+            overflowY: 'auto',
+            overflowX: 'hidden',
+            WebkitOverflowScrolling: 'touch',
+            outline: 'none',
+            // Air under the heading card, and enough at the foot that the last
+            // line clears the phone's home bar.
+            padding: compact ? '16px 0 72px' : '18px 0 48px',
+          }}
+        >
           <AnimatePresence mode="wait">
             <motion.div
               key={activeSection}
@@ -1641,7 +1835,7 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false }) {
               {sectionBody[activeSection]}
             </motion.div>
           </AnimatePresence>
-        )}
+        </div>
       </div>
     </>
   );
@@ -3708,6 +3902,8 @@ function GridView({
   // above the Category/Location tabs). On desktop it stays pinned to the
   // bottom with the search centred between the tabs.
   const compact = useArchiveNavCompact();
+  // Whether the sheet gets a hover treatment at all — see hoverLive below.
+  const hoverCapable = useHoverCapable();
   // Live grid column count (3 / 2 / 1) — positions the lattice hairlines.
   const gridCols = useGridColumns();
   // Tiles whose image failed to load (file not yet on disk for that GlobalID).
@@ -4060,6 +4256,14 @@ function GridView({
   // seeded 'settled' when the entrance is skipped (reduced motion, or arriving
   // back from explore mid-session), so those cases stay live throughout.
   const hoverArmed = entranceStage === 'settled';
+  // The imperative half of the hover treatment — the lean, the noise warp, the
+  // lattice box — needs a pointer that can hover as well as a settled grid. A
+  // touchscreen fires the emulated mouseenter on tap and never the leave, so a
+  // tapped note would stay lifted and warped behind the view that opens over it.
+  // The CSS half sits behind the same query (see HOVER_CAPABLE_MQ). `hoverArmed`
+  // is left alone: it also gates the metadata fade and which animation branch a
+  // tile is on, neither of which is about hovering.
+  const hoverLive = hoverArmed && hoverCapable;
 
   // Line geometry for the lattice. Each line is positioned by percentage on the
   // overlay (which sits exactly over the tile grid), so it pins to a cell edge at
@@ -4290,9 +4494,21 @@ function GridView({
            Every hover rule below hangs off .is-live, which the grid only wears
            once the entrance has settled (see hoverArmed) — before that a cursor
            already sitting over the grid would dim and unclip tiles that are
-           still flying in. */
-        .confession-grid.is-live:hover .grid-tile { filter: opacity(0.8); }
-        .confession-grid.is-live:hover .grid-tile:hover { filter: none; }
+           still flying in.
+           Hover-capable pointers only (see HOVER_CAPABLE_MQ): on a touchscreen
+           these fire on tap and then stick, so a phone would be left with one
+           lifted note and a dimmed sheet behind it. */
+        @media ${HOVER_CAPABLE_MQ} {
+          .confession-grid.is-live:hover .grid-tile { filter: opacity(0.8); }
+          .confession-grid.is-live:hover .grid-tile:hover { filter: none; }
+          .confession-grid.is-live .grid-tile:hover .grid-tile-num,
+          .confession-grid.is-live .grid-tile:hover .grid-tile-cat { color: #CFCAB7; }
+          /* At rest the note is clipped to its square cell. On hover the clip
+             drops and the tile lifts over its neighbours so the cursor-float
+             (see cursorFloat.js) can actually leave the cell — a note pinned
+             inside its own box doesn't read as floating. */
+          .confession-grid.is-live .grid-tile:hover { overflow: visible; z-index: 3; }
+        }
         @media (max-width: 760px) {
           .confession-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
           /* Off-screen tiles skip layout/paint until scrolled near — big win on
@@ -4373,14 +4589,7 @@ function GridView({
           overflow: hidden;
           text-overflow: ellipsis;
         }
-        .confession-grid.is-live .grid-tile:hover .grid-tile-num,
-        .confession-grid.is-live .grid-tile:hover .grid-tile-cat { color: #CFCAB7; }
-        /* At rest the note is clipped to its square cell. On hover the clip drops
-           and the tile lifts over its neighbours so the cursor-float (see
-           cursorFloat.js) can actually leave the cell — a note pinned inside its
-           own box doesn't read as floating. */
         .grid-tile { overflow: hidden; }
-        .confession-grid.is-live .grid-tile:hover { overflow: visible; z-index: 3; }
         /* --float-ms is swapped per pointer event: short while tracking the
            cursor so the lean stays attached, longer on enter/leave so the lift
            and the drop back both breathe. Lives here rather than inline so a
@@ -5088,13 +5297,13 @@ function GridView({
                     // transform / transition live in .grid-tile img (CSS) so the
                     // float can be written imperatively without React clobbering it.
                   }}
-                  // Unbound until the entrance settles, alongside the CSS hover
-                  // rules. Handing back `undefined` rather than checking inside
-                  // means a note that lands under a resting cursor stays at rest
-                  // until the pointer actually moves, instead of jumping to a
-                  // lean it was never given.
+                  // Unbound until the entrance settles, and never bound at all on
+                  // a touchscreen (hoverLive). Handing back `undefined` rather
+                  // than checking inside means a note that lands under a resting
+                  // cursor stays at rest until the pointer actually moves,
+                  // instead of jumping to a lean it was never given.
                   onMouseEnter={
-                    !hoverArmed
+                    !hoverLive
                       ? undefined
                       : (e) => {
                           // The note lifts off the grid and starts leaning toward the
@@ -5112,12 +5321,12 @@ function GridView({
                         }
                   }
                   onMouseMove={
-                    reduceMotion || !hoverArmed
+                    reduceMotion || !hoverLive
                       ? undefined
                       : (e) => applyGridFloat(e, paperRotate, CURSOR_FLOAT.trackMs)
                   }
                   onMouseLeave={
-                    !hoverArmed
+                    !hoverLive
                       ? undefined
                       : (e) => {
                           const el = e.currentTarget;

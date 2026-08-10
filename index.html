@@ -38,7 +38,23 @@
     <meta name="twitter:image" content="/og-image.png" />
     <meta name="twitter:image:alt" content="What We Tell AI — AI Confessions — Digital Archive" />
 
-    <link rel="icon" id="favicon" type="image/png" href="/favicons/favicon_01.png" />
+    <link rel="icon" id="favicon" type="image/png" />
+    <script>
+      // Pick one random favicon per page load and keep it static.
+      (function () {
+        var icons = [
+          '/favicons/favicon_01.png',
+          '/favicons/favicon_02.png',
+          '/favicons/favicon_03.png',
+          '/favicons/favicon_04.png',
+          '/favicons/favicon_05.png',
+        ];
+        var link = document.getElementById('favicon');
+        if (link) {
+          link.href = icons[Math.floor(Math.random() * icons.length)];
+        }
+      })();
+    </script>
     <style>
       @font-face {
         font-family: 'News Plantin';
@@ -98,25 +114,5 @@
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
-    <script>
-      // Cycle the tab favicon through the five icons, one per second.
-      (function () {
-        var icons = [
-          '/favicons/favicon_01.png',
-          '/favicons/favicon_02.png',
-          '/favicons/favicon_03.png',
-          '/favicons/favicon_04.png',
-          '/favicons/favicon_05.png',
-        ];
-        // Warm the cache so each swap is instant (no first-cycle flicker).
-        icons.forEach(function (src) { new Image().src = src; });
-        var i = 0;
-        setInterval(function () {
-          i = (i + 1) % icons.length;
-          var link = document.getElementById('favicon');
-          if (link) link.href = icons[i];
-        }, 1000);
-      })();
-    </script>
   </body>
 </html>

@@ -2310,7 +2310,13 @@ function EnterButton({ onClick, start, delayS = 0.5 }) {
       animate={inView ? { opacity: 1, y: 0 } : undefined}
       transition={{ duration: reduce ? 0 : 0.7, ease, delay: reduce ? 0 : delayS }}
       style={{
-        padding: '17px 40px',
+        // The label is 214px of tracked-out mono against a column of
+        // min(74vw, 660px), so with 40px either side it broke over two lines
+        // below ~400px wide. It is one phrase and reads as one line: held
+        // together here, with the side padding giving way on a narrow screen so
+        // the button shrinks rather than running off it.
+        padding: '17px clamp(18px, 5vw, 40px)',
+        whiteSpace: 'nowrap',
         background: 'transparent',
         border: 'none',
         borderRadius: 999,

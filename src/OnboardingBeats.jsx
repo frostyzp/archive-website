@@ -103,14 +103,22 @@ const PILE = { w: 700, h: 625, maxFit: 1.15 };
  * centred.
  *
  * So perFontPx tracks BODY_LINE's authored rag: it was 11.6 while that copy set
- * six lines, and re-measuring is the price of re-breaking the sentence. Rounding
- * up rather than down — an over-reserved slot only costs the pile some of its
+ * six lines, and re-measuring is the price of re-breaking the sentence. It counts
+ * from the first line to the lowest ink rather than to the kicker's box, because
+ * the kicker's ascii marks hang a good way past their own block. Rounding up
+ * rather than down — an over-reserved slot only costs the pile some of its
  * centring, while an under-reserved one runs the copy into the bottom of the
  * screen. */
-const BODY_TYPE = { minPx: 16, vw: 2.2, maxPx: 26 };
+/* The same clamp the intro and fragment beats set, rather than a smaller one of
+   its own. This beat is the longest — three lines and three verbs against their
+   one line — and it had been shrunk to buy the pile room, but a beat that sets
+   its type two sizes down reads as a caption next to the ones either side of it.
+   The slot below derives its height from this, so the room comes out of the
+   pile's centring instead. */
+const BODY_TYPE = { minPx: 20, vw: 2.9, maxPx: 33 };
 const COPY = {
   gapPx: 26, //        between the pile and the first line
-  perFontPx: 8.15, //  the body beat's height, in multiples of its own type
+  perFontPx: 8.4, //   the body beat's height, in multiples of its own type
   tailPx: 24, //       air under its last line
   bottomAirPx: 24, //  and under the slot, off the bottom of the screen
 };
