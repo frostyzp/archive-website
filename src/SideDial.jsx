@@ -772,8 +772,9 @@ const GRAIN_HOLD_MS = 350;
 // The active note's transcript is taken out of flow (see st.vMetaBlock) so every
 // item measures the same height, which means this gap is also the only thing
 // separating that transcript from the next note — hence it has to clear the
-// transcript's own cap (~112px) plus its offset, rather than the ~118 that used
-// to be enough when the transcript pushed the next note down by its own height.
+// transcript's own cap (V_TRANSCRIPT_LINES) plus its offset, rather than the
+// ~118 that used to be enough when the transcript pushed the next note down by
+// its own height.
 const V_STACK_GAP = 140;
 // Vertical padding (vh) above the first / below the last note so either can
 // scroll to the exact viewport centre: (100 − noteVh)/2, kept in sync with the
@@ -806,6 +807,12 @@ const V_INACTIVE_OPACITY = { near: 0.46, far: 0.14 };
 // downloading/decoding every note in the category.
 const V_RENDER_WINDOW = 2;
 const V_SCROLL_SETTLE_MS = 150;
+// Lines of transcript shown on a phone before the rest is scrolled to. The
+// column hangs below the note with the bottom chrome underneath it, so the
+// desktop cap (~6 lines) let a long confession run down into the category
+// stepper and the next-note chevron. Three lines is what the longest ones can
+// spend without reaching them; anything past that scrolls under the fade.
+const V_TRANSCRIPT_LINES = 3;
 const V_IMAGE_HEIGHT = `min(${CARD_HEIGHT_VH_MOBILE}vh, ${CARD_HEIGHT_MAX}px)`;
 
 const HOVER_EASE = 'cubic-bezier(0.17, 0.84, 0.44, 1)';
@@ -2584,7 +2591,7 @@ function transcriptFadeMask(fadeTop, fadeBottom) {
   return 'none';
 }
 
-function TranscriptReveal({ text, reduceMotion, instantWords = false }) {
+function TranscriptReveal({ text, reduceMotion, instantWords = false, maxLines }) {
   const words = useMemo(() => text.trim().split(/\s+/), [text]);
   const scrollRef = useRef(null);
   // The dissolve paints into `hostRef` (a positioned wrapper sized to the full
@@ -2645,7 +2652,17 @@ function TranscriptReveal({ text, reduceMotion, instantWords = false }) {
         ref={scrollRef}
         className="transcript-reveal"
         onScroll={updateFade}
-        style={{ ...st.transcriptReveal, WebkitMaskImage: maskImage, maskImage }}
+        style={{
+          ...st.transcriptReveal,
+          // Callers that know their own room can hold the column to a line
+          // count instead of the default cap; `em` here is the transcript's own
+          // font size, so the height is exactly N lines of it.
+          ...(maxLines
+            ? { maxHeight: `${maxLines * TRANSCRIPTION_TEXT.lineHeight}em` }
+            : null),
+          WebkitMaskImage: maskImage,
+          maskImage,
+        }}
       >
         {reduceMotion ? (
           text
@@ -3027,6 +3044,7 @@ export function VerticalConfessionStack({
                   text={c.transcription}
                   reduceMotion={reduceMotion}
                   instantWords={transcriptInstantWords}
+                  maxLines={V_TRANSCRIPT_LINES}
                 />
               </div>
             ) : null}

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
+import { AnimatePresence, cubicBezier, motion, useReducedMotion } from 'motion/react';
 import { INK, inkA } from './colors';
 import { PAGE_BG, PAGE_GRADIENT } from './NoiseGradient';
 import { TunableGrainBackground } from './noise';
@@ -265,11 +265,33 @@ const DISPERSE = {
   queueS: [0, 0.1, 0.18],
   flyS: 0.92, //       s — a note's own way off the stage
   travel: 1500, //     stage units — clears any viewport once scaled
-  spin: 26, //         deg — extra tumble on the way out
+  /* deg of tumble on the way out. A note is off the screen inside the first
+     third of its flight, so only that much of this is ever seen — which is why
+     it takes a number this big to read as a hand having thrown the note rather
+     than a slide. */
+  spin: 44,
+  /* How far the flight bows off the straight line out, in stage units at
+     mid-flight. Sideways first and outward after, on the same side the note
+     tumbles, so the spin and the route agree — a note leaves the pile the way a
+     thrown card does. Kept small: past ~200 the notes start to read as being
+     swept by something rather than let go of. */
+  arc: 130,
+  /* Points the curve is sampled into. Each hop between samples is travelled at
+     one rate, so too few of them and the note is seen to change speed on the
+     sample boundaries. Measured over the part of the flight that is actually on
+     screen, the worst speed change from one frame to the next is 1.39× at 8
+     samples and 1.12× at 32, against 1.07× for the smooth curve itself — so this
+     is where the sampling stops being the thing you'd notice. It costs a couple
+     of dozen numbers, once per note. */
+  arcSamples: 32,
   shrink: 0.95, //     × its resting scale, as it goes: the note reads as
   //                   receding rather than only sliding
   holdS: 0.14, //      s — the empty screen, before the archive
 };
+
+/* The exit's own easing, as a function — the route is sampled at eased progress
+   so the bend costs the flight none of its pacing (see dispersePose). */
+const easeExitAt = cubicBezier(...EASE_EXIT);
 
 /** When note `n` of the queue leaves, s after the click. */
 const disperseDelay = (n) =>
@@ -282,9 +304,10 @@ const DISPERSE_MS =
   (disperseDelay(PHOTOS.length - 2) + DISPERSE.flyS + DISPERSE.holdS) * 1000;
 
 /**
- * Where a note goes when the pile clears: straight out along the line from the
- * middle of the stage through where it was dealt, so the group opens up rather
- * than sliding off as a block. `order` is its place in the deal.
+ * Where a note goes when the pile clears: out along the line from the middle of
+ * the stage through where it was dealt, so the group opens up rather than sliding
+ * off as a block — bowed off that line as it goes (see arcKeyframes) and
+ * tumbling the same way it bends. `order` is its place in the deal.
  *
  * Order 0 is the booth, and it doesn't travel — see DISPERSE.
  */
@@ -299,11 +322,19 @@ function dispersePose({ x, y, rotate, scale, order }) {
   // The notes count their own queue, starting once the booth has gone.
   const delay = disperseDelay(order - 1);
   const len = Math.hypot(x, y) || 1;
+  // Outward (radial) direction, and the side the note tumbles toward.
+  const ux = x / len;
+  const uy = y / len;
+  const side = Math.sign(x || 1);
+  const endX = x + ux * DISPERSE.travel;
+  const endY = y + uy * DISPERSE.travel;
+  const { xs, ys, times } = arcKeyframes({ x, y, endX, endY, ux, uy, side });
+
   return {
     animate: {
-      x: x + (x / len) * DISPERSE.travel,
-      y: y + (y / len) * DISPERSE.travel,
-      rotate: rotate + Math.sign(x || 1) * DISPERSE.spin,
+      x: xs,
+      y: ys,
+      rotate: rotate + side * DISPERSE.spin,
       scale: scale * DISPERSE.shrink,
       opacity: 0,
     },
@@ -311,6 +342,12 @@ function dispersePose({ x, y, rotate, scale, order }) {
       duration: DISPERSE.flyS,
       ease: EASE_EXIT,
       delay,
+      /* The route is a list of points already spaced by EASE_EXIT, so these two
+         run through it at an even rate — the easing is in the spacing, not in
+         the playback. Handing the keyframes the curve as well would ease each
+         hop in and out of every point and the flight would stutter. */
+      x: { duration: DISPERSE.flyS, delay, ease: 'linear', times },
+      y: { duration: DISPERSE.flyS, delay, ease: 'linear', times },
       // The fade trails the movement so a note is seen to leave rather than to
       // vanish on its way.
       opacity: {
@@ -320,6 +357,38 @@ function dispersePose({ x, y, rotate, scale, order }) {
       },
     },
   };
+}
+
+/**
+ * The flight as a bowed route rather than a straight line: a quadratic curve
+ * from where the note lies to where it leaves, its control point pushed
+ * sideways off the middle of that line (DISPERSE.arc).
+ *
+ * Sampled into keyframes because there is no curved path to hand a transform —
+ * x and y are animated independently, and any pair of single values can only
+ * ever describe a straight line between them however they're eased. Sampling at
+ * EASE_EXIT's own progress keeps the pacing the straight version had, so this
+ * changes the route and nothing else.
+ */
+function arcKeyframes({ x, y, endX, endY, ux, uy, side }) {
+  // Perpendicular to the flight, on the side the note is tumbling toward.
+  const bowX = -uy * DISPERSE.arc * side;
+  const bowY = ux * DISPERSE.arc * side;
+  const ctrlX = (x + endX) / 2 + bowX;
+  const ctrlY = (y + endY) / 2 + bowY;
+
+  const xs = [];
+  const ys = [];
+  const times = [];
+  for (let i = 0; i <= DISPERSE.arcSamples; i++) {
+    const t = i / DISPERSE.arcSamples;
+    const p = easeExitAt(t);
+    const q = 1 - p;
+    xs.push(q * q * x + 2 * q * p * ctrlX + p * p * endX);
+    ys.push(q * q * y + 2 * q * p * ctrlY + p * p * endY);
+    times.push(t);
+  }
+  return { xs, ys, times };
 }
 
 /* Type sizes are per beat because the blocks are wildly different lengths —

@@ -1454,6 +1454,12 @@ const M_NAV_BTN = 44; //      px — chevron hit area (thumb-sized floor)
 /* Chevron top that lands its 44px box's centre on the BACK line's centre, so
    the glyph is optically on the row however the two boxes differ in height. */
 const M_NAV_ROW_TOP = M_CHROME_INSET + M_BACK_LINE / 2 - M_NAV_BTN / 2;
+/* And the ˅ mirrored against the bottom edge, so the pair sits at equal insets
+   and reads as one axis through the note. It used to hold a 9vh margin, which on
+   a tall phone left it stranded a third of the way up from the bottom with
+   nothing under it — the overlay has no bottom chrome of its own. `env()` keeps
+   it off the home indicator when the site runs without browser chrome. */
+const M_NAV_ROW_BOTTOM = `max(${M_NAV_ROW_TOP}px, env(safe-area-inset-bottom, 0px))`;
 
 /* Text-link chrome, mirroring the index nav's ABOUT button: ARCHIVE_NAV_TEXT
    (mono, bodySmall 16px, no letter-spacing, white) under the site's dotted
@@ -1591,7 +1597,7 @@ const st = {
     position: 'fixed',
     left: '50%',
     transform: 'translateX(-50%)',
-    bottom: 'max(72px, 9vh)',
+    bottom: M_NAV_ROW_BOTTOM,
     zIndex: 45,
     width: M_NAV_BTN,
     height: M_NAV_BTN,

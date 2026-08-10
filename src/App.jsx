@@ -952,9 +952,10 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false }) {
   // much as a different paper — the lead paragraph right above it is `inkA(0.85)`
   // and the two stacked up looking like two temperatures of white.
   const BODY_COLOR = inkA(0.85);
-  // The onboarding hero's yellow, carried into the drawer for the mailing-list
-  // card's title and the address typed under it — brighter and warmer than the
-  // ink the copy wears, so neither reads as more body text.
+  // The onboarding hero's yellow, carried into the drawer for the address typed
+  // into the mailing-list card and the button once there's something to send —
+  // brighter and warmer than the ink the copy wears, so neither reads as more
+  // body text.
   const ACCENT_INK = '#DDDDAE';
   const bodySize = compact ? 16 : 15;
   const bodyStyle = {
@@ -1339,7 +1340,7 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false }) {
             fontFamily: BODY_FONT,
             fontSize: bodySize + 5,
             lineHeight: 1.15,
-            color: ACCENT_INK,
+            color: BODY_COLOR,
           }}
         >
           Mailing List
@@ -1554,6 +1555,14 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false }) {
   // takeover with nothing of the page left showing to tap, so the ✕ is the way
   // back. The desktop drawer keeps the exits it already had — the dimmed page
   // behind it, ESC, and the wordmark — and none of them cost the header a mark.
+  //
+  // Which is also why the row is mounted in different places by breakpoint (see
+  // below): first thing inside the scrolling column on desktop, so the heading
+  // travels with the copy it names rather than hanging over it, but still in the
+  // fixed header on phone, where scrolling this row away would take the only
+  // visible way out of a full-bleed takeover with it. The bottom margin is the
+  // gap the column's top padding used to give the heading, carried on the row
+  // now that the row lives inside the scroll.
   const titleRow = (
     <div
       style={{
@@ -1561,6 +1570,7 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false }) {
         alignItems: 'center',
         justifyContent: 'space-between',
         gap: 12,
+        marginBottom: compact ? 0 : 18,
       }}
     >
       <h2 style={{ ...headStyle, margin: 0 }}>{activeTab.title}</h2>
@@ -1783,10 +1793,13 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false }) {
       </div>
       )}
 
-      {/* Header out of the scroll, copy inside it: the tabs and the close button
-          are how you get around the drawer, so they stay put while a long section
-          runs under them. Side padding is shared by both, which keeps the tab rule
-          the same width as the copy it sits over. */}
+      {/* Only the phone gets a header out of the scroll: the top tabs and the ✕
+          are how you get around and out of a full-bleed takeover, so they stay
+          put while a long section runs under them. Desktop needs neither pinned —
+          its section navigation hangs off the spine in the folder tabs — so the
+          heading goes into the column and scrolls with the copy. Side padding is
+          shared by header and column, which keeps the tab rule the same width as
+          the copy it sits over. */}
       <div
         style={{
           position: 'relative',
@@ -1802,10 +1815,12 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false }) {
           boxSizing: 'border-box',
         }}
       >
-        <div style={{ flex: '0 0 auto' }}>
-          {topTabs}
-          {titleRow}
-        </div>
+        {compact ? (
+          <div style={{ flex: '0 0 auto' }}>
+            {topTabs}
+            {titleRow}
+          </div>
+        ) : null}
 
         <div
           id="about-panel-body"
@@ -1820,10 +1835,14 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false }) {
             WebkitOverflowScrolling: 'touch',
             outline: 'none',
             // Air under the heading card, and enough at the foot that the last
-            // line clears the phone's home bar.
-            padding: compact ? '16px 0 72px' : '18px 0 48px',
+            // line clears the phone's home bar. Desktop opens flush instead: its
+            // heading is inside this column now and carries that gap on its own
+            // margin, so a top pad here would push the title down the panel and
+            // leave a band of dead space the copy never scrolls through.
+            padding: compact ? '16px 0 72px' : '0 0 48px',
           }}
         >
+          {compact ? null : titleRow}
           <AnimatePresence mode="wait">
             <motion.div
               key={activeSection}
@@ -4914,7 +4933,7 @@ function GridView({
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
                     {f.label}
                     {activeCount > 0 ? (
-                      <span style={{ fontSize: 10, color: 'rgba(207,202,183,0.5)' }}>({activeCount})</span>
+                      <span style={{ color: 'rgba(207,202,183,0.5)' }}>({activeCount})</span>
                     ) : null}
                   </span>
                   <span

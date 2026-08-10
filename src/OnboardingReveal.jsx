@@ -2306,8 +2306,8 @@ function EnterButton({ onClick, start, delayS = 0.5 }) {
       ref={ref}
       className="onboarding-cta"
       onClick={onClick}
-      initial={reduce ? false : { opacity: 0, y: 12 }}
-      animate={inView ? { opacity: 1, y: 0 } : undefined}
+      initial={reduce ? false : { opacity: 0 }}
+      animate={inView ? { opacity: 1 } : undefined}
       transition={{ duration: reduce ? 0 : 0.7, ease, delay: reduce ? 0 : delayS }}
       style={{
         // The label is 214px of tracked-out mono against a column of

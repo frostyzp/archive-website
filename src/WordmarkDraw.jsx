@@ -62,6 +62,10 @@ const DRAW = {
   // the pen holds one constant speed and the short strokes flick past. The
   // routes here run 90 to 1500 units, so some of this is needed.
   lengthBias: 0.7,
+  // Seconds the ink waits after the pen starts moving. Long enough for the dash
+  // to have real length before anything is uncovered, short enough not to read
+  // as a late stroke — a frame and a half at 60fps.
+  inkLead: 0.025,
   // Slack around each mask's box, on top of the half stroke-width its round cap
   // already needs, so the grain filter's edge wander isn't cropped by it.
   pad: 5,
@@ -340,6 +344,14 @@ function WordmarkDrawRun({ hold, onRevealComplete, reduceMotion, config }) {
             // reaches half a stroke-width past the end of the route.
             const margin = s.line.width / 2 + look.pad;
 
+            // Where the waiting dash is parked, in path-lengths. One clears the
+            // path; the cap radius on top of it clears the cap as well, so the
+            // ink can't be seen before the pen touches down. Capped because the
+            // shortest routes here (the middle bar of an E) are barely longer
+            // than the brush is wide, and their radius alone is most of a path.
+            const capFrac = Math.min(1, s.line.width / 2 / s.line.len);
+            const restOffset = 1 + capFrac + 0.01;
+
             // Where this stroke sits in a hand-driven scrub of the whole run.
             const scrubbed = Math.max(
               0,
@@ -361,7 +373,12 @@ function WordmarkDrawRun({ hold, onRevealComplete, reduceMotion, config }) {
                     than by growing `pathLength`. Growing it means a dash of
                     length zero at rest, and a zero-length dash under a round
                     cap is spec'd to render as a dot — so every stroke would sit
-                    on screen as a blob of ink before its turn came. */}
+                    on screen as a blob of ink before its turn came.
+                    Parking the dash at exactly one path-length is not far enough
+                    to be rid of that, though. It leaves the dash ENDING on the
+                    path's first point, and WebKit draws that end's round cap:
+                    on iOS every one of the 31 strokes showed as a dot of ink
+                    before the write-on had begun. Hence both guards below. */}
                 <motion.path
                   d={s.line.d}
                   fill="none"
@@ -371,15 +388,42 @@ function WordmarkDrawRun({ hold, onRevealComplete, reduceMotion, config }) {
                   strokeLinejoin="round"
                   pathLength="1"
                   strokeDasharray="1 1"
-                  initial={{ strokeDashoffset: reduce ? 0 : 1 }}
-                  animate={{ strokeDashoffset: 1 - target }}
+                  initial={{
+                    strokeDashoffset: reduce ? 0 : restOffset,
+                    opacity: reduce ? 1 : 0,
+                  }}
+                  animate={{
+                    // Held clear of the path by more than a cap radius while
+                    // waiting, so there is no dash end for a cap to be drawn on.
+                    // Written as keyframes so the draw still runs the full
+                    // 1 → 0 at the pace it always did: the park is a resting
+                    // place, not part of the route. Rolled into the range
+                    // instead, it would eat up to a third of the timeline of the
+                    // stubbiest strokes — the bar of an E is barely longer than
+                    // the brush is wide — before any ink appeared.
+                    strokeDashoffset: target > 0 ? [1, 1 - target] : restOffset,
+                    // And masked out entirely until the pen touches down, which
+                    // no amount of dash arithmetic can be got wrong. A cut
+                    // rather than a fade: this path is a luminance mask, so a
+                    // ramp would uncover the artwork as a ghost of itself.
+                    opacity: target > 0 ? 1 : 0,
+                  }}
                   transition={
                     reduce || scrub.hold
                       ? { duration: 0 }
                       : {
-                          ...toMotionTransition(write.stroke),
-                          duration: durations[n] / 1000,
-                          delay: startsAt[n] / 1000,
+                          strokeDashoffset: {
+                            ...toMotionTransition(write.stroke),
+                            duration: durations[n] / 1000,
+                            delay: startsAt[n] / 1000,
+                          },
+                          // A frame behind the dash, so the first thing
+                          // uncovered is a stroke with some length to it rather
+                          // than a round cap standing on its own.
+                          opacity: {
+                            duration: 0,
+                            delay: startsAt[n] / 1000 + DRAW.inkLead,
+                          },
                         }
                   }
                 />
