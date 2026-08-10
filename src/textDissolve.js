@@ -15,8 +15,10 @@ import { RevealGL, hexToRgb, springStep } from './revealGL';
  * so it is in the accessibility tree and in the page's text content regardless
  * of phase.
  *
- * Consumers: RevealWordsGL (onboarding display copy) and TranscriptReveal (the
- * active note's transcription).
+ * Consumers: TranscriptReveal (the active note's transcription) and WordmarkGL
+ * (the 'gl' hero title mode). The onboarding display copy used to run through
+ * here too; it cascades in word by word now, so nothing on that page touches
+ * WebGL.
  */
 
 /** px of un-blur at the dissolve front. Scale it to the type size — a radius

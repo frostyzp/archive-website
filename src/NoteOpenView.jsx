@@ -71,6 +71,81 @@ const BRIDGE_DISSOLVE_S = 0.2;
 // target. Must outlast the stack's post-mount scroll-snap correction so the
 // bridge lands where the card actually rests (no hand-off jump).
 const MORPH_SETTLE_MS = 180;
+
+/* ─────────────────────────────────────────────────────────────────────
+ * ANIMATION STORYBOARD — LEAVING THE DIAL (explore → index)
+ *
+ * The EXPLORE tab doesn't cut back to the index; it clears itself in the
+ * order you'd read it. The middle empties, then the wheel walks off the
+ * side it pivots on. Times are ms after INDEX is clicked.
+ *
+ *    0ms   the note stack in the middle fades out             (260ms)
+ *  140ms   the dial's words slide left and fade, top of the
+ *          arc first, 80ms apart, each spoke riding with its
+ *          own word                                           (500ms each)
+ *  840ms   what's left — grain, vignette, note counter — goes
+ *          with the page                                      (280ms)
+ *  960ms   the last word is away
+ * 1120ms   explore unmounts. The view switch is an
+ *          AnimatePresence mode="wait", so only now does the
+ *          index mount — and it arrives playing its first-load
+ *          entrance, not cutting in (see gridEntranceDoneRef
+ *          in App.jsx).
+ *
+ * Only the EXPLORE tab leaves this way. The note overlay lifted out of the
+ * grid still cuts on exit: the index is already sitting behind it, so
+ * anything slower reads as lag rather than choreography.
+ * ───────────────────────────────────────────────────────────────────── */
+const EXPLORE_EXIT = {
+  notes: 0.26, //     s — the centre stack dissolves
+  // The page fade multiplies into every row still travelling, so it has to
+  // hold until the wheel is nearly away. Start it while the stagger is still
+  // running and the last rows are dragged to zero together — the bottom three
+  // vanish within a frame or two of each other and the stagger is lost exactly
+  // where it should be most visible.
+  pageDelay: 0.84, // s — the rest holds until the wheel is nearly away
+  page: 0.28, //      s — then grain, vignette and counter follow it out
+};
+const DIAL_EXIT = {
+  travel: 320, //    px — left, on top of however far the row already sits
+  slide: 0.5, //     s — one row's journey off the edge
+  stagger: 0.08, //  s — between rows, top of the arc first
+  delay: 0.14, //    s — after the notes have started to go
+  // Everything else in this file leaves on EASE_OUT, which spends nearly all
+  // its distance in the first fifth and drifts out the rest. That's right for
+  // something arriving and wrong for something this slow leaving: stretched
+  // over half a second it reads as the old quick slide followed by a hang
+  // rather than as a slower exit. A symmetric curve puts the speed in the
+  // middle of the journey, which is the part you actually watch.
+  ease: [0.4, 0, 0.6, 1],
+};
+/* When the last thing anyone can see finishes. The page fade multiplies into
+ * every row, so this is the moment the view is blank whatever else is still
+ * animating — and AnimatePresence holds the unmount for the slowest exit, which
+ * means anything running past here is 250ms of black screen bought with motion
+ * nobody can see. The tail rows give up the rest of their journey instead: they
+ * cross this line under ~15% opacity, which is already the "dragged to zero
+ * together" reading the stagger above is written for. */
+const EXPLORE_EXIT_END = EXPLORE_EXIT.pageDelay + EXPLORE_EXIT.page;
+/* The staged page fade, as an exit. Shared with anything portaled out of the
+ * root: a portal's node is not inside the root, so the root's own fade can't
+ * reach it and it has to leave on the same clock under its own steam. */
+const pageFadeExit = (staged) =>
+  staged
+    ? {
+        opacity: 0,
+        transition: {
+          duration: EXPLORE_EXIT.page,
+          delay: EXPLORE_EXIT.pageDelay,
+          // DIAL_EXIT's symmetric curve rather than EASE_OUT, for the reason
+          // given there: ease-out is an arrival curve, and on the way out it
+          // spends its last third under 5% opacity — 90ms that looks finished
+          // but still counts, since nothing can unmount or take the screen
+          // until the animation formally ends.
+          ease: DIAL_EXIT.ease,
+        },
+      }
+    : { opacity: 0, transition: { duration: 0 } };
 // The grid tile is a square with the note image `objectFit:contain` inside
 // this much padding (see GridView) — so the visible pixels sit in a letterboxed
 // box this far in from the tile rect. Used to start the morph bridge on the
@@ -147,7 +222,7 @@ function containBox(box, aspect) {
  * at a time. Each label springs to a new arc slot when the active category
  * changes, which reads as the wheel rotating.
  */
-const WHEEL = {
+export const WHEEL = {
   baseX: 128, //     px — active wordmark's horizontal centre (from column left)
   radius: 620, //    px — arc radius; larger = gentler curve (less left drift)
   stepDeg: 17, //    deg between adjacent categories along the arc
@@ -157,12 +232,17 @@ const WHEEL = {
   opacity: [1, 0.4, 0.18], // by |offset| from active: [active, ±1, ±2]
 };
 
+/** Degrees between adjacent categories on the wheel. Exported so a view that
+ *  wants to sit its content ON the dial's arc (see CategoryRows, which tilts
+ *  each category row to its label's angle) turns by the same amount. */
+export const DIAL_STEP_DEG = WHEEL.stepDeg;
+
 // Arc transform for a label `k` steps from the active one (k<0 above, k>0
 // below). x is always ≤ 0 so labels drift left toward the pivot as they recede.
 // `vis` caps how many neighbours stay lit; past it the label is fully
 // transparent — parked off the back of the wheel, which is where the wrap seam
 // hides so the loop never flashes a label swinging across the face.
-function wheelSlot(k, vis = WHEEL.visible) {
+export function wheelSlot(k, vis = WHEEL.visible) {
   const rad = (k * WHEEL.stepDeg * Math.PI) / 180;
   const ak = Math.abs(k);
   return {
@@ -178,10 +258,20 @@ function wheelSlot(k, vis = WHEEL.visible) {
 // the *short* way to its next slot and the wheel loops endlessly; the label
 // crossing the back seam does so while parked off-wheel (opacity 0), so the
 // wrap is invisible.
-function wheelOffset(i, idx, n) {
+export function wheelOffset(i, idx, n) {
   let k = (((i - idx) % n) + n) % n; // 0 … n-1
   if (k > n / 2) k -= n; //             fold into (-n/2, n/2]
   return k;
+}
+
+// How many neighbours each side stay lit, for a wheel of `n` categories. Kept
+// narrow enough that at least the back slot stays hidden — that hidden gap is
+// where the wrap seam lives, so looping never flashes a label sweeping across
+// the wheel's face. Exported so anything animating INTO the dial (the index
+// rail's category flight) lands its words at the same opacities the dial will
+// render a frame later.
+export function wheelVisible(n) {
+  return Math.max(1, Math.min(WHEEL.visible, Math.floor((n - 3) / 2)));
 }
 
 // Gap (px) between a spoke's inner end and its wordmark's left edge.
@@ -212,7 +302,30 @@ const CATEGORY_DEFINITIONS = {
     'Letting AI be your voice or representative by allowing it to draft or fully respond on your behalf in professional and personal contexts.',
 };
 
-function LeftThemeDial({ emotions, activeId, onChange, onExplore, reduceMotion, delay }) {
+export function LeftThemeDial({
+  emotions,
+  activeId,
+  onChange,
+  onExplore,
+  reduceMotion,
+  delay,
+  /** Held dark while the index rail's categories are still flying here. The
+   *  flight draws its own copy of every wordmark, so showing ours underneath
+   *  would double every label. */
+  hidden = false,
+  /** A flight brought us here — the words on the arc were drawn a moment ago
+   *  (or still are). Either way this dial has already been introduced and must
+   *  cut in, never fade. Separate from `hidden` because we can mount on either
+   *  side of the landing depending on how long the index takes to clear, and
+   *  only the early case is ever `hidden`. */
+  handoff = false,
+  /** `(label) => ref` handing out the zero-size slot anchor each wordmark is
+   *  centred on. A flight back to the index reads its start pose off these. */
+  registerSlot,
+  /** Leave by walking off the left edge, row by row, instead of vanishing with
+   *  the view. Only the EXPLORE tab does this — see the storyboard up top. */
+  exitLeft = false,
+}) {
   const idx = Math.max(0, emotions.findIndex((e) => e.id === activeId));
   const active = emotions[idx];
 
@@ -221,6 +334,22 @@ function LeftThemeDial({ emotions, activeId, onChange, onExplore, reduceMotion, 
   // label, so we cache them by id and only re-measure on font load / resize.
   const wordElsRef = useRef(new Map());
   const [wordWidths, setWordWidths] = useState({});
+  // Sticky: once a flight has had anything to do with us, every reveal is a cut
+  // rather than a fade, including the one that ends the flight.
+  const handedOffRef = useRef(false);
+  if (hidden || handoff) handedOffRef.current = true;
+  const handedOff = handedOffRef.current;
+  // The column cuts in at a handoff so the wordmarks don't ghost up through the
+  // copies the flight already drew. The spokes and the counter have no such
+  // counterpart — cutting them in snaps a set of hairlines into being out of
+  // nowhere — so they draw themselves on afterwards instead.
+  const settleIn = handedOff
+    ? {
+        initial: { opacity: 0 },
+        animate: { opacity: hidden ? 0 : 1 },
+        transition: { duration: hidden ? 0 : 0.32, ease: EASE_OUT },
+      }
+    : {};
   // Cursor-following definition tooltip for the category the pointer is over.
   const [tip, setTip] = useState(null);
   const setWordEl = useCallback(
@@ -256,13 +385,33 @@ function LeftThemeDial({ emotions, activeId, onChange, onExplore, reduceMotion, 
   // that hidden gap is where the wrap seam lives, so looping never flashes a
   // label sweeping across the wheel's face. Full `visible` for the real 7-way
   // dial; degrades gracefully if fewer categories are present.
-  const vis = Math.max(1, Math.min(WHEEL.visible, Math.floor((n - 3) / 2)));
+  const vis = wheelVisible(n);
   if (!active) return null;
 
   // Each label springs to its new slot when `idx` changes → the wheel rotates.
   const spin = reduceMotion
     ? { duration: 0 }
     : { type: 'spring', visualDuration: 0.6, bounce: 0.12 };
+
+  // Leaving for the index: the row carries on the way it was already leaning —
+  // further left, out past the pivot — and fades on the way. Rows go top-first
+  // so the wheel unwinds downward. The back slots are already invisible, so
+  // they leave with the first row rather than holding the tail of the stagger.
+  const rowExit = (k) => {
+    if (!exitLeft || reduceMotion) return undefined;
+    const delay = DIAL_EXIT.delay + (Math.abs(k) <= vis ? k + vis : 0) * DIAL_EXIT.stagger;
+    return {
+      x: wheelSlot(k, vis).x - DIAL_EXIT.travel,
+      opacity: 0,
+      transition: {
+        // Clipped to the page fade (EXPLORE_EXIT_END) — the bottom rows set off
+        // late enough that a full slide would outlast the view.
+        duration: Math.max(0, Math.min(DIAL_EXIT.slide, EXPLORE_EXIT_END - delay)),
+        delay,
+        ease: DIAL_EXIT.ease,
+      },
+    };
+  };
 
   // Hover handlers for a lit category label: pop its blurb next to the cursor
   // (and track the cursor). Returns null for themes with no definition, leaving
@@ -296,9 +445,23 @@ function LeftThemeDial({ emotions, activeId, onChange, onExplore, reduceMotion, 
 
   return (
     <motion.div
-      initial={reduceMotion ? { opacity: 1 } : { opacity: 0, x: -16 }}
-      animate={{ opacity: 1, x: 0 }}
-      transition={{ duration: 0.5, ease: EASE_OUT, delay }}
+      // Mounting mid-flight we start dark and cut in when the words land;
+      // mounting after one has already landed there is nothing left to wait
+      // for, so we're simply here. Only a dial nobody flew to slides in.
+      initial={
+        reduceMotion || hidden || handoff
+          ? { opacity: hidden ? 0 : 1 }
+          : { opacity: 0, x: -16 }
+      }
+      animate={{ opacity: hidden ? 0 : 1, x: 0 }}
+      // Coming out of a handoff there is nothing to reveal: the flight has
+      // already drawn these exact words at these exact places, so we cut in
+      // under them. Fading would ghost the dial up through its own copy.
+      transition={
+        handedOff
+          ? { duration: 0 }
+          : { duration: reduceMotion ? 0 : 0.5, ease: EASE_OUT, delay }
+      }
       style={st.dialColumn}
     >
       {/* Rotary wheel: every category positioned on the arc by its shortest
@@ -316,8 +479,10 @@ function LeftThemeDial({ emotions, activeId, onChange, onExplore, reduceMotion, 
         return (
           <motion.div
             key={emo.id}
+            ref={registerSlot?.(emo.label)}
             initial={false}
             animate={{ x: slot.x, y: slot.y, rotate: slot.rotate, opacity: slot.opacity }}
+            exit={rowExit(k)}
             transition={spin}
             style={{ ...st.slot, zIndex: isActive ? 3 : 1 }}
           >
@@ -367,7 +532,7 @@ function LeftThemeDial({ emotions, activeId, onChange, onExplore, reduceMotion, 
           wordmark inward to the wheel's (off-screen) pivot, so every line is a
           true radius and they all fan out from the dial's centre. Each rides the
           arc with its label via the same slot transform. No node — just the line. */}
-      <div aria-hidden="true" style={st.dialSpokeLayer}>
+      <motion.div aria-hidden="true" style={st.dialSpokeLayer} {...settleIn}>
         {emotions.map((emo, i) => {
           const k = wheelOffset(i, idx, n);
           const slot = wheelSlot(k, vis);
@@ -380,6 +545,7 @@ function LeftThemeDial({ emotions, activeId, onChange, onExplore, reduceMotion, 
               key={emo.id}
               initial={false}
               animate={{ x: slot.x, y: slot.y, rotate: slot.rotate, opacity: slot.opacity }}
+              exit={rowExit(k)}
               transition={spin}
               style={st.slot}
             >
@@ -389,14 +555,20 @@ function LeftThemeDial({ emotions, activeId, onChange, onExplore, reduceMotion, 
             </motion.div>
           );
         })}
-      </div>
+      </motion.div>
 
       {/* Which category you're on ("03 / 06"), set small above the active
           wordmark. Deliberately NOT the note counter pinned bottom-centre — that
           one counts notes inside the current category, this one counts categories.
           Keyed on activeId so the figure crossfades as the wheel turns instead of
           hard-cutting mid-spin. */}
-      <div style={st.dialCatCount} aria-label={`Category ${idx + 1} of ${n}`}>
+      <motion.div
+        style={st.dialCatCount}
+        aria-label={`Category ${idx + 1} of ${n}`}
+        {...settleIn}
+        // Rides out with the row it labels.
+        exit={rowExit(0)}
+      >
         <AnimatePresence mode="wait">
           <motion.span
             key={activeId}
@@ -409,7 +581,7 @@ function LeftThemeDial({ emotions, activeId, onChange, onExplore, reduceMotion, 
             <span style={st.dCounterTotal}>{` / ${String(n).padStart(2, '0')}`}</span>
           </motion.span>
         </AnimatePresence>
-      </div>
+      </motion.div>
     </motion.div>
   );
 }
@@ -417,10 +589,10 @@ function LeftThemeDial({ emotions, activeId, onChange, onExplore, reduceMotion, 
 /* ── Mobile theme caption ──────────────────────── */
 
 /**
- * Mobile replacement for the left rotary dial (which has no room beside the
- * full-width note on a phone). Category name sits top-left; the note counter
- * (NN/MM) sits bottom-centre. Both crossfade as the centred note's category /
- * position change while the user swipes the vertical carousel.
+ * The phone's note counter (NN/MM), bottom-centre beneath the category stepper.
+ * Crossfades as the centred note's category / position change while the user
+ * swipes the vertical carousel — keyed on both, so stepping category re-reads
+ * even when the position number happens to be unchanged.
  */
 function MobileThemeCaption({ label, position, total, reduceMotion }) {
   const fade = {
@@ -483,7 +655,7 @@ function StepperArrow({ points, label, grainId, onClick }) {
 function MobileThemeStepper({ label, onStep, reduceMotion, delay = 0 }) {
   return (
     <motion.div
-      initial={reduceMotion ? false : { opacity: 0, y: -8 }}
+      initial={reduceMotion ? false : { opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: reduceMotion ? 0 : 0.45, ease: EASE_OUT, delay }}
       style={st.mStepperWrap}
@@ -527,25 +699,44 @@ export default function NoteOpenView({
   emotions,
   originRect,
   onExit,
-  onAbout,
   onIndex,
   onExplore,
   // When true, this renders as a persistent top-level view (the EXPLORE tab)
   // rather than a grid-click overlay: no shared-element morph, it opens on the
   // first note, sits BELOW the app's nav chrome (so the tab bar shows through),
-  // hides its own INDEX/ABOUT cluster (the nav bar already provides those), and
-  // an empty-space click no longer dismisses it. Esc still steps out via onExit.
+  // hides its own BACK (that nav bar's INDEX already leads out), and an
+  // empty-space click no longer dismisses it. Esc still steps out via onExit.
   standalone = false,
+  /** True while the index rail's categories are still flying to the dial. */
+  dialHidden = false,
+  /** True when a flight brought us here at all, whether or not it has already
+   *  landed. See `handoff` on LeftThemeDial. */
+  dialHandoff = false,
+  /** `(label) => ref` for the dial's slot anchors, so a flight back to the
+   *  index can read where each wordmark currently sits. */
+  registerDialSlot,
 }) {
   const reduceMotion = useReducedMotion();
   const isMobile = useIsMobile();
 
-  // The stack browses all *themed* notes, clustered in dial order — the same
-  // data the dial page's stack sees. Scrolling moves through them continuously;
-  // the left dial reflects (and jumps to) categories.
+  // What the stack browses, and in what order.
+  //
+  // The EXPLORE tab clusters by category (dial order): its dial steps categories
+  // and expects each one's notes to be contiguous, and only categorised notes
+  // belong on a view whose whole frame is the category you're in.
+  //
+  // The grid overlay takes the list exactly as handed to it — the notes the index
+  // was showing, in the order it was showing them — so tapping a note enlarges
+  // THAT note and scrolling carries on through its neighbours. Clustering here
+  // would both reshuffle the order out from under the tap and drop the
+  // uncategorised majority of the archive, which is how a tap on one of them
+  // used to open a different note entirely.
   const themed = useMemo(
-    () => sortConfessionsByEmotions(confessions.filter((c) => c.category), emotions),
-    [confessions, emotions]
+    () =>
+      standalone
+        ? sortConfessionsByEmotions(confessions.filter((c) => c.category), emotions)
+        : confessions,
+    [confessions, emotions, standalone]
   );
 
   // Index of the clicked note within the stack (this view remounts per open,
@@ -563,7 +754,6 @@ export default function NoteOpenView({
     [emotions, activeLabel]
   );
   const activeId = activeEmotion?.id ?? null;
-  const total = themeStats(confessions, activeLabel).count;
 
   // Active note's position within its own category (0-based). `themed` clusters
   // categories in dial order, so the run of same-category notes is contiguous;
@@ -573,6 +763,13 @@ export default function NoteOpenView({
     const i = within.findIndex((c) => c.id === activeNote?.id);
     return i < 0 ? 0 : i;
   }, [themed, activeLabel, activeNote]);
+
+  // What the NN/MM counter counts. On EXPLORE it's your place in the category
+  // the dial is parked on — the category is the frame there. In the grid overlay
+  // it's your place in the list you tapped into, which is the only count that
+  // means anything when most of those notes carry no category at all.
+  const position = standalone ? indexInCategory + 1 : activeIndex + 1;
+  const total = standalone ? themeStats(confessions, activeLabel).count : themed.length;
 
   // ── Shared-element entrance ──────────────────────────────
   // The clicked grid image itself flies + scales from its tile into the stack's
@@ -588,6 +785,9 @@ export default function NoteOpenView({
   const overlayRef = useRef(null);
   const [bridgeScope, bridgeAnimate] = useAnimate();
   const revealed = phase === 'done';
+  // Whether this instance clears itself in beats on the way out (EXPLORE tab)
+  // or cuts (a note lifted out of the grid). See the storyboard at the top.
+  const stagedExit = standalone && !reduceMotion;
 
   useEffect(() => {
     if (phase !== 'morph') return undefined;
@@ -901,14 +1101,27 @@ export default function NoteOpenView({
       // image renders crisp — root opacity would dim it and re-expose the grid as
       // a ghost). It's the *backdrop layer* below that veils in; the root holds no
       // fill of its own. Without a morph the whole overlay still fades in gently.
-      initial={reduceMotion || wantMorph ? false : { opacity: 0 }}
+      //
+      // Arriving on a flight it holds too, for the same reason one layer down:
+      // the index takes long enough to clear that we mount barely a frame before
+      // the words land, and anything still fading here dims the dial they hand
+      // off to — the wordmarks and their brackets come up at ~70% and climb,
+      // which reads as a blink on the [ ] that were solid a frame earlier.
+      // Nothing is lost by cutting: the notes and the counter each own their
+      // entrance, and all this layer carries is a near-black gradient.
+      initial={reduceMotion || wantMorph || dialHandoff ? false : { opacity: 0 }}
       animate={{ opacity: 1 }}
-      // On exit (click-out / Esc / INDEX) the note image is CUT immediately —
-      // no fade-out of the open note. The overlay unmounts on the same frame,
+      // Lifted out of the grid, the note image is CUT on exit (click-out / Esc
+      // / INDEX) — no fade-out. The overlay unmounts on the same frame,
       // revealing the index underneath, whose tiles fade back in on their own
       // (see GRID EXIT in App.jsx). Overriding just the exit transition keeps
       // the gentle entrance fade intact.
-      exit={{ opacity: 0, transition: { duration: 0 } }}
+      //
+      // As the EXPLORE tab there is nothing behind it to reveal, so it clears
+      // itself instead: the notes and the dial leave first (each owns its own
+      // exit) and this last fade takes the backdrop, vignette and counter with
+      // it once they're gone. See the storyboard at the top of the file.
+      exit={pageFadeExit(stagedExit)}
       transition={{ duration: reduceMotion ? 0 : 0.3, ease: EASE_OUT }}
       // As a tab, sit beneath the app's fixed nav chrome (z 200) so the
       // INDEX · EXPLORE · DIAL · ABOUT bar stays visible + clickable on top; as
@@ -930,7 +1143,7 @@ export default function NoteOpenView({
             : { duration: 0 }
         }
       >
-        <TunableGrainBackground />
+        <TunableGrainBackground opacityScale={isMobile ? 0.28 : undefined} />
       </motion.div>
 
       {/* Horizontal side-scrolling note stack — the dial page's coverflow
@@ -941,6 +1154,13 @@ export default function NoteOpenView({
       <motion.div
         initial={{ opacity: wantMorph ? 0 : 1 }}
         animate={{ opacity: revealed ? 1 : 0 }}
+        // First thing to go on the way back to the index — the frame empties
+        // from the middle out.
+        exit={
+          stagedExit
+            ? { opacity: 0, transition: { duration: EXPLORE_EXIT.notes, ease: EASE_OUT } }
+            : undefined
+        }
         transition={{ duration: BRIDGE_FADE_S, ease: EASE_OUT }}
         style={{ ...st.stageArea, pointerEvents: revealed ? 'auto' : 'none' }}
       >
@@ -997,7 +1217,7 @@ export default function NoteOpenView({
               ) : null}
               <MobileThemeCaption
                 label={activeLabel}
-                position={indexInCategory + 1}
+                position={position}
                 total={total}
                 reduceMotion={reduceMotion}
               />
@@ -1010,30 +1230,52 @@ export default function NoteOpenView({
               onExplore={standalone ? undefined : onExplore}
               reduceMotion={reduceMotion}
               delay={reduceMotion ? 0 : CATEGORY_REVEAL_DELAY_S}
+              hidden={dialHidden}
+              handoff={dialHandoff}
+              registerSlot={registerDialSlot}
+              exitLeft={stagedExit}
             />
           )}
 
           {/* Desktop: the active note's "n / total" position, pinned to the
               bottom-centre of the screen (mobile already has its own counter in
-              MobileThemeCaption). Updates live as you scroll between notes. */}
-          {!isMobile && total > 1 ? (
-            <motion.div
-              initial={reduceMotion ? false : { opacity: 0 }}
-              animate={{ opacity: 1 }}
-              transition={{ duration: reduceMotion ? 0 : 0.4, ease: EASE_OUT, delay: reduceMotion ? 0 : 0.12 }}
-              style={st.dCounterWrap}
-            >
-              <div
-                style={st.dCounter}
-                aria-label={`Note ${indexInCategory + 1} of ${total} in this category`}
-              >
-                <span style={st.dCounterCurrent}>
-                  {String(indexInCategory + 1).padStart(2, '0')}
-                </span>
-                <span style={st.dCounterTotal}>{` / ${String(total).padStart(2, '0')}`}</span>
-              </div>
-            </motion.div>
-          ) : null}
+              MobileThemeCaption). Updates live as you scroll between notes.
+
+              Portaled to <body> as the EXPLORE tab, because the archive pins a
+              black edge wash across the bottom of the screen at z 150 and this
+              tab's root sits at z 1 — inside that stacking context no z-index
+              can climb over the wash, so the counter was reading through it.
+              At <body> it stacks against the wash directly (D_COUNTER_Z), and
+              carries the page fade itself since the root's exit can no longer
+              reach it. As the grid-click overlay the root is already above the
+              wash, so that path stays exactly where it was. */}
+          {!isMobile && total > 1
+            ? (() => {
+                const counter = (
+                  <motion.div
+                    key="explore-note-counter"
+                    initial={reduceMotion ? false : { opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={standalone ? pageFadeExit(stagedExit) : undefined}
+                    transition={{
+                      duration: reduceMotion ? 0 : 0.4,
+                      ease: EASE_OUT,
+                      delay: reduceMotion ? 0 : 0.12,
+                    }}
+                    style={st.dCounterWrap}
+                  >
+                    <div
+                      style={st.dCounter}
+                      aria-label={`Note ${position} of ${total} in this category`}
+                    >
+                      <span style={st.dCounterCurrent}>{String(position).padStart(2, '0')}</span>
+                      <span style={st.dCounterTotal}>{` / ${String(total).padStart(2, '0')}`}</span>
+                    </div>
+                  </motion.div>
+                );
+                return standalone ? createPortal(counter, document.body) : counter;
+              })()
+            : null}
 
           {/* Mobile up/down chevrons (vertical carousel — up = previous note,
               down = next). Overlay only: on the standalone EXPLORE tab the top
@@ -1118,49 +1360,27 @@ export default function NoteOpenView({
             </motion.div>
           )}
 
-          {/* INDEX + ABOUT cluster — only for the grid-click OVERLAY. As the
-              EXPLORE tab, the app's own nav bar (INDEX · EXPLORE · DIAL · ABOUT)
-              renders above this view, so a second cluster here would duplicate it. */}
+          {/* BACK to the index — only for the grid-click OVERLAY, which the index
+              only ever opens on a phone (a pointer gets the Lightbox instead), and
+              which covers the site's own nav bar. So this is the whole of the
+              chrome: the one thing being asked for here is the way back to the
+              tile you tapped. As the EXPLORE tab the nav bar shows through
+              instead, and its INDEX does the same job. */}
           {!standalone && (
-            <motion.div
+            <motion.button
+              type="button"
               initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
+              animate={{ opacity: st.mobileBack.opacity }}
               transition={{ duration: 0.4, ease: EASE_OUT, delay: reduceMotion ? 0 : 0.04 }}
-              style={st.chrome}
+              aria-label="Back to index"
+              onClick={(e) => {
+                e.stopPropagation();
+                onIndex?.();
+              }}
+              style={st.mobileBack}
             >
-              {/* INDEX (returns to the grid) + ABOUT, styled to match the main
-                  index screen's nav bar. INTRO/DIAL and the EXIT button are
-                  intentionally hidden — the view is also dismissed with Esc or a
-                  backdrop click. */}
-              <button
-                type="button"
-                style={st.navAbout}
-                aria-label="Return to index"
-                onClick={() => onIndex?.()}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.opacity = '0.8';
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.opacity = '0.5';
-                }}
-              >
-                INDEX
-              </button>
-              <button
-                type="button"
-                style={st.navAbout}
-                aria-label="Open about panel"
-                onClick={() => onAbout?.()}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.opacity = '0.8';
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.opacity = '0.5';
-                }}
-              >
-                ABOUT
-              </button>
-            </motion.div>
+              BACK
+            </motion.button>
           )}
         </>
       )}
@@ -1187,6 +1407,31 @@ export default function NoteOpenView({
 }
 
 const MONO = 'var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace)';
+
+/* Phone explore chrome, measured up from the screen edge: the note counter, with
+   the category stepper directly above it. Held well clear of the bottom so
+   neither sits under the scroll indicator or a phone's home bar. */
+const M_COUNTER_BOTTOM = 76;
+const M_STEPPER_GAP = 30; // counter line → stepper
+
+/* Text-link chrome, mirroring the index nav's ABOUT button: ARCHIVE_NAV_TEXT
+   (mono, bodySmall 16px, no letter-spacing, white) under the site's dotted
+   underline. Callers set their own resting opacity. */
+const NAV_LINK = {
+  background: 'none',
+  border: 'none',
+  padding: '2px 4px',
+  fontFamily: MONO,
+  fontSize: 16,
+  fontWeight: 400,
+  lineHeight: 1.5,
+  letterSpacing: '0',
+  color: '#CFCAB7',
+  cursor: 'pointer',
+  transition: 'opacity 0.2s ease',
+  WebkitTapHighlightColor: 'transparent',
+  ...LINK_UNDERLINE,
+};
 
 const st = {
   root: {
@@ -1321,37 +1566,17 @@ const st = {
     WebkitTapHighlightColor: 'transparent',
   },
 
-  // Matches the main index screen's top-right nav chrome (App.jsx AboutHeader):
-  // fixed to the top-right at the same inset, holding a single ABOUT button.
-  chrome: {
+  // The overlay's only chrome, at the same inset the index nav keeps. Sits a
+  // little stronger than a resting nav link: it covers the site's nav bar, so
+  // this is the only way out that isn't a gesture, and a phone has no hover to
+  // find it with.
+  mobileBack: {
+    ...NAV_LINK,
     position: 'absolute',
     top: 24,
-    right: 24,
+    left: 24,
     zIndex: 40,
-    display: 'flex',
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    padding: '0 12px',
-    minHeight: 40,
-  },
-  // Mirrors the index ABOUT button: ARCHIVE_NAV_TEXT (mono, bodySmall 16px, no
-  // letter-spacing, white) resting at 0.5 opacity, 0.8 on hover.
-  navAbout: {
-    background: 'none',
-    border: 'none',
-    padding: '2px 4px',
-    fontFamily: MONO,
-    fontSize: 16,
-    fontWeight: 400,
-    lineHeight: 1.5,
-    letterSpacing: '0',
-    color: '#CFCAB7',
-    opacity: 0.5,
-    cursor: 'pointer',
-    transition: 'opacity 0.2s ease',
-    // Reads as a hyperlink → the site's dotted underline, as in the index nav.
-    ...LINK_UNDERLINE,
+    opacity: 0.72,
   },
 
   // Left rotary dial — a full-height positioning context on the left edge; the
@@ -1472,7 +1697,7 @@ const st = {
     position: 'absolute',
     left: 0,
     right: 0,
-    bottom: 40,
+    bottom: M_COUNTER_BOTTOM,
     zIndex: 20,
     display: 'flex',
     justifyContent: 'center',
@@ -1487,12 +1712,14 @@ const st = {
   },
 
   // ── Mobile theme stepper ──────────────────────────────────
-  // Centered category feature flanked by grain-filtered ‹ / › arrows, pinned
-  // just under the top nav. The wrap ignores pointer events so only the arrows
-  // are tappable — the empty gutter over the note stays swipeable.
+  // Centered category feature flanked by grain-filtered ‹ / › arrows, docked
+  // directly above the note counter: which category you're in and how far
+  // through it you are read as one block, and the top of the screen is left to
+  // the note itself. The wrap ignores pointer events so only the arrows are
+  // tappable — the empty gutter around the note stays swipeable.
   mStepperWrap: {
     position: 'fixed',
-    top: 60,
+    bottom: M_COUNTER_BOTTOM + M_STEPPER_GAP,
     left: 0,
     right: 0,
     zIndex: 46,
@@ -1544,14 +1771,19 @@ const st = {
 
   // ── Desktop bottom-centre note counter ────────────────────
   // The active note's "n / total" position within its category, pinned to the
-  // bottom of the screen (relocated out from under the transcript). Sits above
-  // the edge vignette so it stays legible.
+  // bottom of the screen (relocated out from under the transcript). Above both
+  // things that darken that strip: this view's edge vignette (z 5) and the
+  // archive's bottom edge wash (z 150), which it clears by being portaled to
+  // <body> on the EXPLORE tab — see where it's rendered. Under the nav chrome
+  // (z 200), which still owns anything it overlaps.
+  // `fixed` rather than `absolute` so the geometry is the same either side of
+  // that portal: the root it used to sit in is itself a fixed inset-0 box.
   dCounterWrap: {
-    position: 'absolute',
+    position: 'fixed',
     left: 0,
     right: 0,
     bottom: 'clamp(18px, 3.6vh, 34px)',
-    zIndex: 20,
+    zIndex: 160,
     display: 'flex',
     justifyContent: 'center',
     pointerEvents: 'none',

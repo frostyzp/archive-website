@@ -99,3 +99,24 @@ export async function loadConfessions({ url = CSV_URL } = {}) {
     });
   });
 }
+
+/**
+ * Same fetch, shared across every caller on the page. More than one place wants
+ * the corpus now (the archive views via `useConfessions`, and the closing beat's
+ * ascii field, which only needs the transcription text) and they mount
+ * independently, so without this the CSV downloads once per consumer.
+ *
+ * A rejection isn't cached — clearing the slot lets a later mount retry instead
+ * of inheriting a failure from the first attempt.
+ */
+let pending = null;
+
+export function loadConfessionsOnce(options) {
+  if (!pending) {
+    pending = loadConfessions(options).catch((err) => {
+      pending = null;
+      throw err;
+    });
+  }
+  return pending;
+}

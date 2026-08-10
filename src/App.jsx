@@ -1,4 +1,15 @@
-import { useState, useMemo, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
+import {
+  useState,
+  useMemo,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useCallback,
+  useImperativeHandle,
+  forwardRef,
+  memo,
+} from 'react';
+import { createPortal } from 'react-dom';
 import {
   animate,
   motion,
@@ -8,24 +19,26 @@ import {
   useSpring,
 } from 'motion/react';
 import { Text, TRANSCRIPTION_TEXT, TRANSCRIPTION_FONT_SIZE, VARIANTS } from './text';
-import OnboardingReveal from './OnboardingReveal';
+// The landing page is the beat-stepped telling; the scrolled original is still
+// itself at /onboarding.
+import OnboardingBeats from './OnboardingBeats';
 import { Sidebar, SIDEBAR_WIDTH } from './Sidebar';
 import {
   BOTTOM_DIAL_SIZE,
   BottomCompassDial,
-  DialNavHint,
   getCategoryBreadcrumbInfo,
   HorizontalConfessionStack,
   INTRO_SPIN_EASE_BEZIER,
   NavGrainFilter,
+  NOTE_META_STYLE,
 } from './SideDial';
 import { CONFESSIONS as FALLBACK_CONFESSIONS } from './confessions';
 import {
   deriveEmotions,
   sortConfessionsByEmotions,
-  NEUTRAL_GRADIENT,
   formatCategoryLabel,
 } from './themes';
+import { PAGE_BG, PAGE_GRADIENT } from './NoiseGradient';
 import { useConfessions } from './useConfessions';
 import {
   TunableGrainBackground,
@@ -35,10 +48,21 @@ import {
   useInactiveCardParams,
 } from './noise';
 import { INK, inkA } from './colors';
-import { LINK_UNDERLINE, LINK_UNDERLINE_CSS } from './linkUnderline';
+import { LINK_UNDERLINE, LINK_UNDERLINE_CSS, linkUnderlineRaised } from './linkUnderline';
 import { subscribeToKit } from './kit';
-import NoteOpenView, { TILE_PADDING } from './NoteOpenView';
-import { GridImageFilter, GRID_IMAGE_FILTER } from './NoiseDisplaceFilter';
+import NoteOpenView, {
+  TILE_PADDING,
+  WHEEL,
+  wheelSlot,
+  wheelOffset,
+  wheelVisible,
+} from './NoteOpenView';
+import CategoryFlight from './CategoryFlight';
+import {
+  GridImageFilter,
+  GRID_IMAGE_FILTER,
+  NoiseDisplaceFilter,
+} from './NoiseDisplaceFilter';
 import { useNoteSound } from './sounds';
 import CubeScene from './CubeScene';
 import { CURSOR_FLOAT, cursorOffset, floatAngles } from './cursorFloat';
@@ -46,6 +70,22 @@ const ease = [0.22, 1, 0.36, 1];
 /** Shared hover / color / opacity transition curve (ease-out-quart). */
 const HOVER_EASE = 'cubic-bezier(0.17, 0.84, 0.44, 1)';
 const HOVER_EASE_ARR = [0.17, 0.84, 0.44, 1];
+
+/**
+ * How the page behind a focused surface gets out of the way: desaturated,
+ * softened and dimmed into the same inactive state a resting grid image wears,
+ * so the thing on top reads as the only live layer. Eased slowly enough that it
+ * settles with whatever is fading in over it.
+ *
+ * Worn by the grid behind the note Lightbox and by the whole view behind the
+ * About drawer — the same recession either way, so opening one never looks like
+ * a different kind of thing to opening the other.
+ */
+const recede = (on) => ({
+  filter: on ? 'grayscale(1) blur(3px)' : 'none',
+  opacity: on ? 0.5 : 1,
+  transition: `filter 0.32s ${HOVER_EASE}, opacity 0.32s ${HOVER_EASE}`,
+});
 
 /**
  * Leans a hovered grid note toward the cursor and lifts it off the page. Written
@@ -125,12 +165,26 @@ function useGridColumns() {
   return cols;
 }
 
-// Fixed wash behind archive top chrome (black → transparent) so labels stay
-// legible when grid content scrolls underneath.
+// Fixed wash at the archive's top and bottom edges (black → transparent) so
+// labels stay legible when grid content scrolls underneath.
 const ARCHIVE_NAV_GRADIENT_HEIGHT = 152;
 
 /** One vertical rhythm for fixed title / view toggle / ABOUT. */
 const ARCHIVE_NAV_CHROME_HEIGHT = 40;
+
+/** Desktop grid filter rail geometry — shared by the index sidebar, About
+ *  drawer tab top, and the INDEX / EXPLORE nav. Nav + the "N Confessions"
+ *  tally align to the first tile's number (GRID_TILE_NUM_INSET inside the
+ *  cell), not the lattice edge. */
+const FILTER_SIDEBAR_W = 200; //    px — rail width
+const FILTER_SIDEBAR_LEFT = 32; //  px — inset from the view's left edge
+const FILTER_SIDEBAR_TOP = 112; //  px — starts below the wordmark chrome
+const FILTER_SIDEBAR_GAP = 40; //   px — clearance between rail and grid
+const GRID_CONTENT_LEFT = FILTER_SIDEBAR_LEFT + FILTER_SIDEBAR_W + FILTER_SIDEBAR_GAP;
+/** Inset of `.grid-tile-num` from the cell's left edge — also the shared
+ *  left align for INDEX / EXPLORE and the confessions count. */
+const GRID_TILE_NUM_INSET = 18; // px
+const GRID_NAV_LEFT = GRID_CONTENT_LEFT + GRID_TILE_NUM_INSET;
 
 /**
  * Archive dial entrance delay when arriving from the intro (vs. a direct/deep
@@ -175,33 +229,55 @@ const ARCHIVE_NAV_TEXT = {
 
 // Plain-text nav items read as hyperlinks, so they carry the site's dotted
 // underline. Pill / icon CTAs stay undecorated so they still read as buttons.
-const ARCHIVE_LINK_UNDERLINE = LINK_UNDERLINE;
+// Raised because these sit in padded buttons at 16px/24px: at the default
+// position the rule hangs ~9px under the caps and reads as a detached line
+// rather than an underline.
+const ARCHIVE_LINK_UNDERLINE = linkUnderlineRaised(0.4);
 
-function ArchiveNavGradientWash({ zIndex = 150 }) {
+/** Surface for the grid's facet dropdowns. Flat and opaque rather than frosted:
+ *  they open over moving note images, and a translucent panel dragged that
+ *  motion through the type. */
+const MENU_SURFACE = '#1a1618';
+const MENU_SURFACE_BORDER = inkA(0.14);
+const MENU_SURFACE_SHADOW = '0 18px 46px rgba(0,0,0,0.55)';
+
+/**
+ * Wash pinned to one edge of the viewport. The top one keeps the nav chrome
+ * legible over scrolling content; the bottom is its mirror, closing the frame so
+ * content fades out at the edge instead of being cut off. Both ends share the
+ * same stops and height — only the direction flips.
+ */
+function ArchiveEdgeGradientWash({ edge = 'top', zIndex = 150 }) {
+  const atTop = edge === 'top';
   return (
     <div
       aria-hidden="true"
       style={{
         position: 'fixed',
-        top: 0,
+        [atTop ? 'top' : 'bottom']: 0,
         left: 0,
         right: 0,
         height: ARCHIVE_NAV_GRADIENT_HEIGHT,
         zIndex,
         pointerEvents: 'none',
-        background:
-          'linear-gradient(to bottom, rgba(0, 0, 0, 0.88) 0%, rgba(0, 0, 0, 0.42) 52%, rgba(0, 0, 0, 0) 100%)',
+        background: `linear-gradient(to ${atTop ? 'bottom' : 'top'}, rgba(0, 0, 0, 0.88) 0%, rgba(0, 0, 0, 0.42) 52%, rgba(0, 0, 0, 0) 100%)`,
       }}
     />
   );
 }
 
-/** Hand-lettered "What We / Tell AI" wordmark button — the onboarding hero's
+/** Hand-lettered "What We Tell AI" wordmark button — the onboarding hero's
  *  brush art, dropped into the nav. It reads from a baked PNG rather than
- *  wordmark.svg because the source carries the hero's grain detail at 1.19MB;
- *  see scripts/wordmark-logo.mjs. Tapping it returns to the intro onboarding.
- *  `logoHeight` lets the mobile chrome render it a touch smaller. */
-function WordmarkLogo({ onReturnToIntro, onClick, ariaLabel, title, logoHeight = 48 }) {
+ *  wwtai_2.svg because the source carries the hero's grain detail, and the
+ *  separable strokes its write-on needs, at 1.6MB; see scripts/wordmark-logo.mjs.
+ *  Tapping it returns to the intro onboarding.
+ *
+ *  `logoHeight` is the height of the whole one-line lockup, so it is much
+ *  shorter than the two-line mark it replaced while the letters themselves come
+ *  out the same size — the old 48px block was two ~20px lines. Sizing the new
+ *  one to match that block instead would have put a 260px mark in the corner.
+ */
+function WordmarkLogo({ onReturnToIntro, onClick, ariaLabel, title, logoHeight = 26 }) {
   return (
     <button
       type="button"
@@ -228,7 +304,7 @@ function WordmarkLogo({ onReturnToIntro, onClick, ariaLabel, title, logoHeight =
       }}
     >
       <img
-        src="/wordmark-144.png"
+        src="/wordmark-line-96.png"
         alt="What We Tell AI"
         draggable={false}
         style={{ height: logoHeight, width: 'auto', display: 'block' }}
@@ -238,9 +314,12 @@ function WordmarkLogo({ onReturnToIntro, onClick, ariaLabel, title, logoHeight =
 }
 
 /**
- * Fixed top chrome shared by every archive view — wordmark (left) + INDEX/EXPLORE/
- * ABOUT (right). Stays mounted when the About panel opens; only handlers and
- * active states swap so the bar never jumps position.
+ * Fixed top chrome shared by every archive view — wordmark (far left) and
+ * INDEX / EXPLORE (at the grid's left edge). ABOUT opens from the peeking
+ * drawer tab on the right (desktop); phones still reach it via the hamburger.
+ * Stays mounted when the About panel opens; only handlers and active states
+ * swap so the bar never jumps position. The same INDEX / EXPLORE slot is used
+ * on EXPLORE, where it sits in the same vertical band as the ← / → theme controls.
  */
 function ArchiveNavBar({
   compactNav,
@@ -266,6 +345,10 @@ function ArchiveNavBar({
     if (aboutOpen) onAboutClose();
     onViewChange(v);
   };
+  // Wordmark stays above the drawer so it can close About; INDEX / EXPLORE sink
+  // under the backdrop so they don't compete with the panel.
+  const wordmarkZ = aboutOpen ? 1010 : zIndex;
+  const viewTabsZ = aboutOpen ? 150 : zIndex;
 
   if (compactNav) {
     return (
@@ -286,15 +369,17 @@ function ArchiveNavBar({
         }}
       >
         <div style={{ pointerEvents: 'auto', flexShrink: 0 }}>
-          <WordmarkLogo logoHeight={34} {...wordmarkProps} />
+          <WordmarkLogo logoHeight={20} {...wordmarkProps} />
         </div>
+        {/* Phone: the three destinations collapse into one hamburger, so the bar
+            is just wordmark + menu and nothing competes with the wordmark for
+            the strip. Desktop lays all three out in the open instead. */}
         <div style={{ pointerEvents: 'auto', flexShrink: 0 }}>
-          <AboutHeader
-            onClick={handleAboutClick}
-            open={aboutOpen}
-            stacked
+          <MobileNavMenu
             view={view}
             onChange={handleViewChange}
+            aboutOpen={aboutOpen}
+            onAboutClick={handleAboutClick}
             entranceDelay={entranceDelay}
             zIndex={zIndex}
           />
@@ -313,7 +398,7 @@ function ArchiveNavBar({
           position: 'fixed',
           top: 24,
           left: 24,
-          zIndex,
+          zIndex: wordmarkZ,
           height: ARCHIVE_NAV_CHROME_HEIGHT,
           display: 'flex',
           alignItems: 'center',
@@ -322,14 +407,28 @@ function ArchiveNavBar({
       >
         <WordmarkLogo {...wordmarkProps} />
       </motion.div>
-      <AboutHeader
-        onClick={handleAboutClick}
-        open={aboutOpen}
-        view={view}
-        onChange={handleViewChange}
-        entranceDelay={entranceDelay}
-        zIndex={zIndex}
-      />
+
+      {/* INDEX / EXPLORE — aligned to the first tile's number (and kept there
+          on EXPLORE). Vertically matches the ← / → theme controls (top: 24). */}
+      <motion.div
+        initial={{ opacity: 0, y: -12 }}
+        animate={{ opacity: aboutOpen ? 0 : 1, y: 0 }}
+        transition={{ duration: 0.28, ease, delay: aboutOpen ? 0 : entranceDelay }}
+        style={{
+          position: 'fixed',
+          top: 24,
+          left: GRID_NAV_LEFT,
+          zIndex: viewTabsZ,
+          height: ARCHIVE_NAV_CHROME_HEIGHT,
+          display: 'flex',
+          alignItems: 'center',
+          pointerEvents: aboutOpen ? 'none' : 'none',
+        }}
+      >
+        <ViewTabs view={view} onChange={handleViewChange} aboutOpen={aboutOpen} />
+      </motion.div>
+
+      {/* ABOUT lives on the peeking drawer tab now — no top-right chrome. */}
     </>
   );
 }
@@ -436,29 +535,10 @@ function AboutHoverNote({ children }) {
   );
 }
 
-function AboutHeader({
-  onClick,
-  open,
-  view,
-  onChange,
-  stacked = false,
-  // Whether INDEX/EXPLORE render as hover-preview menus (desktop) vs plain
-  // toggles. Defaults to follow `stacked` (compact bar = toggles), but the
-  // About panel reuses the desktop menus in its in-flow bar by passing this
-  // explicitly — so the panel nav is the same component as the site chrome.
-  menus = !stacked,
-  entranceDelay = 0.2,
-  zIndex = 200,
-}) {
-  // Desktop top-right chrome: INDEX (2×2 note grid on hover) · EXPLORE (3-card
-  // fan) · ABOUT. The compact (stacked) bar has no hover, so it swaps those
-  // menus for plain INDEX/EXPLORE toggles that sit with ABOUT as one flush-right
-  // cluster (the wordmark holds the left cell).
-  const showTabs = menus;
-
-  // ABOUT opens the panel. On desktop it's wrapped in the grainy sketch hover
-  // note (see AboutHoverNote); the compact/touch top bar keeps the plain button
-  // since there's no hover there.
+/** Desktop's far-right ABOUT, wrapped in the grainy sketch hover note. Phone
+ *  widths reach ABOUT through the hamburger instead (see MobileNavMenu), so
+ *  this is desktop-only and can assume a pointer. */
+function AboutHeader({ onClick, open, entranceDelay = 0.2, zIndex = 200 }) {
   const aboutButton = (
     <button
       type="button"
@@ -493,9 +573,9 @@ function AboutHeader({
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.5, ease, delay: entranceDelay }}
       style={{
-        ...(stacked
-          ? { position: 'relative', top: 'auto', right: 'auto' }
-          : { position: 'fixed', top: 24, right: 24 }),
+        position: 'fixed',
+        top: 24,
+        right: 24,
         zIndex,
         display: 'flex',
         flexDirection: 'row',
@@ -508,101 +588,275 @@ function AboutHeader({
         ...ARCHIVE_NAV_TEXT,
       }}
     >
-      {showTabs ? (
-        <>
-          <IndexMenu view={view} onChange={onChange} aboutOpen={open} />
-          <ExploreMenu view={view} onChange={onChange} aboutOpen={open} />
-          {/* EXPERIMENT + CUBE tabs hidden for now — the views still exist and
-              stay reachable via ?view=experiment / ?view=cube. */}
-        </>
-      ) : (
-        // Compact bar: INDEX · EXPLORE · EXPERIMENT ride flush-right alongside
-        // ABOUT (plain toggles — the phone has no hover for the desktop menus).
-        <>
-          {/* While the About panel is open, ABOUT is the current destination, so
-              INDEX/EXPLORE must read as inactive (dimmed) — otherwise INDEX stays
-              lit from the underlying view and the bar shows two active tabs. This
-              keeps "exactly one active tab" consistent with the archive pages. */}
-          <ToggleButton active={!open && view === 'grid'} onClick={() => onChange?.('grid')}>
-            INDEX
-          </ToggleButton>
-          <ToggleButton active={!open && view === 'explore'} onClick={() => onChange?.('explore')}>
-            EXPLORE
-          </ToggleButton>
-          {/* EXPERIMENT + CUBE tabs hidden for now — the views still exist and
-              stay reachable via ?view=experiment / ?view=cube. */}
-        </>
-      )}
-      {/* Desktop reveals the torn-paper "?" hover note; the compact/touch top
-          bar keeps the plain ABOUT button (no hover). */}
-      {menus ? <AboutHoverNote>{aboutButton}</AboutHoverNote> : aboutButton}
+      <AboutHoverNote>{aboutButton}</AboutHoverNote>
     </motion.div>
   );
 }
 
-/* Decorative confession-note cutouts that "peek" from the panel edges — a few
- * are randomly drawn from the archive once per session (see peekImages; stable
- * across opens, re-rolled only on refresh), tucked mostly off-screen at the left
- * edge + bottom-right corner so only a torn sliver shows. Purely ambient:
- * aria-hidden, pointer-events:none, and behind the reading content. Desktop only
- * (mobile has no spare margin). */
-const ABOUT_PEEK_SLOTS = [
-  { key: 'left-a', pos: { left: -116, top: '33%' }, rot: -7, w: 208, from: { x: -48 } },
-  { key: 'left-b', pos: { left: -104, top: '69%' }, rot: 6, w: 176, from: { x: -48 } },
-  { key: 'br-a', pos: { right: -104, bottom: -78 }, rot: -12, w: 232, from: { x: 44, y: 44 } },
-  { key: 'br-b', pos: { right: 88, bottom: -130 }, rot: 9, w: 150, from: { x: 20, y: 46 } },
-];
+/** Bars of the phone nav's hamburger. The outer two cross into an X when the
+ *  menu is open (both rotating about the middle bar's line) and the middle one
+ *  drops out, so the button states as "this closes what it opened". */
+const NAV_BURGER = {
+  w: 20, //     px — bar length
+  h: 1, //      px — hairline weight, matching the nav's dotted underline
+  gap: 5, //    px between bars at rest
+  ease: [0.22, 1, 0.36, 1],
+  durS: 0.28,
+};
 
-function AboutPeekNotes({ images, reduceMotion }) {
-  if (!images || images.length === 0) return null;
+/** Phone nav sheet — the full-screen cover the hamburger opens. */
+const NAV_SHEET = {
+  // Items hang off the wordmark's left edge: the bar's 16px inset plus the
+  // wordmark button's 12px padding, less each item's own 4px padding.
+  padLeft: 16 + 12 - 4,
+  // Clear of the bar, which stays visible on top of the sheet.
+  padTop: 24 + ARCHIVE_NAV_CHROME_HEIGHT + 28,
+  // The rows carry their own padding and 24px type brings its own leading, so
+  // there is no flex gap on top of that — the three of them read as one block.
+  gap: 0,
+  // Each row's vertical padding, which is now the whole of the air between them.
+  // Shallow, but deep enough to keep a row's tap target above 40px.
+  rowPadY: 5,
+  durS: 0.26,
+  stagS: 0.05,
+};
+
+/** The sheet's destinations, set larger than the bar's 16px chrome — they are
+ *  the only thing on the screen while it is open. */
+const NAV_SHEET_TEXT = { ...ARCHIVE_NAV_TEXT, fontSize: 24, lineHeight: 1.3 };
+
+/**
+ * Phone nav menu — the compact bar's whole navigation in one hamburger: INDEX,
+ * EXPLORE, and ABOUT stacked on a sheet that covers the screen.
+ *
+ * Desktop keeps INDEX / EXPLORE at the grid's left edge (ABOUT peeks from the
+ * drawer — see AboutModal); that open layout doesn't fit a phone without
+ * crowding the wordmark. The current destination is the one item at
+ * full opacity, so the closed button still implies where you are once opened.
+ */
+function MobileNavMenu({ view, onChange, aboutOpen, onAboutClick, entranceDelay = 0.2, zIndex = 200 }) {
+  const [open, setOpen] = useState(false);
+
+  // The sheet covers the screen, so there is no "outside" to tap — bare sheet
+  // taps dismiss it (below) and Escape covers the keyboard.
+  useEffect(() => {
+    if (!open) return undefined;
+    const onKey = (e) => {
+      if (e.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [open]);
+
+  // INDEX and EXPLORE switch view; ABOUT opens the panel over whichever view is
+  // behind it, which is why it reads as active rather than replacing the other
+  // two's highlight.
+  const items = [
+    { key: 'grid', label: 'INDEX', active: !aboutOpen && view === 'grid', run: () => onChange?.('grid') },
+    { key: 'explore', label: 'EXPLORE', active: !aboutOpen && view === 'explore', run: () => onChange?.('explore') },
+    { key: 'about', label: 'ABOUT', active: aboutOpen, run: () => onAboutClick?.() },
+  ];
+
+  const bar = (i) => {
+    const pitch = NAV_BURGER.h + NAV_BURGER.gap;
+    const rest = { y: pitch * i, rotate: 0, opacity: 1 };
+    // All three gather on the middle bar's line; the outer two cross there and
+    // the middle one drops out underneath them.
+    const crossed = { y: pitch, rotate: i === 0 ? 45 : -45, opacity: i === 1 ? 0 : 1 };
+    return (
+      <motion.span
+        key={i}
+        aria-hidden="true"
+        initial={false}
+        animate={open ? crossed : rest}
+        transition={{ duration: NAV_BURGER.durS, ease: NAV_BURGER.ease }}
+        style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          width: NAV_BURGER.w,
+          height: NAV_BURGER.h,
+          background: INK,
+        }}
+      />
+    );
+  };
+
   return (
-    <div
-      aria-hidden="true"
-      style={{ position: 'absolute', inset: 0, zIndex: 0, pointerEvents: 'none', overflow: 'hidden' }}
+    <motion.div
+      initial={{ opacity: 0, y: -12 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.5, ease, delay: entranceDelay }}
+      style={{ position: 'relative', zIndex, minHeight: ARCHIVE_NAV_CHROME_HEIGHT, display: 'flex', alignItems: 'center' }}
     >
-      {ABOUT_PEEK_SLOTS.map((slot, i) => {
-        const src = images[i % images.length];
-        if (!src) return null;
-        return (
-          <motion.img
-            key={slot.key}
-            src={src}
-            alt=""
-            draggable={false}
-            loading="lazy"
-            initial={reduceMotion ? false : { opacity: 0, rotate: slot.rot, ...slot.from }}
-            animate={{ opacity: 0.7, rotate: slot.rot, x: 0, y: 0 }}
-            transition={{ duration: reduceMotion ? 0 : 0.7, ease: [0.22, 1, 0.36, 1], delay: 0.15 + i * 0.08 }}
-            style={{
-              position: 'absolute',
-              width: slot.w,
-              height: 'auto',
-              ...slot.pos,
-              filter: 'drop-shadow(0 12px 26px rgba(0,0,0,0.5))',
-              userSelect: 'none',
-            }}
-          />
-        );
-      })}
-    </div>
+      <button
+        type="button"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label={open ? 'Close menu' : 'Open menu'}
+        onClick={() => setOpen((o) => !o)}
+        style={{
+          background: 'none',
+          border: 'none',
+          // Padding, not size, gives the 44px touch target — the bars stay a
+          // 20px glyph optically aligned with the wordmark beside them.
+          padding: '12px',
+          margin: '-12px',
+          display: 'flex',
+          alignItems: 'center',
+          cursor: 'pointer',
+          WebkitTapHighlightColor: 'transparent',
+        }}
+      >
+        <span
+          style={{
+            position: 'relative',
+            display: 'block',
+            width: NAV_BURGER.w,
+            height: NAV_BURGER.h * 3 + NAV_BURGER.gap * 2,
+          }}
+        >
+          {[0, 1, 2].map(bar)}
+        </span>
+      </button>
+
+      {/* Portalled to the body so the sheet fills the viewport rather than the
+          bar's cell, and so it paints under the whole bar — the wordmark and the
+          X stay legible on top of it. */}
+      {createPortal(
+        <AnimatePresence>
+          {open ? (
+            <motion.div
+              role="menu"
+              aria-label="Site"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: NAV_SHEET.durS, ease }}
+              onClick={() => setOpen(false)}
+              style={{
+                position: 'fixed',
+                inset: 0,
+                zIndex: zIndex - 1,
+                // The site's own backdrop, so the sheet reads as the archive
+                // stepping aside rather than a panel laid over it.
+                background: `${PAGE_GRADIENT}, ${PAGE_BG}`,
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'flex-start',
+                gap: NAV_SHEET.gap,
+                padding: `${NAV_SHEET.padTop}px 24px 24px ${NAV_SHEET.padLeft}px`,
+              }}
+            >
+              {items.map((it, i) => (
+                <motion.button
+                  key={it.key}
+                  type="button"
+                  role="menuitem"
+                  aria-current={it.active || undefined}
+                  initial={{ opacity: 0, x: -10 }}
+                  animate={{ opacity: it.active ? 1 : 0.5, x: 0 }}
+                  transition={{ duration: NAV_SHEET.durS, ease, delay: i * NAV_SHEET.stagS }}
+                  onClick={() => {
+                    it.run();
+                    setOpen(false);
+                  }}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    padding: `${NAV_SHEET.rowPadY}px 4px`,
+                    ...NAV_SHEET_TEXT,
+                    ...ARCHIVE_LINK_UNDERLINE,
+                    textAlign: 'left',
+                    cursor: 'pointer',
+                    WebkitTapHighlightColor: 'transparent',
+                  }}
+                >
+                  {it.label}
+                </motion.button>
+              ))}
+            </motion.div>
+          ) : null}
+        </AnimatePresence>,
+        document.body
+      )}
+    </motion.div>
   );
 }
+
+/** Right-side About drawer. Peeks from the archive's right edge when closed;
+ *  opens to 33vw with file-folder tabs that swap the reading section. */
+const ABOUT_DRAWER = {
+  w: '33vw',
+  // The lit surface: the open panel, and the tab of the section being read.
+  bg: '#2e2e2e',
+  // The resting surface: the closed drawer's sliver, the tab hanging off it,
+  // and any tab you aren't on. Nothing wears `bg` while the drawer is shut —
+  // at #2e2e2e against a #0a0a0a page a closed drawer reads as a light grey
+  // slab stuck to the edge of the screen rather than something put away.
+  idle: '#1f1f1f',
+  // Section headings ride on a card — see `headStyle`. Darker than the panel
+  // and set in a mid grey rather than the warm ink the copy wears, so it reads
+  // as a label laid on the panel instead of a brighter run of the same text.
+  headCard: '#202020',
+  headInk: '#929292',
+  headTilt: -1.4, // deg — enough to catch the eye, short of looking broken
+  // Mailing-list card. Darker than the panel it sits on, so it reads as a slab
+  // laid into the column; the button is the one thing lifted back off it.
+  cardBg: '#212121',
+  cardBtn: '#3a3a3a',
+  cardBtnHover: '#4a4a4a',
+  cardTilt: -1.2, // deg — leans with the heading cards, a touch shallower
+  tabOutline: 'rgba(255,255,255,0.12)',
+  // Wide enough for nav-sized type (16px) once it is rotated −90°, plus air on
+  // the outer edge and at the spine.
+  tabW: 48,
+  tabPadX: 10,
+  // Tall enough for the longest label ("THE WHY") with room above and below.
+  tabH: 108,
+  tabPadY: 14,
+  // Air between index-card tabs — the angled clip already notches each edge,
+  // but a real gap is what sells them as separate pieces.
+  tabGap: 8,
+  // Trapezoid: outer (left) edge pinched at top/bottom, spine (right) square.
+  tabClip: 'polygon(0 14%, 100% 0, 100% 100%, 0 86%)',
+  tabRadius: '5px 0 0 5px',
+  // Panel body visible beyond the hanging tab — enough to read as a drawer
+  // peeking, not just a lone tab.
+  peekSliver: 18,
+  slideS: 0.48,
+  fadeS: 0.22,
+  // Between the tabs that only exist once the drawer is open, as they drop in
+  // one after the next. They wait out the slide first: the drawer should arrive
+  // as one object and then show what else is filed in it, rather than growing
+  // extra tabs while it is still moving.
+  tabInStepS: 0.09,
+};
+
+const ABOUT_TABS = [
+  { id: 'about', label: 'ABOUT' },
+  { id: 'process', label: 'PROCESS' },
+  { id: 'why', label: 'THE WHY' },
+];
 
 /**
  * Centered about modal. Backdrop + card fade in on open; on close (click-out
  * / ESC) both exit with opacity only — no scale or drift so it reads as a
  * simple dismiss. prefers-reduced-motion skips transforms on enter too.
  */
-function AboutModal({ open, onClose, confessions = [] }) {
+function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false }) {
   const reduceMotion = useReducedMotion();
-  // Grain <filter> id for the active section-rail arrow (see .about-navlink::before).
-  const railGrainId = 'about-rail-grain';
-  // Full-screen takeover; the site nav bar stays mounted above this panel
-  // (ArchiveNavBar in ArchivePage) so INDEX/EXPLORE/ABOUT never jump position.
-  // Desktop puts a left section-nav rail beside ONE scrolling content column;
-  // phones stack the sections. The rail links scroll the content to each section,
-  // and an IntersectionObserver highlights the section in view.
+  // Desktop: right-side peek drawer with file-folder tabs. Phone: full-bleed
+  // takeover (same copy), opened from the nav — no permanent peek on a narrow
+  // screen. The site nav bar stays mounted above either shell.
   const compact = useArchiveNavCompact();
+  // The peek entrance is a mount-time animation: `initial` parks the drawer off
+  // the right edge with no animation, and framer's own `delay` holds it there
+  // until the filter rail has landed. Driving it from state instead animated the
+  // drawer *out* first, which is what read as a bounce. Replays are a remount
+  // (the parent keys this component), so there is nothing to reset here.
+  const shouldPeekEntrance = !compact && !reduceMotion && !skipPeekEntrance;
+  const peekEntranceDone = useRef(!shouldPeekEntrance);
 
   // Mailing-list signup state.
   const [email, setEmail] = useState('');
@@ -613,30 +867,7 @@ function AboutModal({ open, onClose, confessions = [] }) {
   const subscribing = subscribeStatus === 'submitting';
   const subscribed = subscribeStatus === 'success';
 
-  // Section scroll-nav: the left rail (desktop) + the intro pointer links scroll
-  // this content container to each section; a scroll-spy highlights the active one.
-  const contentRef = useRef(null);
-  const sectionRefs = useRef({});
   const [activeSection, setActiveSection] = useState('about');
-
-  // A random handful of note cutouts for the edge "peek" decor. Locked in once
-  // per session — cached in a ref the first time the archive pool is available —
-  // so opening/closing About during the same visit keeps the SAME notes; only a
-  // refresh / new session re-rolls. Skipped on mobile (no spare margin to peek).
-  const peekImagesRef = useRef(null);
-  const peekImages = useMemo(() => {
-    if (compact) return [];
-    if (peekImagesRef.current) return peekImagesRef.current;
-    const pool = (confessions || []).map((c) => c && c.image).filter(Boolean);
-    if (pool.length === 0) return [];
-    const arr = [...pool];
-    for (let i = arr.length - 1; i > 0; i -= 1) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [arr[i], arr[j]] = [arr[j], arr[i]];
-    }
-    peekImagesRef.current = arr.slice(0, ABOUT_PEEK_SLOTS.length);
-    return peekImagesRef.current;
-  }, [compact, confessions]);
 
   // Reset the signup form whenever the panel is closed so a reopen is fresh.
   useEffect(() => {
@@ -644,6 +875,7 @@ function AboutModal({ open, onClose, confessions = [] }) {
       setEmail('');
       setSubscribeStatus('idle');
       setSubscribeError('');
+      setActiveSection('about');
     }
   }, [open]);
 
@@ -676,83 +908,18 @@ function AboutModal({ open, onClose, confessions = [] }) {
     return () => window.removeEventListener('keydown', onKey);
   }, [open, onClose]);
 
-  // Where a jumped-to section lands, measured from the top of the scrollport.
-  //
-  // The content scrolls UNDER the fixed nav chrome (which is why both layouts pad
-  // their top by it), so a small offset parked a heading behind the wordmark row.
-  // This is the panel's own resting top inset instead — the same one the first
-  // section sits at — so jumping to a section puts its heading exactly where the
-  // top of the document sits when the panel opens.
-  const sectionInset = compact ? 24 + ARCHIVE_NAV_CHROME_HEIGHT + 16 : FILTER_SIDEBAR_TOP;
-
-  // Smooth-scroll the content container to a section (used by the rail links and
-  // the inline "our process" / "why we care" pointers in the intro).
-  const scrollToSection = useCallback(
-    (id) => {
-      const root = contentRef.current;
-      const el = sectionRefs.current[id];
-      if (!root || !el) return;
-      const top =
-        el.getBoundingClientRect().top -
-        root.getBoundingClientRect().top +
-        root.scrollTop -
-        sectionInset;
-      root.scrollTo({ top: Math.max(0, top), behavior: reduceMotion ? 'auto' : 'smooth' });
-    },
-    [sectionInset, reduceMotion]
-  );
-
-  // Fresh open always starts on the first section.
-  useEffect(() => {
-    if (open) setActiveSection('about');
-  }, [open]);
-
-  // Scroll-spy (desktop rail): mark whichever section sits nearest the top.
-  useEffect(() => {
-    if (!open || compact) return;
-    const root = contentRef.current;
-    if (!root) return;
-    const els = ['about', 'why', 'process']
-      .map((id) => sectionRefs.current[id])
-      .filter(Boolean);
-    if (!els.length) return;
-    const obs = new IntersectionObserver(
-      (entries) => {
-        const top = entries
-          .filter((e) => e.isIntersecting)
-          .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top)[0];
-        const id = top?.target?.getAttribute('data-section');
-        if (id) setActiveSection(id);
-      },
-      { root, rootMargin: '0px 0px -65% 0px', threshold: 0.01 }
-    );
-    els.forEach((el) => obs.observe(el));
-    return () => obs.disconnect();
-  }, [open, compact]);
-
   const easeOut = [0.165, 0.84, 0.44, 1];
 
-  // Content reveals top→down — each block fades + settles in from slightly above.
-  // On mobile it cascades down the single column; on desktop each of the three
-  // columns cascades (offset per column) so the page assembles left-to-right.
-  const backdropMotion = reduceMotion
-    ? { initial: { opacity: 0 }, animate: { opacity: 1 }, exit: { opacity: 0 } }
-    : {
-        initial: { opacity: 0, backdropFilter: 'blur(0px)' },
-        animate: { opacity: 1, backdropFilter: 'blur(6px)' },
-        exit: { opacity: 0, backdropFilter: 'blur(0px)' },
-      };
-
-  // Full-screen takeover on every breakpoint — a gentle fade (no drawer slide);
-  // the reading blocks handle the entrance motion.
-  const panelMotion = {
-    initial: { opacity: 0 },
-    animate: { opacity: 1 },
-    exit: { opacity: 0 },
-  };
-
   // ── Shared copy + styles for the three columns ──────────────────────────
-  const BODY_COLOR = 'rgba(200,200,200,0.9)';
+  // Body copy sits on the same warm ink as the rest of the drawer. It used to be
+  // a neutral grey, which at this lightness didn't read as a different weight so
+  // much as a different paper — the lead paragraph right above it is `inkA(0.85)`
+  // and the two stacked up looking like two temperatures of white.
+  const BODY_COLOR = inkA(0.85);
+  // The onboarding hero's yellow, carried into the drawer for the mailing-list
+  // card's title and the address typed under it — brighter and warmer than the
+  // ink the copy wears, so neither reads as more body text.
+  const ACCENT_INK = '#DDDDAE';
   const bodySize = compact ? 16 : 15;
   const bodyStyle = {
     margin: '0 0 15px',
@@ -762,17 +929,30 @@ function AboutModal({ open, onClose, confessions = [] }) {
     letterSpacing: '0.01em',
     color: BODY_COLOR,
   };
+  // Section headings are labels stuck to the panel rather than type set on it:
+  // a light card, dark ink, canted a degree off square like the notes pinned up
+  // in the index. `inline-block` so the card hugs its words instead of ruling a
+  // line across the column, and the tilt pivots on the left edge so every
+  // heading still starts flush with the copy beneath it.
+  //
   // Tracking eases off as the size goes up — 0.16em reads as an eyebrow at 11px
   // but gets airy and hard to scan at 16px.
   const headStyle = {
+    display: 'inline-block',
     margin: '0 0 16px',
-    fontFamily: MONO_FONT,
+    // Right padding runs light: 0.11em of tracking hangs off the last letter and
+    // pads the card by itself.
+    padding: '7px 10px 6px 12px',
+    fontFamily: BODY_FONT,
     fontSize: compact ? 14 : 16,
     fontWeight: 400,
     letterSpacing: '0.11em',
     lineHeight: 1.25,
     textTransform: 'uppercase',
-    color: '#fff',
+    color: ABOUT_DRAWER.headInk,
+    background: ABOUT_DRAWER.headCard,
+    transform: `rotate(${ABOUT_DRAWER.headTilt}deg)`,
+    transformOrigin: 'left center',
   };
   const captionStyle = {
     margin: '8px 0 0',
@@ -848,8 +1028,17 @@ function AboutModal({ open, onClose, confessions = [] }) {
   // WHY WE CARE column — a McLuhan pull-quote, a thesis line, then the essay.
   const sectionWhy = (
     <>
-      <h2 style={headStyle}>Why we care about this</h2>
-      <blockquote style={{ margin: '0 0 20px', padding: 0 }}>
+      <h2 style={headStyle}>The Why</h2>
+      {/* The rule rides on the blockquote rather than being its own element, so it
+          can't drift from the attribution if the quote's spacing changes. Same
+          weight as the rules inside the credits card — the drawer only has one. */}
+      <blockquote
+        style={{
+          margin: '0 0 22px',
+          padding: '0 0 18px',
+          borderBottom: `1px solid ${inkA(0.18)}`,
+        }}
+      >
         <p
           style={{
             margin: '0 0 8px',
@@ -871,13 +1060,15 @@ function AboutModal({ open, onClose, confessions = [] }) {
             fontFamily: MONO_FONT,
             fontSize: 11,
             letterSpacing: '0.08em',
-            color: inkA(0.5),
+            textTransform: 'uppercase',
+            color: BODY_COLOR,
           }}
         >
           — Marshall McLuhan
         </cite>
       </blockquote>
-      <p style={{ ...bodyStyle, color: inkA(0.85), fontSize: bodySize + 1, margin: '0 0 16px' }}>
+      {/* Leads on size alone now that the body wears the same ink. */}
+      <p style={{ ...bodyStyle, fontSize: bodySize + 1, margin: '0 0 16px' }}>
         {whyLead}
       </p>
       {whyParas.map(renderPara)}
@@ -891,86 +1082,279 @@ function AboutModal({ open, onClose, confessions = [] }) {
       {renderPara(processIntro, 'p-intro')}
       <figure style={{ margin: '4px 0 16px' }}>
         <img
-          src="/box-bg.png"
-          alt="A What We Tell AI confession booth installed in a public space."
+          src="/about-booth-alamo.jpg"
+          alt="The confession box — a hand-painted sign reading “everyone has an AI secret” beside a folding table of blank notes, set up in Alamo Square with the San Francisco skyline behind it."
           draggable={false}
           style={{
             display: 'block',
             width: '100%',
             height: 'auto',
-            aspectRatio: '4 / 3',
+            // Set narrower than the measure, the way a portrait plate is in
+            // print. At the full column width this stands over 700px tall on a
+            // wide monitor and takes the section over; on a laptop, where the
+            // drawer is already narrower than this, the cap never bites.
+            maxWidth: 400,
+            // The photograph's own ratio, declared so the column doesn't jump
+            // while it loads. It is a portrait frame — the sign is at the
+            // bottom of it and the city at the top — so cropping it to a
+            // landscape figure would have to throw one of them away.
+            aspectRatio: '701 / 934',
             objectFit: 'cover',
             borderRadius: 3,
             border: `1px solid ${inkA(0.12)}`,
             filter: 'grayscale(0.2)',
           }}
         />
-        <figcaption style={captionStyle}>Fig. 01 — the confession booth</figcaption>
+        <figcaption style={captionStyle}>Fig. 01 — the confession box, Alamo Square</figcaption>
       </figure>
       {processParas.map((p, i) => renderPara(p, `pp-${i}`))}
     </>
   );
 
-  // Contact + mailing list + copyright. Foot of the ABOUT column on desktop;
-  // end of the stack on mobile.
-  const connectBlock = (
+  const creditCardLabelStyle = {
+    fontFamily: MONO_FONT,
+    fontSize: 11,
+    letterSpacing: '0.12em',
+    textTransform: 'uppercase',
+    color: inkA(0.45),
+    lineHeight: 1.5,
+  };
+  const creditCardValueStyle = {
+    fontFamily: MONO_FONT,
+    fontSize: 11,
+    letterSpacing: '0.1em',
+    textTransform: 'uppercase',
+    color: inkA(0.88),
+    lineHeight: 1.5,
+    textAlign: 'right',
+  };
+
+  // Credits + contact — mono rows, label left and value right, hairlines between
+  // bands. Unlike the mailing-list card above it this is not a slab: no tilt and
+  // no fill, so it reads as the column's own closing matter rather than a second
+  // object. Which is also why it carries no padding — the inset and the radius
+  // only ever existed to hold a background off the column's edges, and without
+  // one they would just push these rows out of line with everything above.
+  const creditsCardBlock = () => (
+    <div
+      className="about-credits-card"
+      style={{
+        marginTop: 22,
+      }}
+    >
+      {[
+        {
+          key: 'contact',
+          label: 'Contact',
+          value: (
+            <div
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'flex-end',
+                gap: 6,
+              }}
+            >
+              <a
+                className="about-contact-link"
+                href="https://www.instagram.com/whatwetellai"
+                target="_blank"
+                rel="noopener noreferrer"
+                style={creditCardValueStyle}
+              >
+                Instagram
+              </a>
+              <a
+                className="about-contact-link"
+                href="mailto:hello@whatwetellai.com"
+                style={creditCardValueStyle}
+              >
+                Email
+              </a>
+            </div>
+          ),
+        },
+        {
+          key: 'lead',
+          label: 'Project Lead',
+          value: (
+            <a
+              className="about-credit-link"
+              href="https://oliviaiscurious.substack.com/"
+              target="_blank"
+              rel="noopener noreferrer"
+              style={creditCardValueStyle}
+            >
+              Olivia Tai
+            </a>
+          ),
+        },
+        {
+          key: 'design',
+          label: 'Web Design',
+          value: (
+            <a
+              className="about-credit-link"
+              href="https://arinp.space/"
+              target="_blank"
+              rel="noopener noreferrer"
+              style={creditCardValueStyle}
+            >
+              Arin Pantja
+            </a>
+          ),
+        },
+        {
+          key: 'type',
+          label: 'Typefaces',
+          value: (
+            <span style={creditCardValueStyle}>Faktory, Courier New</span>
+          ),
+          last: true,
+        },
+      ].map((row) => (
+        <div
+          key={row.key}
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'minmax(0, 1fr) auto',
+            gap: '10px 18px',
+            alignItems: 'start',
+            padding: row.key === 'contact' ? '0 0 12px' : '12px 0',
+            borderBottom: row.last ? 'none' : `1px solid ${inkA(0.18)}`,
+          }}
+        >
+          <span style={creditCardLabelStyle}>{row.label}</span>
+          {row.value}
+        </div>
+      ))}
+    </div>
+  );
+
+  const copyrightLine = (
+    <p
+      style={{
+        margin: '16px 0 0',
+        fontFamily: MONO_FONT,
+        fontSize: 11,
+        letterSpacing: '0.06em',
+        color: inkA(0.45),
+      }}
+    >
+      © What We Tell AI 2026
+    </p>
+  );
+
+  const footerBlock = (
+    <>
+      {creditsCardBlock()}
+      {copyrightLine}
+    </>
+  );
+
+  // Mailing-list signup, built to the card in Figma: a slab a shade darker than
+  // the panel, tilted with the section headings, holding a title line over a
+  // hairline, a rule-only field, and a filled button across the foot. Rendered
+  // once per breakpoint, so the <style> block is safe here.
+  const mailingListBlock = () => (
     <div
       className="about-subscribe"
-      style={{ marginTop: 28, paddingTop: 22, borderTop: `1px solid ${inkA(0.1)}` }}
+      style={{
+        marginTop: 22,
+        // The tilt swings the corners a couple of px past the card's box; the
+        // inset keeps them off the column's edges rather than under its clip.
+        marginInline: 3,
+        padding: compact ? '16px 16px 15px' : '17px 18px 16px',
+        background: ABOUT_DRAWER.cardBg,
+        borderRadius: 12,
+        transform: `rotate(${ABOUT_DRAWER.cardTilt}deg)`,
+      }}
     >
       <style>{`
-        .about-subscribe input::placeholder { color: ${inkA(0.4)}; }
-        .about-subscribe input:focus { border-color: ${inkA(0.55)}; }
+        .about-subscribe input:focus { border-bottom-color: ${inkA(0.55)}; }
         .about-subscribe button:hover:not(:disabled),
         .about-subscribe button:focus-visible:not(:disabled) {
-          background: #fff; border-color: #CFCAB7;
+          background: ${ABOUT_DRAWER.cardBtnHover}; color: #fff;
         }
         .about-subscribe button:disabled { opacity: 0.55; cursor: default; }
         .about-subscribe input:disabled { opacity: 0.55; }
       `}</style>
-      <div style={{ display: 'flex', gap: 18, marginBottom: 16 }}>
-        <a
-          className="about-contact-link"
-          href="mailto:hello@whatwetellai.com"
-          style={{ fontFamily: MONO_FONT, fontSize: 12, letterSpacing: '0.08em' }}
+      {/* Title and kicker share a baseline over the rule, so the hairline reads
+          as one line under both rather than a box around either. */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'baseline',
+          justifyContent: 'space-between',
+          gap: 12,
+          paddingBottom: 9,
+          borderBottom: `1px solid ${inkA(0.18)}`,
+        }}
+      >
+        <p
+          style={{
+            margin: 0,
+            fontFamily: BODY_FONT,
+            fontSize: bodySize + 5,
+            lineHeight: 1.15,
+            color: ACCENT_INK,
+          }}
         >
-          EMAIL
-        </a>
-        <a
-          className="about-contact-link"
-          href="https://www.instagram.com/whatwetellai"
-          target="_blank"
-          rel="noopener noreferrer"
-          style={{ fontFamily: MONO_FONT, fontSize: 12, letterSpacing: '0.08em' }}
+          Mailing List
+        </p>
+        <span
+          style={{
+            flex: '0 0 auto',
+            fontFamily: MONO_FONT,
+            fontSize: 11,
+            letterSpacing: '0.14em',
+            color: inkA(0.45),
+          }}
         >
-          INSTAGRAM
-        </a>
+          SIGN UP
+        </span>
       </div>
-      <p style={{ margin: '0 0 10px', fontFamily: BODY_FONT, fontSize: bodySize, lineHeight: 1.4, color: BODY_COLOR }}>
-        Join the mailing list
-      </p>
       {!subscribed ? (
-        <form onSubmit={handleSubscribe} style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <form onSubmit={handleSubscribe}>
+          {/* Standing label rather than a placeholder, so the prompt survives
+              typing instead of being the first thing the field loses. */}
+          <label
+            htmlFor="about-subscribe-email"
+            style={{
+              display: 'block',
+              margin: '14px 0 6px',
+              fontFamily: MONO_FONT,
+              fontSize: 11,
+              letterSpacing: '0.12em',
+              color: inkA(0.45),
+            }}
+          >
+            ENTER EMAIL
+          </label>
           <input
+            id="about-subscribe-email"
             type="email"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
-            placeholder="you@somewhere.com"
             required
             disabled={subscribing}
             autoComplete="email"
-            aria-label="Email address"
             style={{
-              flex: '1 1 180px',
+              display: 'block',
+              width: '100%',
               minWidth: 0,
-              background: inkA(0.04),
-              border: `1px solid ${inkA(0.22)}`,
-              borderRadius: 4,
-              color: '#CFCAB7',
-              padding: '10px 12px',
-              fontFamily: BODY_FONT,
-              fontSize: 14,
-              letterSpacing: '0.01em',
+              padding: '4px 2px 9px',
+              background: 'none',
+              border: 'none',
+              borderBottom: `1px solid ${inkA(0.18)}`,
+              borderRadius: 0,
+              // Display-only caps: the value still submits as typed, so the
+              // address isn't mangled on its way to the list.
+              textTransform: 'uppercase',
+              color: ACCENT_INK,
+              fontFamily: MONO_FONT,
+              fontSize: 12,
+              letterSpacing: '0.1em',
               outline: 'none',
               transition: `border-color 0.18s ${HOVER_EASE}`,
             }}
@@ -979,391 +1363,411 @@ function AboutModal({ open, onClose, confessions = [] }) {
             type="submit"
             disabled={subscribing}
             style={{
-              flex: '0 0 auto',
-              background: '#e5e5e5',
-              color: '#111',
-              border: '1px solid #e5e5e5',
-              borderRadius: 4,
-              padding: '10px 18px',
-              fontFamily: BODY_FONT,
-              fontSize: 14,
-              letterSpacing: '0.02em',
+              width: '100%',
+              marginTop: 14,
+              padding: '11px 12px',
+              background: ABOUT_DRAWER.cardBtn,
+              color: inkA(0.88),
+              border: 'none',
+              borderRadius: 8,
+              fontFamily: MONO_FONT,
+              fontSize: 12,
+              letterSpacing: '0.18em',
               cursor: 'pointer',
-              transition: `background 0.18s ${HOVER_EASE}, border-color 0.18s ${HOVER_EASE}`,
+              transition: `background 0.18s ${HOVER_EASE}, color 0.18s ${HOVER_EASE}`,
             }}
           >
             {subscribing ? 'SUBSCRIBING…' : 'SUBSCRIBE'}
           </button>
         </form>
       ) : (
-        <p style={{ margin: 0, fontFamily: BODY_FONT, fontSize: 14, lineHeight: 1.6, color: inkA(0.8) }}>
+        <p
+          style={{
+            margin: '14px 0 2px',
+            fontFamily: MONO_FONT,
+            fontSize: 11,
+            letterSpacing: '0.04em',
+            lineHeight: 1.7,
+            color: inkA(0.8),
+          }}
+        >
           Thanks — check your inbox to confirm your subscription.
         </p>
       )}
       {subscribeStatus === 'error' && (
-        <p style={{ margin: '8px 0 0', fontFamily: MONO_FONT, fontSize: 10, letterSpacing: '0.04em', lineHeight: 1.5, color: '#f0846b' }}>
+        <p style={{ margin: '10px 0 0', fontFamily: MONO_FONT, fontSize: 10, letterSpacing: '0.04em', lineHeight: 1.5, color: '#f0846b' }}>
           {subscribeError}
         </p>
       )}
     </div>
   );
 
-  const copyrightLine = (
-    <p style={{ margin: 0, fontFamily: MONO_FONT, fontSize: 11, letterSpacing: '0.06em', color: inkA(0.45) }}>
-      © What We Tell AI 2026
-    </p>
-  );
-
-  // Typefaces are the ones actually loaded in index.html and used in the app:
-  // Faktory (body), Reckless (pull-quotes), TRJN Da Vinci (intro display).
-  const credits = [
-    { role: 'Project conceptualized by', name: 'Olivia Tai' },
-    { role: 'Site designed by', name: 'Arin Pantja' },
-    { role: 'Typefaces', name: 'Faktory, Reckless, TRJN Da Vinci' },
-  ];
-
-  const creditsBlock = (
-    <div style={{ marginBottom: 20 }}>
-      <h2 style={{ ...headStyle, margin: '0 0 14px' }}>Credits</h2>
-      <dl style={{ margin: 0 }}>
-        {credits.map((c) => (
-          <div
-            key={c.role}
-            style={{
-              display: 'flex',
-              flexWrap: 'wrap',
-              gap: '0 6px',
-              fontFamily: MONO_FONT,
-              fontSize: 11,
-              lineHeight: 1.9,
-              letterSpacing: '0.06em',
-            }}
-          >
-            <dt style={{ color: inkA(0.45) }}>{c.role}</dt>
-            <dd style={{ color: inkA(0.75) }}>{c.name}</dd>
-          </div>
-        ))}
-      </dl>
+  /** Hairline + air above a block that follows another in one scroll. */
+  const ruledBlock = (key, body) => (
+    <div
+      key={key}
+      style={{ marginTop: 36, paddingTop: 24, borderTop: `1px solid ${inkA(0.08)}` }}
+    >
+      {body}
     </div>
   );
 
-  // Foot of the panel on both breakpoints: credits, then the copyright line.
-  const footerBlock = (
+  // Tab → panel body. About carries mailing + credits; the other two are just
+  // their reading blocks. Swapped with a fade rather than scrolled.
+  const sectionBody = {
+    about: (
+      <>
+        {sectionAbout}
+        {mailingListBlock()}
+        {footerBlock}
+      </>
+    ),
+    process: sectionProcess,
+    why: sectionWhy,
+  };
+
+  // Phone has nowhere to hang the file-folder tabs — they sit off the panel's
+  // left edge, which on a full-bleed takeover is the edge of the screen, so the
+  // other two sections were unreachable. Rather than invent a second navigation
+  // for one breakpoint, the whole panel becomes one scroll: about with its
+  // mailing list under it, then the other sections, then the footer.
+  const stackedBody = (
     <>
-      {creditsBlock}
-      {copyrightLine}
+      {sectionAbout}
+      {mailingListBlock()}
+      {ruledBlock('process', sectionProcess)}
+      {ruledBlock('why', sectionWhy)}
+      {footerBlock}
     </>
   );
 
-  // The three reading sections, in order. The rail links + scroll-spy key off
-  // these ids; the shorter `label` is what the left rail shows.
-  const sections = [
-    { id: 'about', label: 'About', node: sectionAbout },
-    { id: 'why', label: 'Why we care', node: sectionWhy },
-    { id: 'process', label: 'Our process', node: sectionProcess },
-  ];
+  const selectTab = (id) => {
+    setActiveSection(id);
+    if (!open) onOpen?.();
+  };
 
-  return (
-    <AnimatePresence>
-      {open && (
-        <motion.div
-          key="about-backdrop"
-          {...backdropMotion}
-          transition={{
-            duration: 0.28,
+  // Visible tabs: ABOUT alone while peeking; the full set once the drawer opens.
+  const visibleTabIds = !open && !compact ? ['about'] : ABOUT_TABS.map((t) => t.id);
+
+  // Every rest position is written as `calc(N% + Mpx)` — same shape, same
+  // operator, always two terms. Framer interpolates a calc() by reusing one
+  // end's template and tweening the numbers inside it, so mixing `100% - 18px`
+  // with `100% + 48px` made it read the 48 into the minus template and start the
+  // slide 66px past where it should (the drawer popped too far in, then eased
+  // back out — the bounce). Matching templates keeps the tween monotonic.
+  const openX = 'calc(0% + 0px)';
+  // Peek: a few px of panel body + the hanging ABOUT tab. Fully hidden on
+  // phone (opened from the nav) and when the drawer would cover a note lightbox.
+  const closedX = compact
+    ? `calc(100% + ${ABOUT_DRAWER.tabW}px)`
+    : `calc(100% + ${-ABOUT_DRAWER.peekSliver}px)`;
+  const peekHiddenX = `calc(100% + ${ABOUT_DRAWER.tabW}px)`;
+
+  const sharedStyles = `
+    .about-contact-link {
+      display: inline-block; color: ${inkA(0.72)};
+      text-decoration: none;
+      transition: color 0.18s ${HOVER_EASE};
+    }
+    .about-contact-link:hover { color: #CFCAB7; }
+    .about-credit-link {
+      display: inline-block;
+      color: inherit;
+      text-decoration: none;
+      transition: color 0.18s ${HOVER_EASE};
+    }
+    .about-credit-link:hover,
+    .about-credit-link:focus-visible { color: ${ACCENT_INK}; }
+    .about-emph { color: ${inkA(0.85)}; ${LINK_UNDERLINE_CSS} }
+    .about-col::-webkit-scrollbar { width: 9px; }
+    .about-col::-webkit-scrollbar-thumb {
+      background: ${inkA(0.14)}; border-radius: 4px;
+    }
+    .about-drawer-tab {
+      clip-path: ${ABOUT_DRAWER.tabClip};
+      -webkit-clip-path: ${ABOUT_DRAWER.tabClip};
+    }
+    .about-drawer-tab:hover:not([aria-selected='true']):not(:disabled) {
+      color: ${inkA(0.72)} !important;
+    }
+  `;
+
+  const drawerContent = (
+    <>
+      <style>{sharedStyles}</style>
+
+      {/* File-folder tabs on the left edge — flush to the top. Desktop only:
+          they hang outside the panel, which a phone hasn't got room for (see
+          stackedBody). */}
+      {compact ? null : (
+      <div
+        role="tablist"
+        aria-label="About sections"
+        style={{
+          position: 'absolute',
+          left: 0,
+          top: 0,
+          transform: 'translateX(-100%)',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: ABOUT_DRAWER.tabGap,
+          overflow: 'visible',
+          zIndex: 2,
+        }}
+      >
+        {ABOUT_TABS.map((tab, n) => {
+          const shown = visibleTabIds.includes(tab.id);
+          // Only lit while the drawer is actually open. `activeSection` resets to
+          // 'about' on close, so without this the peeking tab always wore the
+          // selected treatment — the panel's own light grey, on a black page,
+          // announcing a section nobody is reading.
+          const isActive = open && activeSection === tab.id;
+
+          // ABOUT is the tab that hangs off the closed drawer, so it is already
+          // there and waits for nothing. The rest arrive after the panel has
+          // finished sliding, each a beat behind the one above.
+          //
+          // Only on the way in. Closing runs them all out at once: a drawer
+          // being put away shouldn't leave its tabs hanging in the air behind
+          // it, one at a time, after the thing they belong to has gone.
+          const arrive = {
+            duration: reduceMotion ? 0 : ABOUT_DRAWER.fadeS,
             ease: easeOut,
-            backdropFilter: { duration: 0.28, ease: easeOut },
-          }}
-          onClick={onClose}
-          style={{
-            position: 'fixed',
-            inset: 0,
-            zIndex: 1000,
-            background: 'rgba(8, 8, 10, 0.55)',
-            WebkitBackdropFilter: 'blur(0px)',
-            cursor: 'pointer',
-          }}
-        />
-      )}
-      {open && (
-        <motion.aside
-          key="about-panel"
-          role="dialog"
-          aria-modal="true"
-          aria-label="About What We Tell AI"
-          {...panelMotion}
-          transition={{ duration: reduceMotion ? 0.2 : 0.4, ease: easeOut }}
-          style={{
-            position: 'fixed',
-            inset: 0,
-            zIndex: 1001,
-            // Same base as the rest of the site (#111). The grain layer inside
-            // paints over this, and the content sits above the grain.
-            background: '#111',
-            color: INK,
-            display: 'flex',
-            flexDirection: 'column',
-            overflow: 'hidden',
-          }}
-        >
-          {/* Same base + grain as the rest of the site: an isolated #111 layer
-              with the shared TunableGrainBackground (DialKit "Grain"), pinned to
-              the panel so it never scrolls. Content scrolls in the wrapper below. */}
-          <div
-            aria-hidden="true"
-            style={{
-              position: 'absolute',
-              inset: 0,
-              zIndex: 0,
-              isolation: 'isolate',
-              pointerEvents: 'none',
-              background: '#111',
-            }}
-          >
-            <TunableGrainBackground />
-          </div>
-
-          {/* Ambient confession-note cutouts peeking from the panel edges. */}
-          <AboutPeekNotes images={peekImages} reduceMotion={reduceMotion} />
-
-          <style>{`
-            /* No underline, unlike the site's other text links: these two sit
-               alone on their own row as mono caps, so they read as links from
-               position rather than needing the rule. */
-            .about-contact-link {
-              display: inline-block; color: ${inkA(0.72)};
-              text-decoration: none;
-              transition: color 0.18s ${HOVER_EASE};
-            }
-            .about-contact-link:hover { color: #CFCAB7; }
-            .about-emph { color: ${inkA(0.85)}; ${LINK_UNDERLINE_CSS} }
-            .about-col::-webkit-scrollbar { width: 9px; }
-            .about-col::-webkit-scrollbar-thumb {
-              background: ${inkA(0.14)}; border-radius: 4px;
-            }
-            /* Entrance animates transform + a fade that always resolves visible:
-               opacity starts at 0.4 (never fully hidden) so content is legible
-               even if the tab throttles/pauses animation time. */
-            @keyframes aboutFadeUp {
-              from { opacity: 0.4; transform: translateY(14px); }
-              to { opacity: 1; transform: none; }
-            }
-            .about-fade { animation: aboutFadeUp 0.6s cubic-bezier(0.165, 0.84, 0.44, 1) both; }
-            @media (prefers-reduced-motion: reduce) {
-              .about-fade { animation: none; }
-            }
-            /* Inline pointers in the intro copy ("our process" / "why we care")
-               reuse the dotted .about-emph underline but scroll on click. */
-            .about-inline-link {
-              /* background-color, not the background shorthand — this is worn
-                 alongside .about-emph, whose underline is a background image. */
-              background-color: transparent; border: none; padding: 0; margin: 0;
-              font: inherit; color: inherit; cursor: pointer;
-            }
-            /* Left section-nav rail — styled to echo the index filter rail:
-               mono, uppercase, hairline-separated rows with a dot on the active. */
-            .about-navlink {
-              position: relative; display: block; width: 100%; text-align: left;
-              background: none; border: none;
-              border-bottom: 1px solid ${inkA(0.12)};
-              padding: 11px 2px 11px 18px; margin: 0; cursor: pointer;
-              font-family: var(--font-mono); font-size: 13px; font-weight: 400;
-              letter-spacing: 0.12em; text-transform: uppercase; color: ${inkA(0.5)};
-              transition: color 0.18s ${HOVER_EASE};
-            }
-            .about-navlink:hover { color: #CFCAB7; }
-            .about-navlink[data-active='true'] { color: #CFCAB7; }
-            /* Active row is marked by a small "->" pointing at the label in the
-               left gutter, roughened by the shared SVG grain displacement filter.
-               letter-spacing is reset so the two glyphs read as one tight arrow
-               (the rail's 0.12em tracking would otherwise split it into "- >"). */
-            .about-navlink::before {
-              content: '->'; position: absolute; left: 0; top: 50%;
-              font-size: 11px; line-height: 1; letter-spacing: 0; color: #CFCAB7;
-              opacity: 0; transform: translate(-4px, -50%) scale(0.7);
-              filter: url(#${railGrainId});
-              transition: opacity 0.2s ${HOVER_EASE}, transform 0.2s ${HOVER_EASE};
-            }
-            .about-navlink:hover::before { opacity: 0.55; transform: translate(-2px, -50%) scale(0.85); }
-            .about-navlink[data-active='true']::before { opacity: 1; transform: translate(0, -50%) scale(1); }
-          `}</style>
-
-          {compact ? (
-            /* MOBILE — one scroll column, sections stacked (with anchors so the
-               intro pointer links still jump between them). */
-            <div
-              ref={contentRef}
-              style={{
-                position: 'relative',
-                zIndex: 1,
-                flex: 1,
-                minHeight: 0,
-                overflowY: 'auto',
-                overflowX: 'hidden',
-                WebkitOverflowScrolling: 'touch',
-                outline: 'none',
-                // Clear the shared fixed nav (ArchiveNavBar) — same inset as index.
-                paddingTop: 24 + ARCHIVE_NAV_CHROME_HEIGHT + 16,
+            delay:
+              reduceMotion || !open || n === 0
+                ? 0
+                : ABOUT_DRAWER.slideS + (n - 1) * ABOUT_DRAWER.tabInStepS,
+          };
+          return (
+            <motion.button
+              key={tab.id}
+              type="button"
+              role="tab"
+              className="about-drawer-tab"
+              aria-label={tab.label}
+              aria-selected={isActive}
+              disabled={!shown}
+              onClick={() => shown && selectTab(tab.id)}
+              initial={false}
+              animate={{
+                opacity: shown ? 1 : 0,
+                height: shown ? ABOUT_DRAWER.tabH : 0,
+                marginBottom: shown ? 0 : -ABOUT_DRAWER.tabGap,
+                pointerEvents: shown ? 'auto' : 'none',
+                // Animated rather than set in `style` so the tab lights with the
+                // panel it belongs to instead of snapping ahead of the slide.
+                backgroundColor: isActive ? ABOUT_DRAWER.bg : ABOUT_DRAWER.idle,
+                color: isActive ? '#fff' : inkA(0.48),
               }}
-            >
-              <div style={{ maxWidth: 680, margin: '0 auto', padding: '26px 22px 8px' }}>
-                {sections.map((s, i) => (
-                  <div key={s.id}>
-                    {i > 0 ? (
-                      <div style={{ height: 1, background: inkA(0.1), margin: '30px 0' }} />
-                    ) : null}
-                    <section
-                      id={`about-sec-${s.id}`}
-                      data-section={s.id}
-                      ref={(el) => {
-                        sectionRefs.current[s.id] = el;
-                      }}
-                      className="about-fade"
-                      style={{ animationDelay: `${0.05 + i * 0.08}s`, scrollMarginTop: sectionInset }}
-                    >
-                      {s.node}
-                    </section>
-                    {s.id === 'about' && (
-                      <div className="about-fade" style={{ animationDelay: '0.13s' }}>{connectBlock}</div>
-                    )}
-                  </div>
-                ))}
-              </div>
-              <div
-                aria-hidden="true"
-                style={{ display: 'flex', justifyContent: 'flex-end', padding: '32px 22px 26px' }}
-              >
-                <img
-                  src="/wordmark-420.png"
-                  alt=""
-                  aria-hidden="true"
-                  draggable={false}
-                  style={{ height: 'clamp(90px, 26vw, 140px)', width: 'auto', opacity: 0.85, userSelect: 'none' }}
-                />
-              </div>
-              <div className="about-fade" style={{ padding: '0 22px 32px', animationDelay: '0.2s' }}>
-                {footerBlock}
-              </div>
-            </div>
-          ) : (
-            /* DESKTOP — left section-nav rail + ONE scrolling content column.
-               The rail+content group is capped and centered so it sits in the
-               middle of wide screens instead of hugging the left edge. */
-            <div
+              transition={{
+                duration: reduceMotion ? 0 : ABOUT_DRAWER.fadeS,
+                ease: easeOut,
+                // Only the tab's arrival is held back. Its colours keep the
+                // panel's own clock, so the section you are reading lights up
+                // with the surface it belongs to rather than half a beat later.
+                height: arrive,
+                opacity: arrive,
+                marginBottom: arrive,
+              }}
               style={{
                 position: 'relative',
-                zIndex: 1,
-                flex: 1,
-                minHeight: 0,
+                zIndex: isActive ? 3 : 1,
+                flex: '0 0 auto',
+                boxSizing: 'border-box',
+                width: ABOUT_DRAWER.tabW,
+                padding: `${ABOUT_DRAWER.tabPadY}px ${ABOUT_DRAWER.tabPadX}px`,
+                margin: 0,
+                border: `1px solid ${ABOUT_DRAWER.tabOutline}`,
+                borderRight: isActive ? 'none' : `1px solid ${ABOUT_DRAWER.tabOutline}`,
+                borderRadius: ABOUT_DRAWER.tabRadius,
+                cursor: shown ? 'pointer' : 'default',
                 display: 'flex',
-                width: '100%',
-                maxWidth: 1100,
-                margin: '0 auto',
+                alignItems: 'center',
+                justifyContent: 'center',
+                overflow: 'hidden',
+                // Pull the open tab flush to the panel edge so it reads as one piece.
+                marginRight: isActive ? -1 : 0,
               }}
             >
-              {/* Left rail — sits where the index filter rail lives; its links
-                  scroll the content to each section (scroll-spy highlights). */}
-              <nav
-                aria-label="About sections"
+              <span
                 style={{
-                  flexShrink: 0,
-                  width: FILTER_SIDEBAR_LEFT + FILTER_SIDEBAR_W,
-                  paddingLeft: FILTER_SIDEBAR_LEFT,
-                  paddingRight: 24,
-                  paddingTop: FILTER_SIDEBAR_TOP,
+                  fontFamily: ARCHIVE_NAV_TEXT.fontFamily,
+                  fontSize: ARCHIVE_NAV_TEXT.fontSize,
+                  fontWeight: ARCHIVE_NAV_TEXT.fontWeight,
+                  lineHeight: ARCHIVE_NAV_TEXT.lineHeight,
+                  letterSpacing: ARCHIVE_NAV_TEXT.letterSpacing,
+                  whiteSpace: 'nowrap',
+                  transform: 'rotate(-90deg)',
+                  userSelect: 'none',
                 }}
               >
-                <NavGrainFilter id={railGrainId} reduceMotion={reduceMotion} />
-                {sections.map((s) => (
-                  <button
-                    key={s.id}
-                    type="button"
-                    className="about-navlink"
-                    data-active={activeSection === s.id}
-                    onClick={() => scrollToSection(s.id)}
-                  >
-                    {s.label}
-                  </button>
-                ))}
-              </nav>
-              {/* Content — single column, scrolls. */}
-              <div
-                ref={contentRef}
-                className="about-col"
-                style={{
-                  flex: 1,
-                  minHeight: 0,
-                  overflowY: 'auto',
-                  padding: `${FILTER_SIDEBAR_TOP}px 40px 96px`,
-                  // Chrome makes overflow:auto regions keyboard-focusable and
-                  // paints a :focus-visible ring around them — suppress it.
-                  outline: 'none',
-                }}
-              >
-                <div style={{ maxWidth: 720 }}>
-                  {sections.map((s, i) => (
-                    <div key={s.id}>
-                      <section
-                        id={`about-sec-${s.id}`}
-                        data-section={s.id}
-                        ref={(el) => {
-                          sectionRefs.current[s.id] = el;
-                        }}
-                        className="about-fade"
-                        style={{
-                          animationDelay: `${0.05 + i * 0.06}s`,
-                          scrollMarginTop: sectionInset,
-                          marginBottom: 44,
-                        }}
-                      >
-                        {s.node}
-                      </section>
-                      {s.id === 'about' && (
-                        <div className="about-fade" style={{ animationDelay: '0.11s', marginBottom: 44 }}>{connectBlock}</div>
-                      )}
-                    </div>
-                  ))}
-                  <div className="about-fade" style={{ animationDelay: '0.25s', paddingTop: 24, borderTop: `1px solid ${inkA(0.08)}` }}>
-                    {footerBlock}
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
+                {tab.label}
+              </span>
+            </motion.button>
+          );
+        })}
+      </div>
+      )}
 
-          {/* Grain ON TOP of the copy: a single fine-noise tile blended (overlay)
-              over the scrolling content so the text picks up the same film-grain
-              texture instead of reading as clean type floating above it. A single
-              blended element (not a nested overlay) so it composites against the
-              panel's real backdrop — the blacks stay black; only the lit pixels
-              (the type) take the grain. Decorative + non-interactive. */}
-          <div
-            aria-hidden="true"
+      <div
+        className="about-col"
+        style={{
+          position: 'relative',
+          zIndex: 1,
+          height: '100%',
+          overflowY: 'auto',
+          overflowX: 'hidden',
+          WebkitOverflowScrolling: 'touch',
+          outline: 'none',
+          // Modest inset — the drawer is full-bleed under the chrome, so matching
+          // the grid's 112px top left a dead band above the copy.
+          padding: compact
+            ? `${24 + ARCHIVE_NAV_CHROME_HEIGHT + 16}px 22px 72px`
+            : `28px 28px 48px`,
+          boxSizing: 'border-box',
+        }}
+      >
+        {compact ? (
+          stackedBody
+        ) : (
+          <AnimatePresence mode="wait">
+            <motion.div
+              key={activeSection}
+              initial={reduceMotion || !open ? false : { opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={reduceMotion || !open ? undefined : { opacity: 0 }}
+              transition={{ duration: ABOUT_DRAWER.fadeS, ease: easeOut }}
+            >
+              {sectionBody[activeSection]}
+            </motion.div>
+          </AnimatePresence>
+        )}
+      </div>
+    </>
+  );
+
+  // Phone keeps the old full-bleed takeover (no permanent side peek).
+  if (compact) {
+    return (
+      <AnimatePresence>
+        {open && (
+          <motion.div
+            key="about-backdrop"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.28, ease: easeOut }}
+            onClick={onClose}
             style={{
-              position: 'absolute',
+              position: 'fixed',
               inset: 0,
-              zIndex: 2,
-              pointerEvents: 'none',
-              backgroundImage: noiseUrl({
-                type: 'fractalNoise',
-                baseFrequency: 1.1,
-                numOctaves: 2,
-                seed: 7,
-                size: 200,
-              }),
-              backgroundSize: '200px 200px',
-              backgroundRepeat: 'repeat',
-              mixBlendMode: 'overlay',
-              opacity: 0.5,
+              zIndex: 1000,
+              background: 'rgba(8, 8, 10, 0.55)',
+              cursor: 'pointer',
             }}
           />
-        </motion.aside>
-      )}
-    </AnimatePresence>
+        )}
+        {open && (
+          <motion.aside
+            key="about-panel"
+            role="dialog"
+            aria-modal="true"
+            aria-label="About What We Tell AI"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: reduceMotion ? 0.2 : 0.4, ease: easeOut }}
+            style={{
+              position: 'fixed',
+              inset: 0,
+              zIndex: 1001,
+              background: ABOUT_DRAWER.bg,
+              color: INK,
+              overflow: 'hidden',
+            }}
+          >
+            {drawerContent}
+          </motion.aside>
+        )}
+      </AnimatePresence>
+    );
+  }
+
+  // Desktop — always mounted. Peeks from the right; slides open to 33vw.
+  return (
+    <>
+      <AnimatePresence>
+        {open && (
+          <motion.button
+            key="about-backdrop"
+            type="button"
+            aria-label="Close about drawer"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: reduceMotion ? 0 : 0.28, ease: easeOut }}
+            onClick={onClose}
+            style={{
+              position: 'fixed',
+              inset: 0,
+              zIndex: 1000,
+              border: 'none',
+              padding: 0,
+              margin: 0,
+              background: 'rgba(8, 8, 10, 0.55)',
+              cursor: 'pointer',
+            }}
+          />
+        )}
+      </AnimatePresence>
+
+      <motion.aside
+        role="dialog"
+        aria-modal={open}
+        aria-label="About What We Tell AI"
+        // Parked off the edge on mount when the peek entrance is due, so the
+        // slide in is the only movement anyone sees.
+        initial={
+          shouldPeekEntrance
+            ? { x: peekHiddenX, backgroundColor: ABOUT_DRAWER.idle }
+            : false
+        }
+        // The sliver left on screen when the drawer is shut is this panel's own
+        // surface, so it lights and darkens with the slide rather than sitting
+        // at reading brightness against a black page all the time.
+        animate={{
+          x: open ? openX : closedX,
+          backgroundColor: open ? ABOUT_DRAWER.bg : ABOUT_DRAWER.idle,
+        }}
+        // The entrance delay belongs to the mount animation alone; a click has to
+        // be answered at once, even one that lands mid-wait.
+        transition={{
+          duration: reduceMotion ? 0 : ABOUT_DRAWER.slideS,
+          ease: easeOut,
+          delay: open || peekEntranceDone.current ? 0 : ABOUT_PEEK_ENTER_DELAY,
+        }}
+        onAnimationComplete={() => {
+          peekEntranceDone.current = true;
+        }}
+        style={{
+          position: 'fixed',
+          top: 0,
+          right: 0,
+          bottom: 0,
+          width: ABOUT_DRAWER.w,
+          zIndex: open ? 1001 : 180,
+          color: INK,
+          overflow: 'visible',
+          boxShadow: open ? '-24px 0 60px rgba(0,0,0,0.45)' : 'none',
+        }}
+      >
+        {drawerContent}
+      </motion.aside>
+    </>
   );
 }
 
-function ToggleButton({ active, onClick, children }) {
+function ToggleButton({ active, onClick, children, style }) {
   return (
     <button
       onClick={(e) => {
@@ -1378,6 +1782,7 @@ function ToggleButton({ active, onClick, children }) {
         opacity: active ? 1 : 0.5,
         cursor: 'pointer',
         transition: `opacity 0.2s ${HOVER_EASE}`,
+        ...style,
       }}
       onMouseEnter={(e) => {
         if (!active) e.currentTarget.style.opacity = 0.8;
@@ -1399,10 +1804,10 @@ function ToggleButton({ active, onClick, children }) {
  * older 3-card fan deck (see ExploreMenu below).
  * ───────────────────────────────────────────────────────── */
 const INDEX_HOVER_GRID = {
-  belowGap: 10, // px between the INDEX label and the grid
-  cellW: 34,
-  cellH: 40,
-  gridGap: 5,
+  belowGap: 8, // px between the INDEX label and the grid
+  cellW: 26,
+  cellH: 30,
+  gridGap: 4,
   closeDelayMs: 100, // grace so pointer travel never flickers closed
 };
 
@@ -1476,28 +1881,28 @@ function useHoverPeekInactiveStyle() {
  * clicking EXPLORE still opens the explore view.
  * ───────────────────────────────────────────────────────── */
 const EXPLORE_HOVER_FAN = {
-  gap: 12, //           px below the EXPLORE button the fan hangs
-  cardW: 56, //         px — paper-card width
-  cardH: 62, //         px — paper-card height
+  gap: 10, //           px below the EXPLORE button the fan hangs
+  cardW: 42, //         px — paper-card width
+  cardH: 46, //         px — paper-card height
   stagger: 0.05, //     s between cards fanning out
   exitStagger: 0.035, // s between cards collapsing back (reverse)
   open: { duration: 0.42, ease: [0.18, 0.89, 0.32, 1.27] },
   exit: { duration: 0.15, ease: [0.4, 0, 1, 1] },
   closeDelayMs: 100, // grace so pointer travel never flickers closed
-  collapsed: { opacity: 0, x: 0, y: -8, rotate: -3, scale: 0.9 },
+  collapsed: { opacity: 0, x: 0, y: -6, rotate: -3, scale: 0.9 },
 };
 
 const EXPLORE_HOVER_ITEMS = [
-  { img: '/index-card-1.png', fan: { x: -40, y: 14, rotate: -18 } },
+  { img: '/index-card-1.png', fan: { x: -30, y: 10, rotate: -18 } },
   { img: '/index-card-2.png', fan: { x: 0, y: 0, rotate: -2 } },
-  { img: '/index-card-3.png', fan: { x: 38, y: 14, rotate: 16 } },
+  { img: '/index-card-3.png', fan: { x: 28, y: 10, rotate: 16 } },
 ];
 
 const EXPLORE_FAN_TILT = {
-  maxYaw: 15,
-  maxPitch: 12,
-  perspective: 460,
-  lift: 1.06,
+  maxYaw: 12,
+  maxPitch: 10,
+  perspective: 420,
+  lift: 1.05,
   spring: { stiffness: 260, damping: 20, mass: 0.5 },
 };
 
@@ -1720,8 +2125,13 @@ function IndexMenu({ view, onChange, aboutOpen = false }) {
         if (!e.currentTarget.contains(e.relatedTarget)) scheduleClose();
       }}
     >
-      {/* Dim while the About panel owns the nav so exactly one tab reads active. */}
-      <ToggleButton active={!aboutOpen && view === 'grid'} onClick={() => onChange?.('grid')}>
+      {/* Flush left so INDEX glyphs sit on the grid edge — the dotted underline
+          paints across the padding box, so left pad would leave dots before the I. */}
+      <ToggleButton
+        active={!aboutOpen && view === 'grid'}
+        onClick={() => onChange?.('grid')}
+        style={{ paddingLeft: 0 }}
+      >
         INDEX
       </ToggleButton>
 
@@ -1796,6 +2206,49 @@ function IndexMenu({ view, onChange, aboutOpen = false }) {
   );
 }
 
+/** Non-interactive divider so the pair reads as one "INDEX / EXPLORE" nav unit
+ *  rather than two loose tabs. Dimmer than an inactive tab so it never looks
+ *  clickable. */
+function NavSlash() {
+  return (
+    <span
+      aria-hidden="true"
+      style={{ ...ARCHIVE_NAV_TEXT, opacity: 0.3, userSelect: 'none' }}
+    >
+      /
+    </span>
+  );
+}
+
+/**
+ * The archive's view switch: INDEX / EXPLORE, each carrying its desktop hover
+ * preview (INDEX's 2×2 note grid, EXPLORE's 3-card fan). Desktop-only — phone
+ * widths switch views from the hamburger, which has no hover to preview into.
+ *
+ * While the About panel is open, ABOUT is the current destination, so both tabs
+ * must read as inactive (dimmed) — otherwise INDEX stays lit from the underlying
+ * view and the bar shows two active tabs.
+ */
+function ViewTabs({ view, onChange, aboutOpen = false }) {
+  return (
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 2,
+        pointerEvents: 'auto',
+      }}
+    >
+      <IndexMenu view={view} onChange={onChange} aboutOpen={aboutOpen} />
+      <NavSlash />
+      <ExploreMenu view={view} onChange={onChange} aboutOpen={aboutOpen} />
+      {/* EXPERIMENT + CUBE tabs hidden for now — the views still exist and stay
+          reachable via ?view=experiment / ?view=cube. */}
+    </div>
+  );
+}
+
 /** Spatial-canvas layout tuning (grid view → pannable wall of notes).
  *  Tile + cell sizes scale together (~1.25×) so the wall just zooms — gaps stay
  *  proportional and nothing overlaps. */
@@ -1837,7 +2290,16 @@ const gridChipStyle = (active) => ({
   whiteSpace: 'nowrap',
 });
 
-/** Embedded facet menu trigger (pill) that sits beside the search field. */
+/** Semi-translucent fill for the phone filter row — search + facet tabs share
+    one charcoal so tiles can drift through as the bar floats over the grid,
+    without the frosted smear backdrop-filter used to leave behind. */
+const MOBILE_FILTER_FILL = 'rgba(31, 30, 28, 0.72)';
+const MOBILE_FILTER_FILL_HOVER = 'rgba(31, 30, 28, 0.86)';
+
+/** Embedded facet menu trigger that sits beside the search field, squared off to
+    match it — they share a row, and a pill next to that dashed rectangle read as
+    a control borrowed from somewhere else. The lighter fill is what still tells
+    them apart. */
 const facetMenuButtonStyle = {
   pointerEvents: 'auto',
   display: 'inline-flex',
@@ -1849,10 +2311,14 @@ const facetMenuButtonStyle = {
   letterSpacing: '0.08em',
   textTransform: 'uppercase',
   color: '#CFCAB7',
-  background: 'rgba(207,202,183,0.1)',
+  background: MOBILE_FILTER_FILL,
   border: '1px solid rgba(207,202,183,0.18)',
-  borderRadius: 999,
-  padding: '9px 16px',
+  borderRadius: 0,
+  // 12 rather than the 16 the search field used to use alongside it: the two
+  // pills and the field now share one row, and at 360px — the narrowest phone
+  // worth designing for — the wider pills left the field too short to show its
+  // own placeholder.
+  padding: '9px 12px',
   cursor: 'pointer',
   whiteSpace: 'nowrap',
   transition: `border-color 0.2s ${HOVER_EASE}, background 0.2s ${HOVER_EASE}`,
@@ -1860,33 +2326,34 @@ const facetMenuButtonStyle = {
 
 /** Floating dropdown surface for the facet menu (compact/phone bar only —
     desktop uses the sidebar accordions). Opens downward below the button since
-    the phone filter bar docks at the top of the view. */
+    the phone filter bar docks at the top of the view, and hangs from the
+    button's RIGHT edge: the tabs sit against the right of the bar, and a panel
+    wider than its tab would otherwise run off that edge of a phone. */
 const facetMenuPanelStyle = {
   position: 'absolute',
   top: 'calc(100% + 8px)',
-  left: 0,
+  right: 0,
   minWidth: 208,
   zIndex: 20,
   display: 'flex',
   flexDirection: 'column',
   gap: 2,
   padding: 6,
-  borderRadius: 14,
-  background: 'rgba(26,22,24,0.97)',
-  border: '1px solid rgba(207,202,183,0.14)',
-  boxShadow: '0 18px 46px rgba(0,0,0,0.55)',
-  backdropFilter: 'blur(14px)',
-  WebkitBackdropFilter: 'blur(14px)',
+  // Square, like the tab it hangs from and the search field beside it.
+  borderRadius: 0,
+  background: MENU_SURFACE,
+  border: `1px solid ${MENU_SURFACE_BORDER}`,
+  boxShadow: MENU_SURFACE_SHADOW,
 };
 
-/** A single Category / Location / Recency row inside the facet menu. */
+/** A single Category / Location row inside the facet menu. */
 const facetMenuItemStyle = (current) => ({
   display: 'flex',
   alignItems: 'center',
   gap: 10,
   width: '100%',
   padding: '9px 12px',
-  borderRadius: 9,
+  borderRadius: 0,
   border: 'none',
   background: current ? 'rgba(207,202,183,0.09)' : 'transparent',
   color: current ? INK : inkA(0.72),
@@ -1899,29 +2366,193 @@ const facetMenuItemStyle = (current) => ({
 
 /** Desktop grid filter rail — a left sidebar (search on top, then Category and
     Location accordions with checkbox lists). Phone widths keep the docked bar
-    instead. Geometry lives here so the sidebar and the grid's matching left pad
-    stay in sync. */
-const FILTER_SIDEBAR_W = 200; //    px — rail width
-const FILTER_SIDEBAR_LEFT = 32; //  px — inset from the view's left edge
-const FILTER_SIDEBAR_TOP = 112; //  px — starts below the wordmark chrome
-const FILTER_SIDEBAR_GAP = 40; //   px — clearance between rail and grid
-// Entrance: the rail's rows (search → Category → Location) slide in one after
-// another, starting just after the nav chrome has landed (see
-// ARCHIVE_NAV_CHROME_DELAY_GRID) so the sidebar reads as a follow-on beat.
+    instead. Geometry (FILTER_SIDEBAR_*, GRID_CONTENT_LEFT, GRID_NAV_LEFT) is
+    declared above with the archive nav chrome so INDEX / EXPLORE can align to
+    the first tile's number.
+    Entrance: the rail's rows (search → Category → Location) slide in one after
+    another, starting just after the nav chrome has landed (see
+    ARCHIVE_NAV_CHROME_DELAY_GRID) so the sidebar reads as a follow-on beat. */
+// How long the category checkboxes take to let go before their labels lift off
+// toward the explore dial. Long enough to read as a release, short enough that
+// EXPLORE still feels like it responded to the click.
+const FLIGHT_FADE_MS = 220;
+// The flight home is parked for now: explore → index just switches views. The
+// machinery is untouched and still exercised in the other direction, so this is
+// the only thing standing between it and coming back.
+const FLY_HOME = false;
+/* ─────────────────────────────────────────────────────────────────────
+ * ANIMATION STORYBOARD — LEAVING THE INDEX (index → explore)
+ *
+ * What the flight leaves behind. The index doesn't go as one sheet: the
+ * rail follows the words out, the grid holds the screen alone for a beat,
+ * and only then dissolves. Times are ms after the EXPLORE click — the
+ * words' own journey is storyboarded in CategoryFlight.jsx.
+ *
+ *    0ms   category checkboxes let go                        (220ms)
+ *  220ms   words lift off; the emptied rail goes with them    (220ms)
+ *  440ms   sidebar gone — the grid is the only thing left
+ *  620ms   the grid dissolves beneath the flight              (240ms)
+ *  860ms   grid gone; the dial mounts behind the words, dark
+ *  920ms   words land; the dial cuts in under them
+ *
+ * Both exits are triggered by the same frame (the one that unmounts
+ * GridView, which is also lift-off), so these are delays from 220ms
+ * rather than from the click.
+ *
+ * THE GRID MUST FINISH BEFORE THE WORDS LAND. The view switch is an
+ * AnimatePresence mode="wait", so the dial doesn't exist until the index
+ * has cleared — and the flight hands off on its own clock at 920ms
+ * whether or not there's anything underneath to hand off to. Overrun that
+ * and the words dissolve into a gap, with the dial fading up behind them a
+ * beat later. `cameByFlight` keeps that failure survivable; these numbers
+ * are what stop it happening.
+ * ───────────────────────────────────────────────────────────────────── */
+const DEPARTURE = {
+  sidebarFade: 0.22, //  s — the rail follows the words it just released
+  gridHold: 0.4, //      s — the beat where the grid stands alone
+  gridFade: 0.24, //     s — dissolve, done just before the words land
+};
+// The two ends of a category's journey, as the flight's overlay draws them. It
+// renders every word at the dial's own font size, so the rail end is that size
+// scaled down rather than a second font.
+const RAIL_POSE = { scale: 12 / WHEEL.labelFont, track: '0.1em' };
+const DIAL_POSE = { scale: 1, track: '0em', color: '#e2e2e2' };
+// Rows further from the arc's centre set off fractionally later, so the fan
+// opens and closes outward instead of every word moving as one block.
+const FLIGHT_STAGGER_S = 0.025;
+// A checked row is brighter. Read the tick off the row rather than mirroring
+// selectedCats: starting (or ending) a copy on the wrong ink pops at the cut.
+const railInk = (el) =>
+  el.closest('[role="menuitemcheckbox"]')?.getAttribute('aria-checked') === 'true'
+    ? INK
+    : inkA(0.7);
+/**
+ * `labels`, rotated so `centre` sits in the middle position.
+ *
+ * With the dial's centre in the rail's middle row, rail order and arc order
+ * line up one-to-one: the top row flies to the top of the arc, the middle row
+ * stays put, the bottom row flies to the bottom. Nothing crosses anything
+ * else. Left in canonical order the arc's centre would be the FIRST row, so
+ * the back half of the list has to wrap up and over the top — four words
+ * swimming through each other on every trip.
+ *
+ * A rotation rather than a re-sort, because the wheel is cyclic: rotating the
+ * list is just turning the wheel, and every category keeps the same
+ * neighbours it has on the dial.
+ */
+const centreOn = (labels, centre) => {
+  const n = labels.length;
+  const d = labels.indexOf(centre);
+  if (n < 3 || d < 0) return labels;
+  const mid = Math.floor(n / 2);
+  return Array.from({ length: n }, (_, i) => labels[(i + d - mid + n) % n]);
+};
+/**
+ * Where `label` sits in the rail, as a flight pose: upright, lit, and small.
+ *
+ * A word's row is not a fixed property of the word. The rail is a rotation of
+ * the dial (see `centreOn`), so turning the wheel on the explore view moves
+ * every category up or down the list. `order` is the arrangement to aim at —
+ * pass the one the rail is about to mount with, which on the way home is not
+ * the one it had when it was last measured.
+ */
+const railPoseAt = (geom, label, order) => {
+  const box = geom?.box.get(label);
+  if (!box) return null;
+  const row = (order ?? geom.order).indexOf(label);
+  if (row < 0 || row >= geom.rows.length) return null;
+  return {
+    cx: box.left + box.width / 2,
+    cy: geom.rows[row],
+    rotate: 0,
+    opacity: 1,
+    ...RAIL_POSE,
+    color: box.color,
+  };
+};
 const FILTER_SIDEBAR_ENTER_DELAY = ARCHIVE_NAV_CHROME_DELAY_GRID + 0.15;
 const FILTER_SIDEBAR_ENTER_STAGGER = 0.1;
+/** Last sidebar row (search + 2 accordions + copyright) lands, then ABOUT peeks in. */
+const ABOUT_PEEK_ENTER_DELAY =
+  FILTER_SIDEBAR_ENTER_DELAY + 3 * FILTER_SIDEBAR_ENTER_STAGGER + 0.5;
 
-/** "M/D/YYYY" → epoch ms for recency sort. NaN when missing/unparseable. */
-function parseNoteDate(s) {
-  if (!s) return NaN;
-  const m = String(s).trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
-  if (m) {
-    let y = Number(m[3]);
-    if (y < 100) y += 2000;
-    return new Date(y, Number(m[1]) - 1, Number(m[2])).getTime();
-  }
-  const t = Date.parse(s);
-  return Number.isNaN(t) ? NaN : t;
+/**
+ * Facet checkbox (Category / Location rows). Empty square at rest; checking
+ * draws a checkmark in rather than filling the box. The mark rides the same
+ * NoiseDisplaceFilter the old asterisk used — at this size the wobble sells it
+ * as inked rather than set. Its own filter id because the grid's is tuned for
+ * 200px photographs, and a 3px push on a 13px glyph tears it apart.
+ */
+const FACET_MARK_FILTER_ID = 'facet-mark-noise';
+const FACET_MARK_FILTER = {
+  displaceFrequency: '0.09 0.11',
+  scale: 1.3,
+  grainFrequency: 1.1,
+  grainOpacity: 0.32,
+  seed: 9,
+  warpDur: 11,
+  grainFps: 8,
+  grainSteps: 6,
+};
+const FACET_CHECK_SIZE = 13;
+const FACET_CHECK_EASE = [0.165, 0.84, 0.44, 1];
+
+/** Square checkbox with a pathLength-drawn checkmark (no fill-in). */
+function FacetCheckboxMark({ on, style }) {
+  const reduceMotion = useReducedMotion();
+  return (
+    <span
+      aria-hidden="true"
+      className="facet-checkbox-box"
+      style={{
+        width: FACET_CHECK_SIZE,
+        height: FACET_CHECK_SIZE,
+        flex: '0 0 auto',
+        boxSizing: 'border-box',
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        borderRadius: 2,
+        border: `1px solid ${on ? inkA(0.9) : inkA(0.4)}`,
+        background: 'transparent',
+        color: on ? INK : inkA(0.4),
+        ...style,
+      }}
+    >
+      <svg
+        width={FACET_CHECK_SIZE - 2}
+        height={FACET_CHECK_SIZE - 2}
+        viewBox="0 0 12 12"
+        fill="none"
+        aria-hidden="true"
+        style={{
+          display: 'block',
+          // Grain / warp rides the SVG so the stroke edges shimmer like ink.
+          filter: on ? `url(#${FACET_MARK_FILTER_ID})` : 'none',
+          overflow: 'visible',
+        }}
+      >
+        <motion.path
+          d="M2.2 6.2 L5 9 L9.8 3.2"
+          stroke="currentColor"
+          strokeWidth="1.6"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          initial={false}
+          animate={
+            on
+              ? { pathLength: 1, opacity: 1 }
+              : { pathLength: 0, opacity: 0 }
+          }
+          transition={
+            reduceMotion
+              ? { duration: 0 }
+              : { duration: 0.22, ease: FACET_CHECK_EASE }
+          }
+        />
+      </svg>
+    </span>
+  );
 }
 
 /** "San Francisco, CA" → "San Francisco" for compact location chips. */
@@ -2433,22 +3064,617 @@ function AnimatedCount({ value, reduceMotion }) {
  * reshuffle on re-render or filter changes. */
 
 const LATTICE_ASCII = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@#$%&*+-=.:;!?';
+// Glyphs per line before the sheet has been measured — see GridLattice, which
+// replaces these with counts derived from the real box. Only ever visible for a
+// frame, so they just need to be plausible rather than right.
 const LATTICE_H_CHARS = 360;
 const LATTICE_V_CHARS = 120;
+// Characters in each measuring probe. Long enough that rounding on a single
+// glyph's advance doesn't matter once it's divided back out.
+const LATTICE_PROBE = 100;
+const LATTICE_PROBE_H = 'X'.repeat(LATTICE_PROBE);
+const LATTICE_PROBE_V = LATTICE_PROBE_H.split('').join('\n');
 
-function latticeAscii(key, count) {
+/* Deterministic PRNG (mulberry32) seeded off a string. The scramble and the
+   order it types itself on in both have to survive re-renders, so neither can
+   reach for Math.random. */
+function latticeRng(key) {
   let t = 0;
   for (let i = 0; i < key.length; i++) t = (t * 31 + key.charCodeAt(i)) >>> 0;
-  let out = '';
-  for (let n = 0; n < count; n++) {
+  return () => {
     t = (t + 0x6d2b79f5) >>> 0;
     let x = Math.imul(t ^ (t >>> 15), 1 | t);
     x = (x + Math.imul(x ^ (x >>> 7), 61 | x)) ^ x;
-    const r = ((x ^ (x >>> 14)) >>> 0) / 4294967296;
-    out += LATTICE_ASCII[Math.floor(r * LATTICE_ASCII.length)];
-  }
+    return ((x ^ (x >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function latticeAscii(key, count) {
+  const rand = latticeRng(key);
+  let out = '';
+  for (let n = 0; n < count; n++) out += LATTICE_ASCII[Math.floor(rand() * LATTICE_ASCII.length)];
   return out;
 }
+
+/* Crossings. Where two hairlines meet they used to write over each other, and
+   two 8px glyphs in one cell come out as a smudge rather than as either
+   character. Each crossing is now a single '+' on its own layer, with the glyphs
+   underneath cleared out from both runs so nothing collides with it.
+ 
+   Two cells are cleared per axis, not one. The lines are positioned as a
+   percentage of the sheet while their glyphs are positioned by the font's
+   advance, so a crossing falls wherever it falls inside a cell; clearing the
+   cell the crossing lands in AND the one after it is what guarantees the '+'
+   has clear air whichever way that rounding goes. */
+const LATTICE_CROSS = '+';
+const LATTICE_CROSS_CLEAR = 2;
+
+/** `text` with every index in `indices` blanked out. */
+function latticeClear(text, indices) {
+  if (!indices || !indices.size) return text;
+  const chars = text.split('');
+  indices.forEach((at) => {
+    if (at >= 0 && at < chars.length) chars[at] = ' ';
+  });
+  return chars.join('');
+}
+
+/* Type-on. A hairline doesn't draw from one end — its glyphs land in a shuffled
+   order, so the sheet reads as characters being typed all over it rather than
+   as lines sweeping out. Every position a glyph hasn't reached yet is held by a
+   space, so the run's extent is right from the first frame and nothing shifts
+   as it fills.
+   Lines start on their own stagger (see latticeLines) plus a random head start,
+   so they overlap unevenly instead of marching in a wave. */
+const LATTICE_TYPE = {
+  perLineS: 0.9, // how long one hairline takes to fill
+  jitterS: 0.3, // extra random head start on top of the line's stagger
+  tickMs: 50, //   beat between fills; the sheet runs to ~30k glyphs, and a
+  //               rewrite every frame buys nothing you can see
+};
+
+/* Occasional churn — every so often a handful of glyphs somewhere in the sheet
+   swap for other characters, so the lattice keeps rewriting itself under the
+   notes. Swaps are kept rather than reverted: the sheet drifts instead of
+   blinking between two states.
+   Two things make a swap something you actually catch out of the corner of your
+   eye rather than a statistical event. A burst lands on ONE line within
+   `clusterSpan` glyphs of an anchor, so a few characters change together in one
+   spot instead of scattering across 30k of them. And the anchor is picked from
+   what's on screen — the sheet is the full height of the archive (~29,000px at
+   three columns), so a swap chosen uniformly would land off-screen ~97% of the
+   time. The beat is a random interval rather than a metronome so it reads as
+   occasional. */
+const LATTICE_CHURN = {
+  minMs: 420, //      shortest gap between bursts
+  maxMs: 1500, //     longest
+  minSwaps: 2, //     glyphs changed in a burst
+  maxSwaps: 6,
+  clusterSpan: 12, // how far from the anchor a burst's glyphs can land
+};
+
+/* Hover — the four hairline segments boxing the note under the cursor trade
+   their scramble for shade blocks, one glyph at a time, so the lattice draws a
+   frame around what you're looking at.
+   The blocks are picked per position off `glyphs` rather than at random, so the
+   run comes out mottled and stays put: at 8px the two densities read as a
+   dither rather than as characters. Listing ▒ twice weights it over ░.
+   Wipes are short — this is a pointer response, not a beat of the entrance. */
+const LATTICE_HOVER = {
+  glyphs: '░▒▒░',
+  inS: 0.22, //  segment fills in
+  outS: 0.16, // and falls back to the scramble
+};
+
+/**
+ * One hairline of the lattice.
+ *
+ * Memoized, and handed its text already laid out (verticals arrive newline-
+ * separated), because the layer re-renders on every beat of the type-on and
+ * again on every churn swap. Only the lines whose string actually changed
+ * re-render; without this each beat would rebuild all ~60 lines in the sheet.
+ */
+const LatticeLine = memo(function LatticeLine({ line, text, endInset }) {
+  const v = line.axis === 'v';
+  // The closing line on each axis sits ON the far edge, where the layer clips
+  // it away; back it off by the run's own thickness so it lands flush inside
+  // instead. Every other line hangs off its cell boundary as-is.
+  const main = line.atEnd ? `calc(${line.main} - ${v ? endInset.v : endInset.h}px)` : line.main;
+  return (
+    <div
+      className="grid-lattice-line"
+      style={
+        v
+          ? { top: 0, left: main, width: '0.72em', height: `${line.lenPct}%` }
+          : { left: 0, top: main, height: '0.92em', width: `${line.lenPct}%` }
+      }
+    >
+      <span className={`grid-lattice-glyphs${v ? ' grid-lattice-glyphs-v' : ''}`} aria-hidden="true">
+        {text}
+      </span>
+    </div>
+  );
+});
+
+/**
+ * The lattice layer — ASCII hairlines drawn on independently of the tiles. Each
+ * line is a seeded scramble of mono glyphs pinned to a cell edge, and it types
+ * itself on a character at a time in a shuffled order once the notes have
+ * landed (see LATTICE_TYPE).
+ *
+ * Its own component so the type-on, churn and hover clocks re-render the
+ * hairlines alone. Held in GridView the same state would rebuild every tile in
+ * the grid on every beat — which is also why the hovered cell arrives through a
+ * ref rather than a prop: a note lighting up its box shouldn't re-render the
+ * other 164 notes.
+ */
+const GridLattice = forwardRef(function GridLattice(
+  { lines, crosses, cols, rows, drawn, noteOpen, reduceMotion, skipEntrance, disableChurn },
+  ref,
+) {
+  const hostRef = useRef(null);
+  const hProbeRef = useRef(null);
+  const vProbeRef = useRef(null);
+
+  // How many glyphs a line needs to reach the end of the sheet. Measured rather
+  // than fixed, because the sheet's height is the note count divided by the
+  // column count: at two columns the archive runs ~29,000px, which is 4,000
+  // glyphs down a vertical. A fixed count is what left the verticals stopping a
+  // few hundred px in, and no single constant can cover both that and a wide
+  // monitor's short, broad sheet.
+  //
+  // The per-glyph advance has to be measured too — it falls out of the resolved
+  // mono face, the font size and the letter-spacing, all of which live in the
+  // stylesheet rather than here.
+  const [counts, setCounts] = useState({ h: LATTICE_H_CHARS, v: LATTICE_V_CHARS });
+  // How thick a run is across its own axis — a horizontal's line box, a
+  // vertical's column. The closing line on each axis is pinned to the far edge
+  // and has to be pulled back inside by this much to clear `overflow: hidden`.
+  // Measured for the same reason the advance is: it falls out of the resolved
+  // mono face and font size, both of which live in the stylesheet. The seed
+  // values match the 8px run the stylesheet asks for, and hold for the frame
+  // before the probes are read.
+  const [endInset, setEndInset] = useState({ h: 8, v: 5 });
+  // Kept alongside the counts for the churn, which turns a glyph index on a
+  // vertical back into a y offset to work out which ones are on screen.
+  const stepRef = useRef({ h: 0, v: 0 });
+  useLayoutEffect(() => {
+    const host = hostRef.current;
+    const hProbe = hProbeRef.current;
+    const vProbe = vProbeRef.current;
+    if (!host || !hProbe || !vProbe) return undefined;
+    const measure = () => {
+      // Both probes are absolutely positioned, so they size to their own text
+      // and their rect IS the run's extent. Measured off the rect rather than
+      // scrollWidth/scrollHeight because those round to whole pixels: the true
+      // vertical advance is ~7.36px, and rounding it to 7.37 compounds across
+      // 4,000 glyphs into a line that stops short of the bottom.
+      const hRect = hProbe.getBoundingClientRect();
+      const vRect = vProbe.getBoundingClientRect();
+      const hStep = hRect.width / LATTICE_PROBE;
+      const vStep = vRect.height / LATTICE_PROBE;
+      const box = host.getBoundingClientRect();
+      if (!(hStep > 0) || !(vStep > 0)) return;
+      stepRef.current = { h: hStep, v: vStep };
+      // The probes run the length of their own axis, so their other dimension
+      // is exactly the run's thickness.
+      const inset = { h: hRect.height, v: vRect.width };
+      setEndInset((prev) => (prev.h === inset.h && prev.v === inset.v ? prev : inset));
+      // A couple extra each way, so a line runs off the end rather than
+      // stopping a glyph short of it.
+      const h = Math.ceil(box.width / hStep) + 2;
+      const v = Math.ceil(box.height / vStep) + 2;
+      setCounts((prev) => (prev.h === h && prev.v === v ? prev : { h, v }));
+    };
+    measure();
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(measure) : null;
+    ro?.observe(host);
+    window.addEventListener('resize', measure);
+    return () => {
+      ro?.disconnect();
+      window.removeEventListener('resize', measure);
+    };
+  }, []);
+
+  // key → the glyph indices that line has to leave clear for its crossings. The
+  // counts carry two spare glyphs so a run overshoots the sheet rather than
+  // stopping short of it, so `count - 2` is what actually spans the box — which
+  // is what turns a crossing's fraction along the axis into an index.
+  const cleared = useMemo(() => {
+    const m = new Map();
+    if (!cols || !rows) return m;
+    const hSpan = Math.max(1, counts.h - 2);
+    const vSpan = Math.max(1, counts.v - 2);
+    const add = (key, from) => {
+      let set = m.get(key);
+      if (!set) m.set(key, (set = new Set()));
+      for (let n = 0; n < LATTICE_CROSS_CLEAR; n += 1) set.add(from + n);
+    };
+    (crosses || []).forEach(({ col, row }) => {
+      add(`h${row}`, Math.floor((col / cols) * hSpan));
+      add(`v${col}`, Math.floor((row / rows) * vSpan));
+    });
+    return m;
+  }, [crosses, cols, rows, counts]);
+
+  // key → that line's seeded scramble at the current length, with its crossings
+  // cleared. `latticeAscii` walks its PRNG forward from the key, so a longer
+  // sheet extends a line's existing scramble rather than reshuffling it —
+  // growing the grid doesn't redraw the glyphs already on screen.
+  const seeded = useMemo(() => {
+    const m = new Map();
+    lines.forEach((line) => {
+      const text = latticeAscii(
+        `lattice-${line.key}`,
+        line.axis === 'v' ? counts.v : counts.h,
+      );
+      m.set(line.key, latticeClear(text, cleared.get(line.key)));
+    });
+    return m;
+  }, [lines, counts, cleared]);
+
+  // key → that line's current text, once churn has touched it. A line missing
+  // from the map is still showing its seeded scramble.
+  const [churned, setChurned] = useState(() => new Map());
+
+  // A relayout reseeds every line, so drop the swaps rather than carrying them
+  // onto strings they no longer line up with.
+  useEffect(() => {
+    setChurned(new Map());
+  }, [seeded]);
+
+  /* ---- type-on ---------------------------------------------------------- */
+
+  const animateType = !reduceMotion && !skipEntrance;
+  const [typed, setTyped] = useState(() => new Map());
+  const [typeDone, setTypeDone] = useState(false);
+  // Before the tiles have landed nothing has been typed yet, so every line is
+  // holding an empty string — the sheet is blank until `drawn`.
+  const settled = !animateType || typeDone;
+
+  // Per line: the order its glyphs arrive in (a seeded shuffle of every
+  // position) and when it starts. Rebuilt with the scramble because the order
+  // indexes into it.
+  const typePlan = useMemo(() => {
+    if (!animateType) return null;
+    const m = new Map();
+    lines.forEach((line) => {
+      const text = seeded.get(line.key) ?? '';
+      const rand = latticeRng(`type-${line.key}`);
+      const order = new Int32Array(text.length);
+      for (let i = 0; i < order.length; i += 1) order[i] = i;
+      for (let i = order.length - 1; i > 0; i -= 1) {
+        const j = Math.floor(rand() * (i + 1));
+        const swap = order[i];
+        order[i] = order[j];
+        order[j] = swap;
+      }
+      m.set(line.key, {
+        text,
+        order,
+        delay: line.delay + rand() * LATTICE_TYPE.jitterS,
+        sep: line.axis === 'v' ? '\n' : '',
+      });
+    });
+    return m;
+  }, [animateType, lines, seeded]);
+
+  useEffect(() => {
+    if (settled || !drawn || !typePlan || !lines.length) return undefined;
+    // Each line keeps a mutable buffer of spaces and a cursor into its order,
+    // so a beat only writes the glyphs that just arrived rather than walking
+    // the whole scramble again. The join is the only per-beat O(length) cost,
+    // and lines that didn't gain a glyph hand back the same string so their
+    // LatticeLine skips the render entirely.
+    const state = [];
+    typePlan.forEach((plan, key) => {
+      state.push({ key, plan, chars: new Array(plan.text.length).fill(' '), cursor: 0, out: '' });
+    });
+    const t0 = performance.now();
+    let raf = 0;
+    let last = -Infinity;
+    const step = (now) => {
+      if (now - last >= LATTICE_TYPE.tickMs) {
+        last = now;
+        const elapsed = (now - t0) / 1000;
+        let done = true;
+        const next = new Map();
+        for (const s of state) {
+          const len = s.plan.text.length;
+          const p = (elapsed - s.plan.delay) / LATTICE_TYPE.perLineS;
+          const target = p <= 0 ? 0 : p >= 1 ? len : Math.floor(p * len);
+          if (target < len) done = false;
+          if (target !== s.cursor) {
+            for (let i = s.cursor; i < target; i += 1) {
+              const at = s.plan.order[i];
+              s.chars[at] = s.plan.text[at];
+            }
+            s.cursor = target;
+            s.out = s.chars.join(s.plan.sep);
+          }
+          next.set(s.key, s.out);
+        }
+        if (done) {
+          setTypeDone(true);
+          return;
+        }
+        setTyped(next);
+      }
+      raf = requestAnimationFrame(step);
+    };
+    raf = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(raf);
+  }, [settled, drawn, typePlan, lines]);
+
+  // key → that line's glyphs with churn applied, one character per position.
+  // The hover wipe splices into these, so it needs them before the verticals
+  // get their newlines.
+  const raws = useMemo(() => {
+    const m = new Map();
+    lines.forEach((line) => m.set(line.key, churned.get(line.key) ?? seeded.get(line.key) ?? ''));
+    return m;
+  }, [lines, seeded, churned]);
+
+  // key → the exact string the line paints. Verticals get their newlines here
+  // rather than in LatticeLine so the type-on can write straight into the laid
+  // out form instead of splitting a fresh copy on every beat.
+  const rendered = useMemo(() => {
+    const m = new Map();
+    lines.forEach((line) => {
+      const raw = raws.get(line.key) ?? '';
+      m.set(line.key, line.axis === 'v' ? raw.split('').join('\n') : raw);
+    });
+    return m;
+  }, [lines, raws]);
+
+  // Paused while the note view is open — the layer is faded to zero there, so
+  // the swaps would be invisible work — and until the sheet has finished
+  // typing, which owns the text until then.
+  const live = !reduceMotion && drawn && !noteOpen && settled && !disableChurn;
+  useEffect(() => {
+    if (!live || !lines.length) return undefined;
+    let timer = 0;
+    const beat = () => {
+      // Next beat is booked first, so a burst that finds nothing to swap skips
+      // its turn rather than ending the churn for the session.
+      timer = window.setTimeout(
+        beat,
+        LATTICE_CHURN.minMs + Math.random() * (LATTICE_CHURN.maxMs - LATTICE_CHURN.minMs),
+      );
+      // Layout is read out here rather than inside the updater, which has to
+      // stay a pure function of the previous map.
+      const rect = hostRef.current?.getBoundingClientRect();
+      const vStep = stepRef.current.v;
+      // The slice of the sheet that's on screen, in host-local coordinates.
+      const top = rect ? Math.max(0, -rect.top) : 0;
+      const bottom = rect ? Math.min(rect.height, -rect.top + window.innerHeight) : 0;
+      // Verticals always cross the viewport; a horizontal only counts if its
+      // own row is in it. Falls back to the whole sheet if the host hasn't been
+      // laid out yet.
+      const pool = rect
+        ? lines.filter((line) => {
+            if (line.axis === 'v') return true;
+            const y = (rect.height * line.mainPct) / 100;
+            return y >= top && y <= bottom;
+          })
+        : lines;
+      if (!pool.length) return;
+      const line = pool[Math.floor(Math.random() * pool.length)];
+
+      setChurned((prev) => {
+        const cur = prev.get(line.key) ?? seeded.get(line.key);
+        if (!cur) return prev;
+        // Window of glyph indices that are on screen. Horizontals run across
+        // the host, which is never wider than the viewport, so all of theirs
+        // are; a vertical's index is its row, so it maps back through the
+        // measured advance.
+        let lo = 0;
+        let hi = cur.length;
+        if (line.axis === 'v' && vStep > 0) {
+          const a = Math.max(0, Math.floor(top / vStep));
+          const b = Math.min(cur.length, Math.ceil(bottom / vStep));
+          if (b - a > 1) {
+            lo = a;
+            hi = b;
+          }
+        }
+        const chars = cur.split('');
+        const skip = cleared.get(line.key);
+        const anchor = lo + Math.floor(Math.random() * (hi - lo));
+        const swaps =
+          LATTICE_CHURN.minSwaps +
+          Math.floor(Math.random() * (LATTICE_CHURN.maxSwaps - LATTICE_CHURN.minSwaps + 1));
+        for (let n = 0; n < swaps; n += 1) {
+          const drift = Math.round((Math.random() * 2 - 1) * LATTICE_CHURN.clusterSpan);
+          const at = Math.min(hi - 1, Math.max(lo, anchor + drift));
+          // A burst that drifts onto a crossing skips that glyph — the churn
+          // must not write back into the gap the '+' sits in.
+          if (skip?.has(at)) continue;
+          chars[at] = LATTICE_ASCII[Math.floor(Math.random() * LATTICE_ASCII.length)];
+        }
+        const next = new Map(prev);
+        next.set(line.key, chars.join(''));
+        return next;
+      });
+    };
+    timer = window.setTimeout(beat, LATTICE_CHURN.minMs);
+    return () => clearTimeout(timer);
+  }, [live, lines, seeded, cleared]);
+
+  /* ---- hover box -------------------------------------------------------- */
+
+  // Read through a ref so the running wipe always splices into the current
+  // scramble — a churn burst mid-hover shouldn't be rolled back when the
+  // pointer leaves.
+  const rawsRef = useRef(raws);
+  rawsRef.current = raws;
+
+  const [hoverCell, setHoverCell] = useState(null);
+  useImperativeHandle(ref, () => ({ hoverCell: setHoverCell }), []);
+
+  // The four segments boxing a cell: the two verticals either side of it,
+  // clipped to the rows it spans, and the two horizontals above and below it,
+  // clipped to its column. A line's glyph count covers the whole sheet, so a
+  // cell's slice of it is just its slice of the grid.
+  const cellSegments = useCallback(
+    (cell) => {
+      if (!cell || !cols || !rows) return null;
+      const { row, col } = cell;
+      const segs = [];
+      const add = (key, from, to) => {
+        const raw = rawsRef.current.get(key);
+        if (!raw) return;
+        const lo = Math.floor(from * raw.length);
+        const hi = Math.min(raw.length, Math.ceil(to * raw.length));
+        if (hi > lo) segs.push({ key, lo, hi, sep: key[0] === 'v' ? '\n' : '' });
+      };
+      add(`v${col}`, row / rows, (row + 1) / rows);
+      add(`v${col + 1}`, row / rows, (row + 1) / rows);
+      add(`h${row}`, col / cols, (col + 1) / cols);
+      add(`h${row + 1}`, col / cols, (col + 1) / cols);
+      return segs.length ? segs : null;
+    },
+    [cols, rows],
+  );
+
+  // key → the string a boxed line paints while the wipe is up. Null when the
+  // box is down, which hands the lines back to `rendered`.
+  const [boxed, setBoxed] = useState(null);
+  const segsRef = useRef(null);
+  const cellRef = useRef(null);
+  const wipeRef = useRef(0); // how far along the box is, 0..1
+
+  useEffect(() => {
+    if (reduceMotion) return undefined;
+    if (hoverCell) {
+      // Crossing to a different note starts its box from nothing, rather than
+      // inheriting how far the last one had got — otherwise sliding along a row
+      // pops each box in fully formed instead of tracing it.
+      const id = `${hoverCell.row}:${hoverCell.col}`;
+      if (id !== cellRef.current) {
+        cellRef.current = id;
+        wipeRef.current = 0;
+        segsRef.current = cellSegments(hoverCell);
+      }
+    } else {
+      cellRef.current = null;
+    }
+    const segs = segsRef.current;
+    if (!segs) return undefined;
+    const from = wipeRef.current;
+    const to = hoverCell ? 1 : 0;
+    const ms = (hoverCell ? LATTICE_HOVER.inS : LATTICE_HOVER.outS) * 1000;
+    const t0 = performance.now();
+    let raf = 0;
+    const step = (now) => {
+      const k = ms > 0 ? Math.min(1, (now - t0) / ms) : 1;
+      const p = from + (to - from) * k;
+      wipeRef.current = p;
+      const next = new Map();
+      for (const seg of segs) {
+        const raw = rawsRef.current.get(seg.key);
+        if (!raw) continue;
+        // Glyphs land in order from the segment's start, so the box traces
+        // itself rather than dissolving in.
+        const end = seg.lo + Math.round((seg.hi - seg.lo) * p);
+        let block = '';
+        for (let i = seg.lo; i < end; i += 1) {
+          block += LATTICE_HOVER.glyphs[i % LATTICE_HOVER.glyphs.length];
+        }
+        const line = raw.slice(0, seg.lo) + block + raw.slice(seg.lo + block.length);
+        next.set(seg.key, seg.sep ? line.split('').join(seg.sep) : line);
+      }
+      setBoxed(next);
+      if (k < 1) {
+        raf = requestAnimationFrame(step);
+      } else if (!to) {
+        segsRef.current = null;
+        setBoxed(null);
+      }
+    };
+    raf = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(raf);
+  }, [hoverCell, cellSegments, reduceMotion]);
+
+  // The box is meaningless once the sheet is on its way out.
+  useEffect(() => {
+    if (noteOpen) setHoverCell(null);
+  }, [noteOpen]);
+
+  return (
+    <motion.div
+      ref={hostRef}
+      className="grid-lattice"
+      aria-hidden="true"
+      initial={false}
+      animate={{ opacity: noteOpen ? 0 : 1 }}
+      transition={{
+        duration: reduceMotion ? 0 : noteOpen ? GRID_EXIT.fadeOut : GRID_EXIT.fadeIn,
+        ease: noteOpen ? GRID_EXIT.exitEase : GRID_EXIT.enterEase,
+      }}
+    >
+      {/* Off-screen rather than `visibility: hidden`, so the probes can't be
+          picked up as text and don't paint, while still being laid out. */}
+      <span
+        ref={hProbeRef}
+        className="grid-lattice-glyphs"
+        aria-hidden="true"
+        style={{ position: 'absolute', top: -9999, left: 0 }}
+      >
+        {LATTICE_PROBE_H}
+      </span>
+      <span
+        ref={vProbeRef}
+        className="grid-lattice-glyphs grid-lattice-glyphs-v"
+        aria-hidden="true"
+        style={{ position: 'absolute', top: -9999, left: 0 }}
+      >
+        {LATTICE_PROBE_V}
+      </span>
+      {lines.map((line) => (
+        <LatticeLine
+          key={line.key}
+          line={line}
+          endInset={endInset}
+          text={
+            boxed?.get(line.key) ??
+            (settled ? rendered.get(line.key) : typed.get(line.key)) ??
+            ''
+          }
+        />
+      ))}
+
+      {/* The crossing marks. Placed by the same percentage the hairlines are, so
+          each '+' lands exactly where its two runs meet rather than on whichever
+          glyph cell the rounding picked. One wrapper carries the fade so the
+          marks come up with the sheet instead of standing there waiting for it. */}
+      <div
+        className="grid-lattice-crosses"
+        style={{ opacity: drawn ? 1 : 0 }}
+      >
+        {(crosses || []).map(({ col, row }) => {
+          // The closing line on each axis is pulled back inside the layer's clip
+          // (see LatticeLine); its crossings have to come with it.
+          const x = `${(col / cols) * 100}%`;
+          const y = `${(row / rows) * 100}%`;
+          return (
+            <span
+              key={`${col}:${row}`}
+              className="grid-lattice-glyphs"
+              style={{
+                position: 'absolute',
+                left: col === cols ? `calc(${x} - ${endInset.v}px)` : x,
+                top: row === rows ? `calc(${y} - ${endInset.h}px)` : y,
+              }}
+            >
+              {LATTICE_CROSS}
+            </span>
+          );
+        })}
+      </div>
+    </motion.div>
+  );
+});
 
 function GridView({
   confessions,
@@ -2462,6 +3688,17 @@ function GridView({
   skipEntrance = false,
   onEntranceSettled,
   onExplore,
+  /** Hands the parent a ref to each category label, so it can measure where
+   *  the words start from before this view unmounts — and where they are
+   *  headed once it mounts again. See CategoryFlight. */
+  registerCategoryLabel,
+  /** null while idle | 'fading' as the checkboxes let go | 'flying' once the
+   *  labels have been handed to the flight overlay and ours must step aside |
+   *  'returning' while the words are on their way back to us. */
+  flightPhase = null,
+  /** The category the explore dial is pointing at. The rail's category rows
+   *  are rotated around it so the two lists stay in step. */
+  dialCenterLabel = null,
 }) {
   const [selected, setSelected] = useState(null);
   const [query, setQuery] = useState('');
@@ -2482,18 +3719,19 @@ function GridView({
 
   // Filter hierarchy. Each facet has its own tab + dropdown, but every facet's
   // selection stays live and they combine with AND:
-  //   transcript search  ∧  category(s)  ∧  location(s)  ∧  recency sort.
+  //   transcript search  ∧  category(s)  ∧  location(s).
   // Non-matching notes are removed (not dimmed) — same behavior as search.
   const [selectedCats, setSelectedCats] = useState(() => new Set());
   const [selectedLocs, setSelectedLocs] = useState(() => new Set());
-  const [sortOrder, setSortOrder] = useState(null); // null | 'newest' | 'oldest'
   // Which filter tab's dropdown is open (null = all closed). Each tab
-  // (Category / Location / Recency) opens a menu of its own selectable values.
-  const [openFacet, setOpenFacet] = useState(null); // null | 'category' | 'location' | 'recency'
+  // (Category / Location) opens a menu of its own selectable values.
+  const [openFacet, setOpenFacet] = useState(null); // null | 'category' | 'location'
   const facetMenuRef = useRef(null); // anchor for outside-click / Escape dismissal
   // Desktop sidebar accordions (Category / Location). Independent open/close,
-  // collapsed by default so the rail stays compact until a facet is expanded.
-  const [openSections, setOpenSections] = useState(() => new Set());
+  // both expanded on arrival: the category rows are what fly to the explore
+  // dial, so they need to be on screen (and measurable) the moment EXPLORE is
+  // clicked. Collapsing category by hand simply forfeits that animation.
+  const [openSections, setOpenSections] = useState(() => new Set(['category', 'location']));
   const toggleSection = useCallback((id) => {
     setOpenSections((prev) => {
       const next = new Set(prev);
@@ -2505,8 +3743,19 @@ function GridView({
   // Sidebar entrance stagger — skipped when returning dial→grid (already
   // settled) or when the visitor prefers reduced motion; otherwise each row
   // (search, then the accordions) fades/slides in a beat after the nav chrome.
-  const sidebarSkipEnter = reduceMotion || skipEntrance;
+  // A returning flight also settles the rail at once: the words in the air are
+  // aiming at these rows, so the rows have to be standing at their final
+  // positions to be measured, not still sliding in.
+  const sidebarSkipEnter = reduceMotion || skipEntrance || flightPhase === 'returning';
   const sidebarItemInitial = sidebarSkipEnter ? false : { opacity: 0, x: -10 };
+  // Leaving for the dial the two halves of the page exit on their own clocks
+  // (see DEPARTURE); every other way off the index is a plain fade. Read off
+  // the flight rather than the destination because an exiting subtree keeps
+  // the props it was last rendered with — here, the frame before lift-off.
+  const leavingForDial = !!flightPhase;
+  const gridExit = leavingForDial
+    ? { duration: DEPARTURE.gridFade, delay: DEPARTURE.gridHold, ease }
+    : { duration: 0.4, ease };
   const sidebarEnterDelay = sidebarSkipEnter ? 0 : FILTER_SIDEBAR_ENTER_DELAY;
   const sidebarStagger = sidebarSkipEnter ? 0 : FILTER_SIDEBAR_ENTER_STAGGER;
 
@@ -2516,9 +3765,12 @@ function GridView({
   );
 
   // Facet option lists, derived from what's actually present in the data.
+  // Categories are rotated so the dial's current centre sits in the middle
+  // row: the rail and the arc are the same list, and keeping them in step is
+  // what lets a category fly between them without crossing its neighbours.
   const categoryOpts = useMemo(
-    () => deriveEmotions(withImages).map((e) => e.label),
-    [withImages]
+    () => centreOn(deriveEmotions(withImages).map((e) => e.label), dialCenterLabel),
+    [withImages, dialCenterLabel]
   );
   const locationOpts = useMemo(() => {
     const counts = new Map();
@@ -2538,29 +3790,14 @@ function GridView({
     if (selectedCats.size) arr = arr.filter((c) => selectedCats.has(c.category));
     if (selectedLocs.size)
       arr = arr.filter((c) => selectedLocs.has((c.metadata?.location || '').trim()));
-    if (sortOrder) {
-      const dir = sortOrder === 'newest' ? -1 : 1;
-      arr = [...arr].sort((a, b) => {
-        const ta = parseNoteDate(a.metadata?.date);
-        const tb = parseNoteDate(b.metadata?.date);
-        const na = Number.isNaN(ta);
-        const nb = Number.isNaN(tb);
-        if (na && nb) return 0;
-        if (na) return 1; // notes with no date sink to the bottom either way
-        if (nb) return -1;
-        return (ta - tb) * dir;
-      });
-    }
     return arr;
-  }, [withImages, q, selectedCats, selectedLocs, sortOrder]);
+  }, [withImages, q, selectedCats, selectedLocs]);
 
-  const anyFilterActive =
-    !!q || selectedCats.size > 0 || selectedLocs.size > 0 || sortOrder != null;
+  const anyFilterActive = !!q || selectedCats.size > 0 || selectedLocs.size > 0;
   const clearAll = useCallback(() => {
     setQuery('');
     setSelectedCats(new Set());
     setSelectedLocs(new Set());
-    setSortOrder(null);
   }, []);
   const toggleInSet = (setter) => (value) =>
     setter((prev) => {
@@ -2746,32 +3983,18 @@ function GridView({
     };
   }, [openFacet]);
 
+  // Category and Location only. These tabs are the phone bar's alone (the
+  // desktop rail has its own accordions), and a Recency sort earned the least of
+  // the three on a wall you browse by scrolling: the other two cut the wall down,
+  // Recency only reshuffled it while costing a third of a cramped row.
   const FACETS = [
     { id: 'category', label: 'Category', active: selectedCats.size > 0 },
     { id: 'location', label: 'Location', active: selectedLocs.size > 0 },
-    { id: 'recency', label: 'Recency', active: sortOrder != null },
   ];
 
-  // The selectable rows shown inside a tab's dropdown. Category/Location are
-  // multi-select (with an "All" reset at top); Recency is a single-select sort
-  // that toggles off when the active option is picked again.
+  // The selectable rows shown inside a tab's dropdown. Both are multi-select,
+  // with an "All" reset at the top.
   const facetValues = (facetId) => {
-    if (facetId === 'recency') {
-      return [
-        {
-          key: 'newest',
-          label: 'Newest first',
-          on: sortOrder === 'newest',
-          onClick: () => setSortOrder((c) => (c === 'newest' ? null : 'newest')),
-        },
-        {
-          key: 'oldest',
-          label: 'Oldest first',
-          on: sortOrder === 'oldest',
-          onClick: () => setSortOrder((c) => (c === 'oldest' ? null : 'oldest')),
-        },
-      ];
-    }
     if (facetId === 'location') {
       return [
         {
@@ -2823,12 +4046,20 @@ function GridView({
   // Lattice reveal — the hairline grid is its OWN layer, so it animates apart
   // from the tiles. It stays hidden for the entire fly-in and only draws on once
   // the tiles have landed (entranceStage 'settled'), so the lattice appears
-  // AFTER the notes. Rather than a clip-path wipe, each grid line is a solid 1px
-  // <div> that draws on by scaling from one end (scaleY top→down for verticals,
-  // scaleX left→right for horizontals), staggered so the grid constructs itself.
-  // Solid lines (no stroke-dasharray), so they never read as dashed. Reduced
-  // motion shows it immediately.
+  // AFTER the notes. From there each hairline types itself on a glyph at a time
+  // in a scattered order (see LATTICE_TYPE), staggered line by line so the sheet
+  // fills in rather than switching on. Reduced motion shows it immediately.
   const latticeDrawn = reduceMotion || skipEntrance || entranceStage === 'settled';
+
+  // Nothing in the grid answers the cursor until the notes have landed. The
+  // hover treatment and the entrance are both writing the same properties —
+  // the group dim is a filter over Motion's per-tile opacity, the cursor float
+  // a transform over the tile's fly-in — so a pointer resting anywhere over the
+  // grid at mount fights the entrance for every tile it passes, and the lattice
+  // is asked to box a cell that hasn't drawn itself yet. `entranceStage` is
+  // seeded 'settled' when the entrance is skipped (reduced motion, or arriving
+  // back from explore mid-session), so those cases stay live throughout.
+  const hoverArmed = entranceStage === 'settled';
 
   // Line geometry for the lattice. Each line is positioned by percentage on the
   // overlay (which sits exactly over the tile grid), so it pins to a cell edge at
@@ -2849,9 +4080,12 @@ function GridView({
     onLightboxOpenChange?.(lightboxOpen);
     return () => onLightboxOpenChange?.(false);
   }, [lightboxOpen, onLightboxOpenChange]);
+  // Tiles reach the lattice through this rather than through state, so hovering
+  // one note doesn't re-render the rest of the grid.
+  const latticeRef = useRef(null);
   const latticeRows = Math.max(1, Math.ceil(noteCount / gridCols));
   const latticeLastRow = noteCount - (latticeRows - 1) * gridCols; // cells in last row
-  const latticeLines = useMemo(() => {
+  const { latticeLines, latticeCrosses } = useMemo(() => {
     const rows = latticeRows;
     const cols = gridCols;
     const last = latticeLastRow;
@@ -2867,26 +4101,49 @@ function GridView({
       lines.push({
         key: `v${k}`,
         axis: 'v',
-        main: k < cols ? `${(k / cols) * 100}%` : 'calc(100% - 1px)',
+        main: `${(k / cols) * 100}%`,
+        // The closing line is pinned to the far edge, so it has to be pulled
+        // back inside by its own width or the layer's `overflow: hidden` takes
+        // it. LatticeLine does that, off the measured run (see `endInset`).
+        atEnd: k === cols,
+        // `main` as a plain number, so the churn can work out where a line sits
+        // without parsing a CSS string.
+        mainPct: cols ? Math.min(100, (k / cols) * 100) : 0,
         lenPct: (yEnd / rows) * 100,
         delay: BASE + (cols ? (k / cols) * V_SPREAD : 0),
-        glyphs: latticeAscii(`lattice-v${k}`, LATTICE_V_CHARS).split('').join('\n'),
       });
     }
     const topWidth = rows > 1 ? cols : last; // single partial row → top edge = last
+    const hReach = []; // columns each horizontal actually runs to
     for (let m = 0; m <= rows; m += 1) {
       const xEnd = m === 0 ? topWidth : m === rows ? last : cols;
+      hReach[m] = xEnd;
       if (xEnd <= 0) continue;
       lines.push({
         key: `h${m}`,
         axis: 'h',
-        main: m < rows ? `${(m / rows) * 100}%` : 'calc(100% - 1px)',
+        main: `${(m / rows) * 100}%`,
+        atEnd: m === rows,
+        mainPct: rows ? Math.min(100, (m / rows) * 100) : 0,
         lenPct: (xEnd / cols) * 100,
         delay: BASE + (rows ? (m / rows) * H_SPREAD : 0),
-        glyphs: latticeAscii(`lattice-h${m}`, LATTICE_H_CHARS),
       });
     }
-    return lines;
+
+    // Where two hairlines actually meet — a cross is only real if the vertical
+    // reaches down to that row AND the horizontal reaches across to that column.
+    // The last row of the archive is usually ragged, so the bottom-right corner
+    // of the sheet has crossings that don't exist.
+    const crosses = [];
+    for (let k = 0; k <= cols; k += 1) {
+      const yEnd = k <= last ? rows : rows - 1;
+      for (let m = 0; m <= rows; m += 1) {
+        if (m > yEnd) continue;
+        if (k > (hReach[m] ?? 0)) continue;
+        crosses.push({ col: k, row: m });
+      }
+    }
+    return { latticeLines: lines, latticeCrosses: crosses };
   }, [gridCols, latticeRows, latticeLastRow]);
 
   return (
@@ -2894,7 +4151,7 @@ function GridView({
       key="grid-view"
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
+      exit={{ opacity: 0, transition: gridExit }}
       transition={{ duration: 0.4, ease }}
       style={{
         position: 'absolute',
@@ -2916,10 +4173,22 @@ function GridView({
           (append ?dial=1 to the URL, then hover a tile to preview). */}
       <GridImageFilter animate={!reduceMotion} />
 
-      {/* Same backdrop as the dial: solid #111 base → neutral radial glow →
-          film grain (mix-blend). The gradient gives the grain something to
-          blend against so the noise actually reads here instead of washing out
-          on flat black. Isolated so mix-blend stays within this layer. */}
+      {/* The same treatment at glyph scale, for the rail's checkmark strokes. */}
+      <NoiseDisplaceFilter
+        id={FACET_MARK_FILTER_ID}
+        {...FACET_MARK_FILTER}
+        animate={!reduceMotion}
+      />
+
+      {/* Same backdrop the onboarding uses (`PAGE_BG` + `PAGE_GRADIENT`) → film
+          grain (mix-blend). ENTER hands off straight to this view, so anything
+          but the intro's own backdrop reads as the room changing colour on the
+          way in. The lift is at the top; previously a radial sat at 50% 100% and
+          put a grey glow under the bottom row of notes.
+
+          The gradient also gives the grain something to blend against — on flat
+          black the overlay blend has nothing to bite into and the noise washes
+          out. Isolated so mix-blend stays within this layer. */}
       <div
         aria-hidden="true"
         style={{
@@ -2928,10 +4197,10 @@ function GridView({
           zIndex: 0,
           isolation: 'isolate',
           pointerEvents: 'none',
-          background: '#111',
+          background: PAGE_BG,
         }}
       >
-        <div style={{ position: 'absolute', inset: 0, background: NEUTRAL_GRADIENT }} />
+        <div style={{ position: 'absolute', inset: 0, background: PAGE_GRADIENT }} />
         <TunableGrainBackground />
       </div>
 
@@ -2939,8 +4208,9 @@ function GridView({
         /* Contact-sheet lattice — monospace glyphs on their own layer
            (.grid-lattice), a sibling of the tiles rather than borders riding on
            each flying tile, so the grid can draw on independently. Each hairline
-           is a seeded scramble of ASCII (see latticeAscii) that scales in from
-           one end — same stagger as before, but the lines read as texture. */
+           is a seeded scramble of ASCII (see latticeAscii) that types itself on
+           glyph by glyph — same stagger as before, but the lines read as
+           texture. */
         /* Fills the available width (rail + gutters aside) up to a generous cap,
            so wide monitors get a denser sheet rather than a fixed 1100px column
            floating with dead space. Column count steps up with the min-width
@@ -2962,15 +4232,18 @@ function GridView({
         .grid-lattice-line {
           position: absolute;
           overflow: hidden;
-          color: rgba(207, 202, 183, 0.11);
+          color: rgba(207, 202, 183, 0.32);
         }
+        /* pre rather than nowrap: a line types itself on by holding its
+           not-yet-arrived positions as spaces, and nowrap would collapse those
+           runs and slide the glyphs that have landed out of place. */
         .grid-lattice-glyphs {
           display: block;
           font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
           font-size: 8px;
           line-height: 1;
           letter-spacing: 0.06em;
-          white-space: nowrap;
+          white-space: pre;
           pointer-events: none;
           user-select: none;
         }
@@ -2978,6 +4251,16 @@ function GridView({
           white-space: pre;
           letter-spacing: 0;
           line-height: 0.92;
+        }
+        /* Crossing marks. A touch brighter than the hairlines so the '+' reads as
+           a deliberate register mark holding the corners of each cell, rather
+           than as one more character in the scramble. */
+        .grid-lattice-crosses {
+          position: absolute;
+          inset: 0;
+          color: rgba(207, 202, 183, 0.42);
+          transition: opacity 0.6s ${HOVER_EASE};
+          pointer-events: none;
         }
         .grid-tile { box-sizing: border-box; transition: filter 0.4s ${HOVER_EASE}; }
         /* Loading skeleton — a faint warm fill that breathes until the note's
@@ -3003,11 +4286,21 @@ function GridView({
            opacity/transform Motion writes per tile, so no !important is needed;
            the specificity of the :hover-inside-:hover rule restores the active
            tile. All pure CSS group-hover — scrubbing 100+ tiles never re-renders
-           React. */
-        .confession-grid:hover .grid-tile { filter: opacity(0.8); }
-        .confession-grid:hover .grid-tile:hover { filter: none; }
+           React.
+           Every hover rule below hangs off .is-live, which the grid only wears
+           once the entrance has settled (see hoverArmed) — before that a cursor
+           already sitting over the grid would dim and unclip tiles that are
+           still flying in. */
+        .confession-grid.is-live:hover .grid-tile { filter: opacity(0.8); }
+        .confession-grid.is-live:hover .grid-tile:hover { filter: none; }
         @media (max-width: 760px) {
           .confession-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+          /* Off-screen tiles skip layout/paint until scrolled near — big win on
+             a 165-tile phone grid with no change to the entrance animation. */
+          .grid-tile {
+            content-visibility: auto;
+            contain-intrinsic-size: 180px 180px;
+          }
         }
         @media (max-width: 460px) {
           .confession-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -3036,12 +4329,18 @@ function GridView({
         }
         .grid-chip { transition: background 0.2s ${HOVER_EASE}, color 0.2s ${HOVER_EASE}, border-color 0.2s ${HOVER_EASE}; }
         .grid-chip:not(.is-active):hover { border-color: rgba(207,202,183,0.45); color: #CFCAB7; }
-        .facet-menu-btn:hover { border-color: rgba(207,202,183,0.4); background: rgba(207,202,183,0.14); }
+        .facet-menu-btn:hover { border-color: rgba(207,202,183,0.4); background: ${MOBILE_FILTER_FILL_HOVER}; }
         .facet-menu-item:hover { background: rgba(207,202,183,0.09); color: #CFCAB7; }
         /* Desktop filter sidebar (search + Category/Location accordions). */
         .facet-accordion-btn:hover { color: #EDE7D6; }
         .facet-checkbox-row:hover { color: #CFCAB7 !important; }
-        .facet-checkbox-row:hover .facet-checkbox-box { border-color: rgba(207,202,183,0.7); }
+        /* Only the unchecked box border brightens on hover — a checked one is
+           already at full ink. !important because the box carries its resting
+           colour inline. */
+        .facet-checkbox-row[aria-checked='false']:hover .facet-checkbox-box {
+          border-color: rgba(207,202,183,0.7) !important;
+          color: rgba(207,202,183,0.7) !important;
+        }
         .filter-sidebar { scrollbar-width: none; }
         .filter-sidebar::-webkit-scrollbar { width: 0; height: 0; }
         /* Metadata: note number top-left, category bottom-right only. Grey at
@@ -3057,27 +4356,31 @@ function GridView({
           transition: color 0.28s ${HOVER_EASE}, opacity 0.5s ${HOVER_EASE} 0.1s;
           pointer-events: none;
         }
+        /* Inset off the cell corners rather than tucked into them — the lattice
+           hairline runs along both edges, and at 8px the number sat close enough
+           to read as sitting on the rule. Shared with INDEX / EXPLORE + the
+           confessions tally via GRID_TILE_NUM_INSET. */
         .grid-tile-num {
-          top: 8px;
-          left: 10px;
+          top: 16px;
+          left: ${GRID_TILE_NUM_INSET}px;
         }
         .grid-tile-cat {
-          bottom: 8px;
-          right: 10px;
-          max-width: calc(100% - 20px);
+          bottom: 16px;
+          right: 18px;
+          max-width: calc(100% - 36px);
           text-align: right;
           white-space: nowrap;
           overflow: hidden;
           text-overflow: ellipsis;
         }
-        .grid-tile:hover .grid-tile-num,
-        .grid-tile:hover .grid-tile-cat { color: #CFCAB7; }
+        .confession-grid.is-live .grid-tile:hover .grid-tile-num,
+        .confession-grid.is-live .grid-tile:hover .grid-tile-cat { color: #CFCAB7; }
         /* At rest the note is clipped to its square cell. On hover the clip drops
            and the tile lifts over its neighbours so the cursor-float (see
            cursorFloat.js) can actually leave the cell — a note pinned inside its
            own box doesn't read as floating. */
         .grid-tile { overflow: hidden; }
-        .grid-tile:hover { overflow: visible; z-index: 3; }
+        .confession-grid.is-live .grid-tile:hover { overflow: visible; z-index: 3; }
         /* --float-ms is swapped per pointer event: short while tracking the
            cursor so the lean stays attached, longer on enter/leave so the lift
            and the drop back both breathe. Lives here rather than inline so a
@@ -3135,63 +4438,38 @@ function GridView({
             gap: 12,
           }}
         >
-          {/* Total tally, pinned above the search so the index announces its
-              size at a glance (mobile only — desktop carries its own rail). Shows
-              the whole archive normally; narrows to "shown / total" once a filter
-              trims the set. */}
-          <div
-            aria-live="polite"
-            style={{
-              pointerEvents: 'none',
-              fontFamily: 'var(--font-mono)',
-              fontSize: 11,
-              letterSpacing: '0.14em',
-              textTransform: 'uppercase',
-              color: 'rgba(207,202,183,0.5)',
-              textAlign: 'left',
-            }}
-          >
-            {anyFilterActive
-              ? `${visible.length} / ${withImages.length} confessions`
-              : `${withImages.length} confessions`}
-          </div>
+          {/* The tally used to sit here, above the search. It now rides with the
+              grid instead — see the count header in the grid-stack below, which
+              both breakpoints share. */}
 
-          {/* Row 1 — filter tabs (Category · Location · Recency) + transcript
-              search on one line. Each tab opens a dropdown of its own selectable
-              values, so no persistent chip row is needed. */}
+          {/* Row 1 — transcript search + filter tabs (Category · Location) on one
+              line, search taking whatever the tabs leave. Each tab opens a
+              dropdown of its own selectable values, so no persistent chip row is
+              needed. */}
           <div
             style={{
               pointerEvents: 'auto',
               display: 'flex',
-              // Mobile stacks (search on top, tabs below); desktop is one row
-              // with the search centred between an empty spacer and the tabs.
-              flexDirection: compact ? 'column' : 'row',
-              // Mobile column: left-align so search + tabs sit flush left (like
-              // the desktop rail); desktop row stays centred.
-              alignItems: compact ? 'stretch' : 'center',
-              justifyContent: 'center',
-              gap: compact ? 12 : 10,
-              flexWrap: compact ? 'nowrap' : 'wrap',
+              alignItems: 'center',
+              gap: 8,
+              // No second line: the bar already covers the top of the grid, so
+              // the search shrinks rather than the tabs wrapping under it.
+              flexWrap: 'nowrap',
               width: '100%',
+              marginBottom: 16,
             }}
           >
-            {/* Desktop-only left spacer. It mirrors the tabs cell (both flex:1),
-                so the search input lands dead-centre in the bar no matter how
-                wide the tabs get. Hidden on mobile, where the row stacks. */}
-            <div
-              aria-hidden="true"
-              style={{ order: 0, flex: '1 1 0', minWidth: 0, display: compact ? 'none' : 'block' }}
-            />
             <div
               ref={facetMenuRef}
               style={{
                 display: 'flex',
                 alignItems: 'center',
-                justifyContent: compact ? 'flex-start' : 'flex-end',
+                // Held at their natural width against the right edge; the search
+                // gives up the difference.
+                flex: '0 0 auto',
                 gap: 8,
-                flex: compact ? '0 0 auto' : '1 1 0',
                 minWidth: 0,
-                flexWrap: 'wrap',
+                flexWrap: 'nowrap',
                 order: 2,
               }}
             >
@@ -3286,25 +4564,26 @@ function GridView({
               type="search"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="SEARCH CONFESSIONS"
+              // Just "SEARCH": it shares the row with the two filter tabs, which
+              // leaves it about a third of a phone's width. The aria-label still
+              // says what is being searched.
+              placeholder="SEARCH"
               aria-label="Search note transcripts"
               style={{
                 pointerEvents: 'auto',
                 order: 1,
-                flex: '0 0 auto',
-                width: '100%',
-                // Full-bleed to the grid's edges — the bar's 16px inset matches
-                // the tile scroller — so no centred 440px cap.
-                maxWidth: 'none',
-                // Keep the frosted tint fill + backdrop blur (grounds the field
-                // over the notes scrolling beneath), but adopt the desktop rail's
-                // dashed hairline + square corners so the two searches read as one.
-                background: 'rgba(207,202,183,0.14)',
-                backdropFilter: 'blur(12px)',
-                WebkitBackdropFilter: 'blur(12px)',
+                // Takes exactly what the tabs leave (basis 0 rather than the
+                // input's own intrinsic ~20ch), and minWidth:0 lets it shrink
+                // past its placeholder instead of pushing them off the edge.
+                flex: '1 1 0',
+                minWidth: 0,
+                // Semi-translucent charcoal — same fill as the facet tabs beside
+                // it, so notes can show through as the grid scrolls under the
+                // bar. Dashed hairline + square corners are the desktop rail's.
+                background: MOBILE_FILTER_FILL,
                 border: '1px dashed rgba(207,202,183,0.3)',
                 borderRadius: 0,
-                padding: '9px 16px',
+                padding: '9px 12px',
                 color: '#CFCAB7',
                 fontFamily: 'var(--font-mono)',
                 fontSize: 13,
@@ -3324,6 +4603,14 @@ function GridView({
           aria-label="Filter notes"
           initial={false}
           animate={{ opacity: noteOpen ? 0 : lightboxOpen ? 0.12 : 1 }}
+          // Off ahead of the grid on the way to the dial: the rows the words
+          // just left are empty, and an empty rail hanging around under a
+          // flight is the one thing that reads as a bug rather than a beat.
+          exit={
+            leavingForDial
+              ? { opacity: 0, transition: { duration: DEPARTURE.sidebarFade, ease } }
+              : undefined
+          }
           transition={{
             duration: reduceMotion ? 0 : GRID_EXIT.barFade,
             ease: noteOpen ? GRID_EXIT.exitEase : GRID_EXIT.enterEase,
@@ -3349,7 +4636,7 @@ function GridView({
             type="search"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search confessions..."
+            placeholder="SEARCH CONFESSIONS..."
             aria-label="Search note transcripts"
             initial={sidebarItemInitial}
             animate={{ opacity: 1, x: 0 }}
@@ -3465,19 +4752,14 @@ function GridView({
                           textAlign: 'left',
                         }}
                       >
-                        <span
-                          aria-hidden="true"
-                          className="facet-checkbox-box"
+                        <FacetCheckboxMark
+                          on={opt.on}
                           style={{
-                            width: 13,
-                            height: 13,
-                            flex: '0 0 auto',
-                            borderRadius: 2,
-                            border: `1px solid ${
-                              opt.on ? 'rgba(207,202,183,0.9)' : 'rgba(207,202,183,0.4)'
-                            }`,
-                            background: opt.on ? '#CFCAB7' : 'transparent',
-                            transition: `border-color 0.18s ${HOVER_EASE}, background 0.18s ${HOVER_EASE}`,
+                            // Category marks let go first on the way to
+                            // EXPLORE, leaving the words standing alone to fly,
+                            // and come back last once the words are home.
+                            opacity: f.id === 'category' && flightPhase ? 0 : 1,
+                            transition: `border-color 0.18s ${HOVER_EASE}, color 0.18s ${HOVER_EASE}, opacity ${FLIGHT_FADE_MS}ms ${HOVER_EASE}`,
                           }}
                         />
                         <span
@@ -3489,7 +4771,32 @@ function GridView({
                             whiteSpace: 'nowrap',
                           }}
                         >
-                          {opt.label}
+                          {/* Inline-block so the measured box is the text, not
+                              the flexed row — the flight centres each copy on
+                              this rect and a full-width box would start it
+                              adrift. */}
+                          <span
+                            ref={
+                              f.id === 'category' && registerCategoryLabel
+                                ? registerCategoryLabel(opt.label)
+                                : undefined
+                            }
+                            style={{
+                              display: 'inline-block',
+                              // Blank while copies of these words are in the
+                              // air: on the way out ours would show through the
+                              // dissolving grid as a double, and on the way
+                              // back the row has to look empty for a word to
+                              // land in. Still laid out, so it can be measured.
+                              opacity:
+                                f.id === 'category' &&
+                                (flightPhase === 'flying' || flightPhase === 'returning')
+                                  ? 0
+                                  : 1,
+                            }}
+                          >
+                            {opt.label}
+                          </span>
                         </span>
                       </button>
                     ))}
@@ -3498,6 +4805,33 @@ function GridView({
               </motion.div>
             );
           })}
+
+          {/* Sits on the floor of the rail: `marginTop: auto` eats the slack
+              under the last filter, so it rides the bottom of the column when
+              the facets are collapsed and simply follows them down when they
+              are open and the rail scrolls. Arrives last, after both facets. */}
+          <motion.div
+            initial={sidebarItemInitial}
+            animate={{ opacity: 1, x: 0 }}
+            transition={{
+              duration: reduceMotion ? 0 : 0.5,
+              ease,
+              delay: sidebarEnterDelay + 3 * sidebarStagger,
+            }}
+            style={{
+              flex: '0 0 auto',
+              marginTop: 'auto',
+              paddingTop: 18,
+              fontFamily: 'var(--font-mono)',
+              fontSize: 10,
+              letterSpacing: '0.12em',
+              lineHeight: 1.6,
+              textTransform: 'uppercase',
+              color: inkA(0.42),
+            }}
+          >
+            What We Tell AI © 2026
+          </motion.div>
         </motion.aside>
       )}
 
@@ -3515,14 +4849,12 @@ function GridView({
           // leave the bottom light. Desktop: clear the left filter rail so tiles
           // never sit under it, and mirror it with a matching right gutter.
           padding: compact
-            ? `${barH + 16}px 16px 56px`
+            ? `${barH + 24}px 16px 56px`
             : `112px 48px 64px ${FILTER_SIDEBAR_LEFT + FILTER_SIDEBAR_W + FILTER_SIDEBAR_GAP}px`,
           // Lightbox open → the whole grid recedes into its inactive image
           // state (desaturated + softened + dimmed) so the focused note reads
           // as the only live thing. Eased so it settles as the Lightbox fades in.
-          filter: lightboxOpen ? 'grayscale(1) blur(3px)' : 'none',
-          opacity: lightboxOpen ? 0.5 : 1,
-          transition: `filter 0.32s ${HOVER_EASE}, opacity 0.32s ${HOVER_EASE}`,
+          ...recede(lightboxOpen),
         }}
       >
         {visible.length === 0 ? (
@@ -3591,107 +4923,66 @@ function GridView({
           </div>
         ) : (
           <div className="grid-stack">
-            {/* Count header — "N Confessions" pinned to the grid's top-left,
-                floating in the band just above the first row. Absolutely placed
-                inside grid-stack (bottom: calc(100% + …)) so it locks to the
-                grid's left edge on every breakpoint and never shifts the tiles.
-                Fades in with the tile labels once the entrance settles, and out
-                with the grid when a note opens. Desktop only — the mobile bar is
-                docked at the top, so there's no room for a header there. */}
-            {!compact && (
-              <motion.div
-                className="grid-count"
-                initial={false}
-                animate={{ opacity: noteOpen ? 0 : entranceStage === 'settled' ? 1 : 0 }}
-                transition={{
-                  duration: reduceMotion ? 0 : noteOpen ? GRID_EXIT.fadeOut : 0.5,
-                  ease: noteOpen ? GRID_EXIT.exitEase : GRID_EXIT.enterEase,
-                }}
-                style={{
-                  position: 'absolute',
-                  left: 0,
-                  bottom: 'calc(100% + 14px)',
-                  zIndex: 2,
-                  fontFamily: 'var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace)',
-                  fontSize: 13,
-                  letterSpacing: '0.16em',
-                  textTransform: 'uppercase',
-                  whiteSpace: 'nowrap',
-                  pointerEvents: 'none',
-                }}
-              >
-                <span
-                  style={{
-                    color: 'rgba(255,255,255,0.92)',
-                    // Equal digit advance, so the count doesn't wobble as it runs.
-                    fontVariantNumeric: 'tabular-nums',
-                  }}
-                >
-                  <AnimatedCount value={noteCount} reduceMotion={reduceMotion} />
-                </span>
-                {/* The noun follows the settled count, not the tweening one, so
-                    it doesn't flicker to "Confession" while passing through 1. */}
-                <span style={{ color: 'rgba(255,255,255,0.92)' }}>
-                  {` ${noteCount === 1 ? 'Confession' : 'Confessions'}`}
-                </span>
-              </motion.div>
-            )}
-            {/* Lattice layer — ASCII hairlines drawn on independently of the
-                tiles. Each line is a seeded scramble of mono glyphs pinned to a
-                cell edge; it draws on by scaling from one end (top→down for
-                verticals, left→right for horizontals), staggered after the notes
-                land. */}
+            {/* Count header — "N Confessions" aligned to the first tile's
+                number (GRID_TILE_NUM_INSET), floating in the band just above
+                the first row. Absolutely placed inside grid-stack so it never
+                shifts the tiles. Fades in with the tile labels once the
+                entrance settles, and out with the grid when a note opens. */}
             <motion.div
-              className="grid-lattice"
-              aria-hidden="true"
+              className="grid-count"
               initial={false}
-              animate={{ opacity: noteOpen ? 0 : 1 }}
+              animate={{ opacity: noteOpen ? 0 : entranceStage === 'settled' ? 1 : 0 }}
               transition={{
-                duration: reduceMotion
-                  ? 0
-                  : noteOpen
-                    ? GRID_EXIT.fadeOut
-                    : GRID_EXIT.fadeIn,
+                duration: reduceMotion ? 0 : noteOpen ? GRID_EXIT.fadeOut : 0.5,
                 ease: noteOpen ? GRID_EXIT.exitEase : GRID_EXIT.enterEase,
               }}
+              style={{
+                position: 'absolute',
+                left: GRID_TILE_NUM_INSET,
+                bottom: 'calc(100% + 14px)',
+                zIndex: 2,
+                fontFamily: 'var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace)',
+                fontSize: 13,
+                letterSpacing: '0.16em',
+                textTransform: 'uppercase',
+                whiteSpace: 'nowrap',
+                pointerEvents: 'none',
+              }}
             >
-              {latticeLines.map((ln) => {
-                const v = ln.axis === 'v';
-                return (
-                  <motion.div
-                    key={ln.key}
-                    className="grid-lattice-line"
-                    style={{
-                      transformOrigin: v ? 'top center' : 'left center',
-                      ...(v
-                        ? { top: 0, left: ln.main, width: '0.72em', height: `${ln.lenPct}%` }
-                        : { left: 0, top: ln.main, height: '0.92em', width: `${ln.lenPct}%` }),
-                    }}
-                    initial={v ? { scaleY: reduceMotion ? 1 : 0 } : { scaleX: reduceMotion ? 1 : 0 }}
-                    animate={v ? { scaleY: latticeDrawn ? 1 : 0 } : { scaleX: latticeDrawn ? 1 : 0 }}
-                    transition={
-                      latticeDrawn && !reduceMotion && !skipEntrance
-                        ? { duration: 0.6, ease: GRID_ENTRANCE.ease, delay: ln.delay }
-                        : { duration: 0 }
-                    }
-                  >
-                    <span
-                      className={`grid-lattice-glyphs${v ? ' grid-lattice-glyphs-v' : ''}`}
-                      aria-hidden="true"
-                    >
-                      {ln.glyphs}
-                    </span>
-                  </motion.div>
-                );
-              })}
+              <span
+                style={{
+                  color: 'rgba(255,255,255,0.92)',
+                  // Equal digit advance, so the count doesn't wobble as it runs.
+                  fontVariantNumeric: 'tabular-nums',
+                }}
+              >
+                <AnimatedCount value={noteCount} reduceMotion={reduceMotion} />
+              </span>
+              {/* The noun follows the settled count, not the tweening one, so
+                  it doesn't flicker to "Confession" while passing through 1. */}
+              <span style={{ color: 'rgba(255,255,255,0.92)' }}>
+                {` ${noteCount === 1 ? 'Confession' : 'Confessions'}`}
+              </span>
             </motion.div>
-            <div className="confession-grid">
+            <GridLattice
+              ref={latticeRef}
+              lines={latticeLines}
+              crosses={latticeCrosses}
+              cols={gridCols}
+              rows={latticeRows}
+              drawn={latticeDrawn}
+              noteOpen={noteOpen}
+              reduceMotion={reduceMotion}
+              skipEntrance={skipEntrance}
+              disableChurn={compact}
+            />
+            <div className={`confession-grid${hoverArmed ? ' is-live' : ''}`}>
             {visible.map((c, i) => {
               const d = offsetsRef.current.get(c.id) || GRID_TILE_REST;
               // Once the entrance has settled, the tile's motion is owned by the
               // exit/dissolve (driven by noteOpen); before that the fly-in
               // variants run. exitDelay ripples the fade out from the clicked tile.
-              const settled = entranceStage === 'settled';
+              const settled = hoverArmed;
               const exitDelay = exitDelaysRef.current.get(c.id) || 0;
               const loaded = loadedIds.has(c.id);
               // Resting paper skew, alternating per tile so a run of hovered
@@ -3733,18 +5024,20 @@ function GridView({
                 onClick={(e) => {
                   // Post-it "peel" as the note opens.
                   playNote();
-                  // Mobile (no filter): open the vertical note-scroll view — the
-                  // note enlarges with its metadata and you swipe up/down through
-                  // the rest (NoteOpenView → VerticalConfessionStack). Desktop, a
-                  // live filter, or a missing handler falls back to the Lightbox
-                  // (a "search / compare" task where the quick zoom is faster).
-                  if (!compact || anyFilterActive || !onOpenNote) {
+                  // Mobile: always open the vertical note-scroll view — the note
+                  // enlarges with its metadata and you swipe up/down through the
+                  // rest (NoteOpenView → VerticalConfessionStack). It's handed
+                  // the currently visible notes, so "the rest" means the rest of
+                  // what the filters left standing, not the whole archive.
+                  // Desktop (or a missing handler) keeps the Lightbox, a quicker
+                  // zoom for the search / compare task a pointer is doing.
+                  if (!compact || !onOpenNote) {
                     setSelected(c);
                     return;
                   }
                   const rect = e.currentTarget.getBoundingClientRect();
                   computeExitDelays(rect);
-                  onOpenNote(c, rect);
+                  onOpenNote(c, rect, visible);
                 }}
                 style={{
                   position: 'relative',
@@ -3795,25 +5088,45 @@ function GridView({
                     // transform / transition live in .grid-tile img (CSS) so the
                     // float can be written imperatively without React clobbering it.
                   }}
-                  onMouseEnter={(e) => {
-                    // The note lifts off the grid and starts leaning toward the
-                    // cursor. The noise + displacement warp switches on here (and
-                    // only here) to focus the hovered note — it's a static filter
-                    // swap, so it stays on under reduced motion; the lift doesn't.
-                    e.currentTarget.style.filter = GRID_IMAGE_FILTER;
-                    if (!reduceMotion) applyGridFloat(e, paperRotate, CURSOR_FLOAT.settleMs);
-                  }}
+                  // Unbound until the entrance settles, alongside the CSS hover
+                  // rules. Handing back `undefined` rather than checking inside
+                  // means a note that lands under a resting cursor stays at rest
+                  // until the pointer actually moves, instead of jumping to a
+                  // lean it was never given.
+                  onMouseEnter={
+                    !hoverArmed
+                      ? undefined
+                      : (e) => {
+                          // The note lifts off the grid and starts leaning toward the
+                          // cursor. The noise + displacement warp switches on here (and
+                          // only here) to focus the hovered note — it's a static filter
+                          // swap, so it stays on under reduced motion; the lift doesn't.
+                          e.currentTarget.style.filter = GRID_IMAGE_FILTER;
+                          // Tiles flow in order, so the index IS the cell — that's what
+                          // the lattice needs to box this note in.
+                          latticeRef.current?.hoverCell({
+                            row: Math.floor(i / gridCols),
+                            col: i % gridCols,
+                          });
+                          if (!reduceMotion) applyGridFloat(e, paperRotate, CURSOR_FLOAT.settleMs);
+                        }
+                  }
                   onMouseMove={
-                    reduceMotion
+                    reduceMotion || !hoverArmed
                       ? undefined
                       : (e) => applyGridFloat(e, paperRotate, CURSOR_FLOAT.trackMs)
                   }
-                  onMouseLeave={(e) => {
-                    const el = e.currentTarget;
-                    el.style.setProperty('--float-ms', `${CURSOR_FLOAT.settleMs}ms`);
-                    el.style.transform = '';
-                    el.style.filter = 'none';
-                  }}
+                  onMouseLeave={
+                    !hoverArmed
+                      ? undefined
+                      : (e) => {
+                          const el = e.currentTarget;
+                          el.style.setProperty('--float-ms', `${CURSOR_FLOAT.settleMs}ms`);
+                          el.style.transform = '';
+                          el.style.filter = 'none';
+                          latticeRef.current?.hoverCell(null);
+                        }
+                  }
                 />
                 <span className="grid-tile-num" style={{ opacity: settled ? 1 : 0 }}>
                   {c.id}
@@ -3872,16 +5185,31 @@ const LB_ARROW_GRAIN_ID = 'lb-arrow-grain';
  */
 const PREVIEW_FRAME = { w: 'min(90vw, 720px)', h: 'min(62vh, 560px)' };
 
+/** Gap between the metadata / image / transcript in the preview column. */
+const PREVIEW_STACK_GAP = 10;
+
+/**
+ * The transcript slot is a fixed height for the same reason the frame is fixed:
+ * the column is vertically centred, so anything that changes its total height
+ * moves the metadata and the image as you page through notes. Transcripts run
+ * from one line to eight, which was swinging the block by ~40px a note.
+ *
+ * Sized to four lines, which covers all but two notes in the corpus; the longest
+ * ones overflow the slot instead of growing it, so the layout stays put.
+ */
+const PREVIEW_TRANSCRIPT_LINES = 4;
+
+/** Prev/next arrow button size, and how far outside the frame's edge they sit. */
+const LB_NAV_SIZE = 52;
+const LB_NAV_GAP = 16;
+/** Half of PREVIEW_FRAME.w — what the arrows are offset from the centre by. */
+const LB_NAV_FRAME_HALF = 'min(45vw, 360px)';
+
 function Lightbox({ confession, onClose, onPrev, onNext, onExplore }) {
   const reduceMotion = useReducedMotion();
-  const compact = useArchiveNavCompact();
   const open = !!confession;
   const canNav = !!(onPrev || onNext);
 
-  // Drives the top nav legend's pressed-key highlight (see DialNavHint). Set on
-  // keydown / button press, cleared on keyup / release — same wiring as the
-  // full-screen note-open view so the two surfaces feel identical.
-  const [pressedNavKey, setPressedNavKey] = useState(null);
   const runNav = useCallback(
     (id) => {
       if (id === 'esc') onClose?.();
@@ -3890,18 +5218,10 @@ function Lightbox({ confession, onClose, onPrev, onNext, onExplore }) {
     },
     [onClose, onPrev, onNext]
   );
-  const handleNavPress = useCallback(
-    (id) => {
-      setPressedNavKey(id);
-      runNav(id);
-    },
-    [runNav]
-  );
-  const handleNavRelease = useCallback((id) => {
-    setPressedNavKey((cur) => (cur === id ? null : cur));
-  }, []);
 
-  // ESC closes; ← / → (or A / D) step through notes (the legend shows the arrows).
+  // ESC closes; ← / → (or A / D) step through notes. Unlike the full-screen
+  // note view this carries no on-screen legend — the preview is a quick look at
+  // one note, and a key chart over it competes with the thing being looked at.
   useEffect(() => {
     if (!open) return;
     const keyToId = {
@@ -3915,19 +5235,10 @@ function Lightbox({ confession, onClose, onPrev, onNext, onExplore }) {
       // Don't hijack A / D (or arrows) while typing in a field.
       const t = e.target;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
-      setPressedNavKey(id);
       runNav(id);
     };
-    const onKeyUp = (e) => {
-      const id = keyToId[e.key];
-      if (id) setPressedNavKey((cur) => (cur === id ? null : cur));
-    };
     window.addEventListener('keydown', onKeyDown);
-    window.addEventListener('keyup', onKeyUp);
-    return () => {
-      window.removeEventListener('keydown', onKeyDown);
-      window.removeEventListener('keyup', onKeyUp);
-    };
+    return () => window.removeEventListener('keydown', onKeyDown);
   }, [open, runNav]);
 
   const easeOut = [0.165, 0.84, 0.44, 1];
@@ -3950,15 +5261,22 @@ function Lightbox({ confession, onClose, onPrev, onNext, onExplore }) {
 
   const transcription = confession?.transcription?.trim();
 
-  // Detail metadata shown at the top of the view, matching the note detail
-  // view's labelled key/value rows: DATE and LOCATION, plus THEME. Fields with
-  // no value drop out (live sheet vs. bundled fallback carry different subsets).
+  // Detail metadata above the note, wearing EXPLORE's block (NOTE_META_STYLE):
+  // DATE and LOCATION, plus a THEME row that links into that category.
+  //
+  // Every label renders even when the sheet has no value for it — most notes are
+  // missing at least one field, and dropping the row shortened the block, which
+  // moved the metadata and the image as you paged through notes. Theme falls
+  // back to N/A (not blank) so the row still reads as filled.
   const meta = confession?.metadata || {};
+  const themeValue = confession?.category
+    ? confession.category.toUpperCase()
+    : 'N/A';
   const metaRows = [
-    ['DATE', meta.date],
-    ['LOCATION', meta.location],
-    ['THEME', confession?.category ? confession.category.toUpperCase() : null, 'theme'],
-  ].filter(([, v]) => v);
+    ['DATE', meta.date || ''],
+    ['LOCATION', meta.location || ''],
+    ['THEME', themeValue, 'theme'],
+  ];
 
   return (
     <AnimatePresence>
@@ -3989,40 +5307,6 @@ function Lightbox({ confession, onClose, onPrev, onNext, onExplore }) {
               site, standing in for the removed backdrop blur. */}
           <TunableGrainBackground />
 
-          {/* Top-centre keyboard legend — the same ← / → flip keys as the
-              full-screen note view. Only shown when there's more than one note
-              to page through. pointer-events are none on the wrap (so blank-area
-              clicks still dismiss); the legend's own buttons opt back in, and we
-              stop their clicks from bubbling to the backdrop's close handler. */}
-          {canNav && !compact && (
-            <motion.div
-              initial={reduceMotion ? false : { opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: reduceMotion ? 0 : 0.4, ease: easeOut, delay: reduceMotion ? 0 : 0.06 }}
-              onClick={(e) => e.stopPropagation()}
-              style={{
-                position: 'absolute',
-                top: 24,
-                left: 0,
-                right: 0,
-                zIndex: 2,
-                display: 'flex',
-                justifyContent: 'center',
-                pointerEvents: 'none',
-              }}
-            >
-              <DialNavHint
-                pressedKey={pressedNavKey}
-                onPress={handleNavPress}
-                onRelease={handleNavRelease}
-                style={{ position: 'static', bottom: 'auto', left: 'auto', transform: 'none' }}
-                grainArrows
-                showExit={false}
-              />
-            </motion.div>
-          )}
-
           <div
             style={{
               position: 'relative',
@@ -4033,7 +5317,7 @@ function Lightbox({ confession, onClose, onPrev, onNext, onExplore }) {
               justifyContent: 'center',
               // Tight gap between the metadata (above) / transcription (below)
               // and the image so the note reads as one grouped unit.
-              gap: 10,
+              gap: PREVIEW_STACK_GAP,
               width: '100%',
               maxWidth: 'min(94vw, 900px)',
               margin: 'auto',
@@ -4044,91 +5328,48 @@ function Lightbox({ confession, onClose, onPrev, onNext, onExplore }) {
               cursor: 'zoom-out',
             }}
           >
-            {metaRows.length > 0 ? (
-              <motion.div
-                initial={{ opacity: 0, y: 6 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0 }}
-                transition={{ duration: 0.24, ease: easeOut, delay: 0.04 }}
-                style={{
-                  display: 'flex',
-                  flexDirection: 'column',
-                  rowGap: 4,
-                  width: '100%',
-                  // Match the transcription block's width below.
-                  maxWidth: 'min(88vw, 560px)',
-                }}
-              >
-                {metaRows.map(([label, value, kind]) => (
-                  <div
-                    key={label}
-                    style={{
-                      display: 'grid',
-                      gridTemplateColumns: '1fr 1fr',
-                      alignItems: 'baseline',
-                      columnGap: 0,
-                      width: '100%',
-                    }}
-                  >
-                    <span
+            <motion.div
+              initial={{ opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.24, ease: easeOut, delay: 0.04 }}
+              style={{
+                ...NOTE_META_STYLE.block,
+                width: '100%',
+                // Match the transcription block's width below.
+                maxWidth: 'min(88vw, 560px)',
+                // EXPLORE holds 24px between the divider and the image; here the
+                // column's own gap supplies part of that.
+                marginBottom: NOTE_META_STYLE.block.marginBottom - PREVIEW_STACK_GAP,
+              }}
+            >
+              {metaRows.map(([label, value, kind]) => (
+                <div key={label} style={NOTE_META_STYLE.row}>
+                  <span style={NOTE_META_STYLE.label}>{label}</span>
+                  {kind === 'theme' && confession?.category && onExplore ? (
+                    <button
+                      type="button"
+                      title="Explore notes in this category"
+                      onClick={(e) => { e.stopPropagation(); onExplore(confession.category); }}
                       style={{
-                        fontFamily: 'var(--font-mono)',
-                        fontSize: TRANSCRIPTION_FONT_SIZE,
-                        letterSpacing: '0.08em',
-                        lineHeight: 1.45,
-                        textTransform: 'uppercase',
-                        color: 'rgba(207,202,183,0.5)',
-                        whiteSpace: 'nowrap',
+                        background: 'none',
+                        border: 'none',
+                        padding: 0,
+                        margin: 0,
+                        font: 'inherit',
+                        color: 'inherit',
+                        cursor: 'pointer',
+                        textAlign: 'left',
                       }}
                     >
-                      {label}
-                    </span>
-                    {kind === 'theme' && onExplore ? (
-                      <button
-                        type="button"
-                        title="Explore notes in this category"
-                        onClick={(e) => { e.stopPropagation(); onExplore(confession.category); }}
-                        style={{
-                          background: 'none',
-                          border: 'none',
-                          padding: 0,
-                          margin: 0,
-                          font: 'inherit',
-                          color: 'inherit',
-                          cursor: 'pointer',
-                          textAlign: 'left',
-                        }}
-                      >
-                        <span
-                          style={{
-                            fontFamily: 'var(--font-mono)',
-                            fontSize: TRANSCRIPTION_FONT_SIZE,
-                            letterSpacing: '0.02em',
-                            lineHeight: 1.45,
-                            color: 'rgba(207,202,183,0.85)',
-                            ...LINK_UNDERLINE,
-                          }}
-                        >
-                          {value}
-                        </span>
-                      </button>
-                    ) : (
-                      <span
-                        style={{
-                          fontFamily: 'var(--font-mono)',
-                          fontSize: TRANSCRIPTION_FONT_SIZE,
-                          letterSpacing: '0.02em',
-                          lineHeight: 1.45,
-                          color: 'rgba(207,202,183,0.85)',
-                        }}
-                      >
-                        {value}
-                      </span>
-                    )}
-                  </div>
-                ))}
-              </motion.div>
-            ) : null}
+                      <span style={{ ...NOTE_META_STYLE.value, ...LINK_UNDERLINE }}>{value}</span>
+                    </button>
+                  ) : (
+                    <span style={NOTE_META_STYLE.value}>{value}</span>
+                  )}
+                </div>
+              ))}
+            </motion.div>
 
             {/* Constant frame (see PREVIEW_FRAME). The tilt wrapper inside still
                 hugs the image itself, so the hover float pivots on the note
@@ -4200,31 +5441,39 @@ function Lightbox({ confession, onClose, onPrev, onNext, onExplore }) {
               </motion.div>
             </div>
 
-            {transcription ? (
-              <motion.div
-                initial={{ opacity: 0, y: 6 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0 }}
-                transition={{ duration: 0.24, ease: easeOut, delay: 0.05 }}
+            {/* Rendered even when a note has no transcription, so the slot can't
+                collapse and take the layout with it. */}
+            <motion.div
+              initial={{ opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.24, ease: easeOut, delay: 0.05 }}
+              style={{
+                width: '100%',
+                maxWidth: 'min(88vw, 560px)',
+                textAlign: 'center',
+                // Constant height (see PREVIEW_TRANSCRIPT_LINES) — the text hangs
+                // from the top of the slot so its first line always sits the same
+                // distance below the note.
+                height:
+                  PREVIEW_TRANSCRIPT_LINES *
+                  TRANSCRIPTION_FONT_SIZE *
+                  TRANSCRIPTION_TEXT.lineHeight,
+                flexShrink: 0,
+              }}
+            >
+              <Text
+                variant="bodySmall"
+                mono
                 style={{
-                  width: '100%',
-                  maxWidth: 'min(88vw, 560px)',
+                  display: 'block',
                   textAlign: 'center',
+                  ...TRANSCRIPTION_TEXT,
                 }}
               >
-                <Text
-                  variant="bodySmall"
-                  mono
-                  style={{
-                    display: 'block',
-                    textAlign: 'center',
-                    ...TRANSCRIPTION_TEXT,
-                  }}
-                >
-                  {transcription}
-                </Text>
-              </motion.div>
-            ) : null}
+                {transcription}
+              </Text>
+            </motion.div>
           </div>
 
           {canNav && (
@@ -4239,8 +5488,8 @@ function Lightbox({ confession, onClose, onPrev, onNext, onExplore }) {
                   top: 50%;
                   transform: translateY(-50%);
                   z-index: 1001;
-                  width: 52px;
-                  height: 52px;
+                  width: ${LB_NAV_SIZE}px;
+                  height: ${LB_NAV_SIZE}px;
                   display: flex;
                   align-items: center;
                   justify-content: center;
@@ -4254,8 +5503,26 @@ function Lightbox({ confession, onClose, onPrev, onNext, onExplore }) {
                   cursor: pointer;
                   transition: opacity 0.2s ${HOVER_EASE}, transform 0.15s ${HOVER_EASE};
                 }
-                .lb-nav--left { left: max(12px, 2.5vw); }
-                .lb-nav--right { right: max(12px, 2.5vw); }
+                /* Flank the note rather than the window. Offsetting from the
+                   centre by half the frame puts each arrow just outside the
+                   image's edge; the frame is a constant box (PREVIEW_FRAME), so
+                   they hold that position from note to note instead of tracking
+                   each image's own width.
+
+                   min() clamps them back inside the viewport on narrow screens,
+                   where the frame is 90vw and there's no room outside it. */
+                .lb-nav--left {
+                  right: min(
+                    calc(50% + ${LB_NAV_FRAME_HALF} + ${LB_NAV_GAP}px),
+                    calc(100% - ${LB_NAV_SIZE + 12}px)
+                  );
+                }
+                .lb-nav--right {
+                  left: min(
+                    calc(50% + ${LB_NAV_FRAME_HALF} + ${LB_NAV_GAP}px),
+                    calc(100% - ${LB_NAV_SIZE + 12}px)
+                  );
+                }
                 .lb-nav:hover { opacity: 1; }
                 .lb-nav:active { transform: translateY(-50%) scale(0.92); }
               `}</style>
@@ -4785,7 +6052,9 @@ function ArchiveLoading() {
       transition={{ duration: 0.5, ease }}
       style={{
         height: '100vh',
-        background: '#111',
+        // Sits between ENTER and the index — one step lighter here would read as
+        // a flash on the way in.
+        background: PAGE_BG,
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
@@ -4868,7 +6137,7 @@ function ExperimentCaption({ note }) {
   const rows = [
     ['DATE', m.date],
     ['LOCATION', m.location],
-    ['THEME', note.category ? formatCategoryLabel(note.category) : ''],
+    ['THEME', note.category ? formatCategoryLabel(note.category) : 'N/A'],
   ];
   const transcription = (note.transcription || '').trim();
   return (
@@ -5478,14 +6747,297 @@ function ArchivePage({ confessionQuery, initialEmotion = null, initialView = 'th
   // via GridView, and this dims the surrounding chrome to match.
   const [gridLightboxOpen, setGridLightboxOpen] = useState(false);
   // Mobile grid tap opens the vertical note-scroll view as a full-screen overlay
-  // (NoteOpenView). `{ confession, rect }`; null when closed. Desktop grid taps
-  // use the Lightbox instead (see GridView tile onClick).
+  // (NoteOpenView). `{ confession, rect, list }`, where `list` is the grid's
+  // currently visible notes so the overlay scrolls through the filtered set;
+  // null when closed. Desktop grid taps use the Lightbox instead (see GridView
+  // tile onClick).
   const [openNote, setOpenNote] = useState(null);
-  const handleExplore = useCallback(() => setView('explore'), []);
+  // Straight to the dial with no flight behind it — so the dial introduces
+  // itself normally rather than cutting in under words that were never drawn.
+  const handleExplore = useCallback(() => {
+    cameByFlight.current = false;
+    setView('explore');
+  }, []);
   // Grid fly-in runs once per session; returning from dial → grid stays settled.
   const gridEntranceDoneRef = useRef(false);
+  // Bumped whenever the index replays its entrance, to remount the About drawer
+  // so its peek slide plays again alongside the rail.
+  const [aboutPeekReplay, setAboutPeekReplay] = useState(0);
   const compactNav = useArchiveNavCompact();
   const reduceMotion = useReducedMotion();
+
+  // Seeded from the landing selection so the dial spins to the chosen
+  // category on entry; falls back to the first emotion when entered directly.
+  // Declared up here because the rail's ordering and the category flight both
+  // hang off wherever the wheel is currently pointing.
+  const [activeEmotion, setActiveEmotion] = useState(initialEmotion);
+  const [activeIndex, setActiveIndex] = useState(0);
+  // The category the dial is showing, and therefore the rail's middle row.
+  const dialCenterLabel =
+    emotions.find((e) => e.id === activeEmotion)?.label ?? emotions[0]?.label ?? null;
+
+  /* ── INDEX ⇄ EXPLORE: the category flight ──────────────────────────
+     The index rail's category rows and the explore dial's wordmarks are the
+     same list — both come from deriveEmotions — so switching tabs flies the
+     words from one to the other instead of cross-fading two unrelated screens.
+     The rail lives inside GridView and the dial inside NoteOpenView, and
+     mode="wait" means the two are never mounted at the same time. So we
+     measure the side we are leaving here, on the click, while it is still
+     standing, and hand the words to an overlay that outlives both views.
+     CategoryFlight carries the storyboard. */
+  const railLabelEls = useRef(new Map());
+  const registerCategoryLabel = useCallback(
+    (label) => (el) => {
+      if (el) railLabelEls.current.set(label, el);
+      else railLabelEls.current.delete(label);
+    },
+    []
+  );
+  const dialSlotEls = useRef(new Map());
+  const registerDialSlot = useCallback(
+    (label) => (el) => {
+      if (el) dialSlotEls.current.set(label, el);
+      else dialSlotEls.current.delete(label);
+    },
+    []
+  );
+  const [flightPhase, setFlightPhase] = useState(null); // null | 'fading' | 'flying' | 'returning'
+  const [flight, setFlight] = useState(null); // { direction, items, refined? }
+  const flightTimer = useRef(null);
+  // True from the moment words set off for the dial until we leave explore.
+  // The dial reads it to know it is inheriting wordmarks that were just drawn
+  // on screen for it, so it has to appear under them rather than introduce
+  // itself. Outlives the flight: the dial can mount either side of the landing
+  // depending on how long the index takes to clear, and it must cut in either
+  // way — fading up after the words have gone reads as the dial arriving late.
+  const cameByFlight = useRef(false);
+  // Last known geometry of the rail's category rows, kept from whenever it was
+  // last on screen. A flight home needs somewhere to aim on the frame it
+  // launches, long before the rail has mounted to be measured. Rows only move
+  // on a resize or an accordion toggle, so this is nearly always exact — and
+  // the flight re-aims off the real thing the moment it appears.
+  //
+  // Held as rows and boxes rather than finished points: the rows are fixed
+  // slots down the rail, and which label sits in which one depends on where
+  // the wheel is pointing when you come back. See `railPose`.
+  const railRects = useRef(null); // { rows: number[], box: Map(label -> { left, width, color }) }
+  const measureRail = useCallback(() => {
+    if (!railLabelEls.current.size) return null;
+    const box = new Map();
+    const seen = [];
+    railLabelEls.current.forEach((el, label) => {
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      box.set(label, { left: r.left, width: r.width, color: railInk(el) });
+      seen.push([label, r.top + r.height / 2]);
+    });
+    if (!box.size) return null;
+    // Ref callbacks fire in mount order, which is only the visual order on a
+    // first render. Sort so row 0 is always the top of the list.
+    seen.sort((a, b) => a[1] - b[1]);
+    railRects.current = {
+      rows: seen.map(([, cy]) => cy),
+      order: seen.map(([label]) => label),
+      box,
+    };
+    return railRects.current;
+  }, []);
+
+  const endFlight = useCallback(() => {
+    clearTimeout(flightTimer.current);
+    setFlight(null);
+    setFlightPhase(null);
+  }, []);
+
+  useEffect(() => () => clearTimeout(flightTimer.current), []);
+
+  const flyToExplore = useCallback(() => {
+    cameByFlight.current = true;
+    setFlightPhase('fading'); //                        checkboxes let go
+    flightTimer.current = setTimeout(() => {
+      // The slot the whole fan resolves around: wherever the wheel is already
+      // pointing. The rail is rotated to match it (see `centreOn`), so this is
+      // also the label sitting in the rail's middle row — which is what makes
+      // the fan open without any two words crossing.
+      const n = emotions.length;
+      const activeIndex = Math.max(
+        0,
+        emotions.findIndex((e) => e.label === dialCenterLabel)
+      );
+      const vis = wheelVisible(n);
+      const midY = window.innerHeight / 2;
+      const geom = measureRail();
+      const items = [];
+      geom?.box.forEach((_box, label) => {
+        const dialIndex = emotions.findIndex((e) => e.label === label);
+        // A label the dial doesn't carry has nowhere to land. Happens when a
+        // grid image fails after load and drops its category from the rail's
+        // list but not the dial's; that word just doesn't fly.
+        if (dialIndex < 0) return;
+        const k = wheelOffset(dialIndex, activeIndex, n);
+        const slot = wheelSlot(k, vis);
+        items.push({
+          id: label,
+          label,
+          delayS: Math.abs(k) * FLIGHT_STAGGER_S,
+          from: railPoseAt(geom, label),
+          to: {
+            cx: WHEEL.baseX + slot.x,
+            cy: midY + slot.y,
+            rotate: slot.rotate,
+            opacity: slot.opacity,
+            ...DIAL_POSE,
+          },
+        });
+      });
+      if (!items.length) {
+        endFlight();
+        setView('explore');
+        return;
+      }
+      setFlight({ direction: 'toDial', items });
+      setFlightPhase('flying');
+      setView('explore');
+    }, FLIGHT_FADE_MS);
+  }, [emotions, dialCenterLabel, measureRail, endFlight]);
+
+  const flyToIndex = useCallback(() => {
+    // Read each word's pose off the wheel as it actually stands. The visitor
+    // may have scrolled the stack round to any category, so where the arc is
+    // pointing is a fact about the DOM, not something we can recompute.
+    //
+    // The rail we are heading for will be rotated around wherever the wheel
+    // ended up, which is not how we last saw it. Work out that arrangement now
+    // so the remembered rows are still the right rows.
+    const geom = railRects.current;
+    const homeOrder = geom
+      ? centreOn(
+          emotions.map((e) => e.label).filter((label) => geom.box.has(label)),
+          dialCenterLabel
+        )
+      : null;
+    const items = [];
+    dialSlotEls.current.forEach((el, label) => {
+      if (!el) return;
+      // A zero-size anchor: its rect collapses onto the point the word is
+      // centred on, transform and all.
+      const r = el.getBoundingClientRect();
+      const cs = getComputedStyle(el);
+      const m = new DOMMatrixReadOnly(cs.transform === 'none' ? undefined : cs.transform);
+      const rotate = (Math.atan2(m.b, m.a) * 180) / Math.PI;
+      items.push({
+        id: label,
+        label,
+        delayS: (Math.abs(rotate) / WHEEL.stepDeg) * FLIGHT_STAGGER_S,
+        from: {
+          cx: r.left,
+          cy: r.top,
+          rotate,
+          opacity: Number(cs.opacity),
+          ...DIAL_POSE,
+        },
+        // Remembered rows, so the words are already moving on the next frame.
+        // Mounting the grid can hold the main thread for a couple hundred ms;
+        // waiting for it to finish before setting off reads as a stall.
+        to: railPoseAt(geom, label, homeOrder),
+      });
+    });
+    if (!items.length) {
+      setView('grid');
+      return;
+    }
+    setFlight({ direction: 'toRail', items });
+    setFlightPhase('returning');
+    setView('grid');
+  }, [emotions, dialCenterLabel]);
+
+  // Second half of a flight home: re-aim at the rail's rows as soon as they
+  // actually exist. Usually they are exactly where we remembered and this
+  // changes nothing; after a resize, or on a first visit with nothing
+  // remembered at all, it is what makes the words land on their rows.
+  useEffect(() => {
+    if (flightPhase !== 'returning' || !flight || flight.refined) return undefined;
+    let raf = 0;
+    let tries = 0;
+    const tick = () => {
+      const geom = measureRail();
+      if (!geom) {
+        // ~a third of a second of frames. The rail mounts on the next one or
+        // two in practice; this only catches a view that never arrives, and
+        // then only matters for words with nowhere to aim.
+        if (++tries <= 20) raf = requestAnimationFrame(tick);
+        else if (!flight.items.some((it) => it.to)) endFlight();
+        return;
+      }
+      setFlight((f) =>
+        f && !f.refined
+          ? {
+              ...f,
+              refined: true,
+              items: f.items.map((it) => {
+                // No row to fall into: let the copy fade out where it hangs.
+                const to = railPoseAt(geom, it.label);
+                return { ...it, to: to ?? { ...it.from, opacity: 0 } };
+              }),
+            }
+          : f
+      );
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [flightPhase, flight, measureRail, endFlight]);
+
+  // A tab switch only flies when the side being left is actually on screen to
+  // be measured. Every other route — a deep link, the grid's own CTA, the
+  // mobile note overlay, compact layouts with no dial at all — just switches.
+  const requestView = useCallback(
+    (next) => {
+      // Coming back from the dial, the index is built again rather than
+      // uncovered: the EXPLORE tab clears itself off the screen first (see the
+      // storyboard in NoteOpenView), so there is nothing behind it to reveal
+      // and an index that cut in fully formed would land on an empty frame.
+      if (next === 'grid' && view === 'explore') {
+        gridEntranceDoneRef.current = false;
+        setAboutPeekReplay((n) => n + 1);
+      }
+      if (next !== 'explore') cameByFlight.current = false;
+      // Mid-flight, clicking the tab we are already flying to changes nothing;
+      // clicking the other one abandons the flight, since those words were
+      // addressed to a view that is no longer coming and finishing the journey
+      // would fly them across whichever one arrived instead.
+      if (flightPhase) {
+        const heading = flightPhase === 'returning' ? 'grid' : 'explore';
+        if (next !== heading) {
+          endFlight();
+          setView(next);
+        }
+        return;
+      }
+      const ready = !compactNav && !reduceMotion && emotions.length > 2;
+      if (ready && next === 'explore' && view === 'grid' && railLabelEls.current.size > 0)
+        flyToExplore();
+      else if (
+        FLY_HOME &&
+        ready &&
+        next === 'grid' &&
+        view === 'explore' &&
+        dialSlotEls.current.size > 0
+      )
+        flyToIndex();
+      else setView(next);
+    },
+    [
+      view,
+      flightPhase,
+      compactNav,
+      reduceMotion,
+      emotions.length,
+      flyToExplore,
+      flyToIndex,
+      endFlight,
+    ]
+  );
+
   const navChromeEntranceDelay = reduceMotion
     ? 0
     : view === 'theme'
@@ -5503,11 +7055,6 @@ function ArchivePage({ confessionQuery, initialEmotion = null, initialView = 'th
   // labels + a modest breathing strip so the cards above sit a bit closer
   // real estate and read as "centered" rather than crammed at the top.
   const dialLabelInset = Math.round(dialSize * 0.232 + 26);
-  // Seeded from the landing selection so the dial spins to the chosen
-  // category on entry; falls back to the first emotion when entered directly.
-  const [activeEmotion, setActiveEmotion] = useState(initialEmotion);
-  const [activeIndex, setActiveIndex] = useState(0);
-
   // Entered via the landing EXPLORE CTA (vs. a direct/deep load). Captured once
   // so the dial entrance can wait for the bridge note to fade out first, then
   // spin in to the chosen category.
@@ -5590,12 +7137,22 @@ function ArchivePage({ confessionQuery, initialEmotion = null, initialView = 'th
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       transition={{ duration: 0.6, ease }}
-      style={{ height: '100vh', position: 'relative', overflow: 'hidden', background: '#111' }}
+      style={{
+        height: '100vh',
+        position: 'relative',
+        overflow: 'hidden',
+        // The views fade in over this base, so it has to be the page colour too
+        // — at #111 the index visibly lightened for the length of its own fade.
+        background: PAGE_BG,
+      }}
     >
-      <ArchiveNavGradientWash zIndex={aboutOpen ? 1010 : 150} />
-      {/* Top chrome (wordmark + INDEX/EXPLORE/ABOUT). Stays fixed in place when
-          About opens — elevated above the panel so it never re-mounts or jumps.
-          Recedes while the grid Lightbox is open. */}
+      {/* Edge washes stay under the About drawer (z 1001) so the open panel
+          covers them. Nav chrome still elevates above both when About is open. */}
+      <ArchiveEdgeGradientWash edge="top" zIndex={150} />
+      <ArchiveEdgeGradientWash edge="bottom" zIndex={150} />
+      {/* Top chrome. Wordmark stays above the About drawer (close target); INDEX /
+          EXPLORE sink under the backdrop while About is open. Recedes while the
+          grid Lightbox is open. */}
       <motion.div
         initial={false}
         animate={{ opacity: gridLightboxOpen ? 0.22 : 1 }}
@@ -5606,82 +7163,112 @@ function ArchivePage({ confessionQuery, initialEmotion = null, initialView = 'th
           entranceDelay={navChromeEntranceDelay}
           onReturnToIntro={onReturnToIntro}
           view={view}
-          onViewChange={setView}
+          onViewChange={requestView}
           aboutOpen={aboutOpen}
           onAboutOpen={() => setAboutOpen(true)}
           onAboutClose={() => setAboutOpen(false)}
-          zIndex={aboutOpen ? 1010 : 200}
         />
       </motion.div>
+      {/* Keyed on the replay counter: coming back from EXPLORE the index builds
+          itself again, and a remount is what lets the drawer park off the edge
+          and slide in with it rather than animating out of its peek first. */}
       <AboutModal
+        key={`about-${aboutPeekReplay}`}
         open={aboutOpen}
+        onOpen={() => setAboutOpen(true)}
         onClose={() => setAboutOpen(false)}
-        confessions={confessions}
+        skipPeekEntrance={reduceMotion || view !== 'grid'}
       />
 
-      <AnimatePresence mode="wait">
-        {view === 'theme' ? (
-          <ThemeView
-            key="theme"
-            emotions={emotions}
-            activeEmotion={activeEmotion}
-            activeIndex={activeIndex}
-            setActiveIndex={handleActiveIndexChange}
-            confessions={themedConfessions}
-            activeConfession={activeConfession}
-            activeEmotionData={activeEmotionData}
-            handleEmotionChange={handleEmotionChange}
-            onReturnToIntro={onReturnToIntro}
-            aboutOpen={aboutOpen}
-            sidebarInset={sidebarInset}
-            dialSize={dialSize}
-            dialLabelInset={dialLabelInset}
-            dialEntranceDelay={dialEntranceDelay}
-            dialSpinDelayMs={dialSpinDelayMs}
-          />
-        ) : view === 'explore' ? (
-          /* EXPLORE tab — the immersive note browser (horizontal coverflow +
-             left theme dial + A/D flip + date/location + transcription), the
-             same experience NoteOpenView renders as a grid-click overlay, but
-             promoted to a persistent top-level view. `standalone` opens it on
-             the first note, sits it below the nav chrome, and hides its own
-             INDEX/ABOUT cluster (the nav bar provides those). */
-          <NoteOpenView
-            key="explore"
-            standalone
-            confessions={confessions}
-            emotions={emotions}
-            onExit={() => setView('grid')}
-            onAbout={() => setAboutOpen(true)}
-            onIndex={() => setView('grid')}
-          />
-        ) : view === 'experiment' ? (
-          /* EXPERIMENT tab — a super-small contact-sheet of every note with an
-             empty grey stage dead-center; hovering a thumbnail enlarges that
-             note (+ metadata) into the stage. */
-          <ExperimentView key="experiment" confessions={confessions} />
-        ) : view === 'cube' ? (
-          /* CUBE tab — every note mapped onto the six faces of a rotating
-             three.js cube; click a face tile to open the INDEX-style close-up. */
-          <CubeView key="cube" confessions={confessions} onExplore={handleExplore} />
-        ) : view === 'wall' ? (
-          <WallView key="wall" confessions={confessions} sidebarInset={sidebarInset} onExplore={handleExplore} />
-        ) : (
-          <GridView
-            key="grid"
-            confessions={confessions}
-            sidebarInset={sidebarInset}
-            onOpenNote={(c, rect) => setOpenNote({ confession: c, rect })}
-            noteOpen={!!openNote}
-            onLightboxOpenChange={setGridLightboxOpen}
-            skipEntrance={gridEntranceDoneRef.current}
-            onEntranceSettled={() => {
-              gridEntranceDoneRef.current = true;
-            }}
-            onExplore={handleExplore}
-          />
-        )}
-      </AnimatePresence>
+      {/* Everything the About drawer opens over. Wrapped rather than filtered
+          per view so all of them recede identically, and so the nav chrome
+          (rendered above, and the only way back out) stays crisp and clickable.
+          `inset: 0` because the views inside position themselves against the
+          page box, and a filter makes this the containing block for the fixed
+          ones — same geometry, so they land where they always did. */}
+      <div style={{ position: 'absolute', inset: 0, ...recede(aboutOpen) }}>
+        <AnimatePresence mode="wait">
+          {view === 'theme' ? (
+            <ThemeView
+              key="theme"
+              emotions={emotions}
+              activeEmotion={activeEmotion}
+              activeIndex={activeIndex}
+              setActiveIndex={handleActiveIndexChange}
+              confessions={themedConfessions}
+              activeConfession={activeConfession}
+              activeEmotionData={activeEmotionData}
+              handleEmotionChange={handleEmotionChange}
+              onReturnToIntro={onReturnToIntro}
+              aboutOpen={aboutOpen}
+              sidebarInset={sidebarInset}
+              dialSize={dialSize}
+              dialLabelInset={dialLabelInset}
+              dialEntranceDelay={dialEntranceDelay}
+              dialSpinDelayMs={dialSpinDelayMs}
+            />
+          ) : view === 'explore' ? (
+            /* EXPLORE tab — the immersive note browser (horizontal coverflow +
+               left theme dial + A/D flip + date/location + transcription), the
+               same experience NoteOpenView renders as a grid-click overlay, but
+               promoted to a persistent top-level view. `standalone` opens it on
+               the first note, sits it below the nav chrome, and hides its own BACK
+               (the nav bar's INDEX leads out instead). */
+            <NoteOpenView
+              key="explore"
+              standalone
+              confessions={confessions}
+              emotions={emotions}
+              onExit={() => requestView('grid')}
+              onIndex={() => requestView('grid')}
+              dialHidden={flightPhase === 'flying'}
+              dialHandoff={cameByFlight.current}
+              registerDialSlot={registerDialSlot}
+            />
+          ) : view === 'experiment' ? (
+            /* EXPERIMENT tab — a super-small contact-sheet of every note with an
+               empty grey stage dead-center; hovering a thumbnail enlarges that
+               note (+ metadata) into the stage. */
+            <ExperimentView key="experiment" confessions={confessions} />
+          ) : view === 'cube' ? (
+            /* CUBE tab — every note mapped onto the six faces of a rotating
+               three.js cube; click a face tile to open the INDEX-style close-up. */
+            <CubeView key="cube" confessions={confessions} onExplore={handleExplore} />
+          ) : view === 'wall' ? (
+            <WallView key="wall" confessions={confessions} sidebarInset={sidebarInset} onExplore={handleExplore} />
+          ) : (
+            <GridView
+              key="grid"
+              confessions={confessions}
+              sidebarInset={sidebarInset}
+              onOpenNote={(c, rect, list) => setOpenNote({ confession: c, rect, list })}
+              noteOpen={!!openNote}
+              onLightboxOpenChange={setGridLightboxOpen}
+              skipEntrance={gridEntranceDoneRef.current}
+              onEntranceSettled={() => {
+                gridEntranceDoneRef.current = true;
+              }}
+              onExplore={handleExplore}
+              registerCategoryLabel={registerCategoryLabel}
+              flightPhase={flightPhase}
+              dialCenterLabel={dialCenterLabel}
+            />
+          )}
+        </AnimatePresence>
+      </div>
+
+      {/* The category words, in transit between the rail and the dial.
+          Rendered outside the AnimatePresence above on purpose: it is the one
+          thing that has to survive one view unmounting and the other
+          mounting. */}
+      {flight && (
+        <CategoryFlight
+          items={flight.items}
+          direction={flight.direction}
+          reduceMotion={reduceMotion}
+          onDone={endFlight}
+        />
+      )}
 
       {/* Mobile grid tap → full-screen vertical note-scroll view (up/down through
           the notes). Keyed by note id so a fresh open remounts the stack seeded
@@ -5692,10 +7279,9 @@ function ArchivePage({ confessionQuery, initialEmotion = null, initialView = 'th
             key={openNote.confession.id}
             confession={openNote.confession}
             originRect={openNote.rect}
-            confessions={confessions}
+            confessions={openNote.list ?? confessions}
             emotions={emotions}
             onExit={() => setOpenNote(null)}
-            onAbout={() => setAboutOpen(true)}
             onIndex={() => setOpenNote(null)}
             onExplore={() => { setOpenNote(null); setView('explore'); }}
           />
@@ -5733,7 +7319,7 @@ export default function App() {
   return (
     <AnimatePresence mode="wait">
       {page === 'landing' && (
-        <OnboardingReveal
+        <OnboardingBeats
           key="onboarding"
           onEnter={() => {
             setArchiveView('grid');

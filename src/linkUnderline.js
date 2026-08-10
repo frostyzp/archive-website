@@ -32,6 +32,19 @@ export const LINK_UNDERLINE = {
   backgroundPosition: '0 100%',
 };
 
+/**
+ * The rule lands at the bottom of the background positioning area — the padding
+ * box — so on a padded element with leading it ends up well under the baseline:
+ * the font's descent, the half-leading and the padding all stack below the
+ * glyphs. This pulls it back up toward them.
+ *
+ * The offset is in em so it tracks font-size instead of drifting at another size.
+ */
+export const linkUnderlineRaised = (em) => ({
+  ...LINK_UNDERLINE,
+  backgroundPosition: `0 calc(100% - ${em}em)`,
+});
+
 /* Anything setting `background` shorthand alongside this — the reset buttons
    carry `background: none` — has to declare it BEFORE, or the shorthand blanks
    the image back out. */

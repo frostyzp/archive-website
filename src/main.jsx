@@ -5,12 +5,20 @@ import 'dialkit/styles.css';
 import { SoundProvider } from '@web-kits/audio/react';
 import App from './App';
 import OnboardingReveal from './OnboardingReveal';
+import OnboardingBeats from './OnboardingBeats';
 import AsciiExperiment from './AsciiExperiment';
+import CategoryRows from './CategoryRows';
+import NoteEntranceLab from './NoteEntranceLab';
 
 const path = window.location.pathname;
 const ROUTES = {
+  // The scrolled original, kept alongside the beat-stepped telling the site
+  // itself now opens with.
   '/onboarding': OnboardingReveal,
+  '/onboarding-beats': OnboardingBeats,
   '/ascii': AsciiExperiment,
+  '/rows': CategoryRows,
+  '/entrance': NoteEntranceLab,
 };
 const Root = ROUTES[path] || App;
 

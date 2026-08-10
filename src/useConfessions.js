@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { loadConfessions } from './loadConfessions';
+import { loadConfessionsOnce } from './loadConfessions';
 import { deriveEmotions, sortConfessionsByEmotions } from './themes';
 
 /**
@@ -73,7 +73,7 @@ export function useConfessions() {
   useEffect(() => {
     let cancelled = false;
     const isCancelled = () => cancelled;
-    loadConfessions()
+    loadConfessionsOnce()
       .then(async (confessions) => {
         if (cancelled) return;
         // Drop notes whose image can't be served before anything renders, so the

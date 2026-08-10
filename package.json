@@ -8,8 +8,8 @@
     "preview": "vite preview --port 5190"
   },
   "dependencies": {
-    "@react-three/drei": "^10.7.7",
-    "@react-three/fiber": "^9.6.1",
+    "@react-three/drei": "^10.7.8",
+    "@react-three/fiber": "^9.7.0",
     "@web-kits/audio": "^0.1.0",
     "dialkit": "^1.2.0",
     "motion": "^12",

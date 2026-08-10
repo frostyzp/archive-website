@@ -1,4 +1,4 @@
-import { createElement, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { createElement, Fragment, useEffect, useId, useMemo, useRef, useState } from 'react';
 import {
   AnimatePresence,
   motion,
@@ -11,6 +11,7 @@ import {
 import * as opentype from 'opentype.js';
 import { useDialKit } from 'dialkit';
 import { INK, inkA } from './colors';
+import { PAGE_BG, PAGE_GRADIENT } from './NoiseGradient';
 import { LINK_UNDERLINE } from './linkUnderline';
 import {
   CARD_FILTER_ID,
@@ -20,7 +21,6 @@ import {
 } from './noise';
 import { NOTE_STILL_IDS } from './noteStills';
 import AsciiWall from './AsciiWall';
-import RevealWordsGL from './RevealWordsGL';
 import WordmarkGL from './WordmarkGL';
 import WordmarkDraw from './WordmarkDraw';
 import BodyKicker from './BodyKicker';
@@ -33,20 +33,21 @@ import BodyKicker from './BodyKicker';
  * scrolls into view. Read top-to-bottom; each row is one block:
  *
  *   HERO      title "What We Tell AI" (Figma 280:71) reveals word-by-word in
- *             TRJN DaVinci on two lines; opening question fades in beneath, then
- *             the scroll arrow fades in last
+ *             TRJN DaVinci on two lines; opening question cascades in beneath it
+ *             a word at a time, then the scroll arrow fades in last
  *   BOOTH     the Dolores Park booth still slides in from the left, then the
- *             intro line materializes through the WebGL mask dissolve
+ *             intro line cascades in beneath it
  *   NOTE ①    a handwritten confession fades in through the filter
- *   BODY      "AI is entering into the most personal aspects…" dissolves in
+ *   BODY      "AI is entering into the most personal aspects…" cascades in
  *   NOTE ②    confession fades in through the filter
- *   FRAGMENT  "And even substituting our human relationships…" dissolves in
+ *   FRAGMENT  "And even substituting our human relationships…" cascades in
  *   NOTE ③    confession fades in through the filter
  *   QUESTION  the closing statement + ENTER cta
  *
- * The four display copy blocks use RevealWordsGL (one-shot WebGL mask dissolve,
- * then a hand-off to live DOM text); RevealWords below is the word-by-word
- * cascade they used to use, kept as the drop-in alternative.
+ * The four display copy blocks all use RevealWords below — a per-word opacity
+ * cascade at WORD_DISPLAY's slower timing. No canvas: the copy is live DOM text
+ * from the first frame, so it stays selectable and the authored rag is the
+ * browser's own line boxes rather than a rasterized snapshot of them.
  *
  * A SKIP control is sticky (fixed) top-right the whole way down.
  * ───────────────────────────────────────────────────────────────────── */
@@ -58,6 +59,21 @@ const MONO = 'var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace)';
 // Applied to the label <span> rather than to the flex anchor, so it underlines
 // only the word and not the icon gap.
 const ONBOARDING_LINK_UNDERLINE = LINK_UNDERLINE;
+
+/* The page's two calls to action — Skip Intro riding the top corner, Enter the
+ * archive at the end of the scroll. Both rest a shade under full ink and light
+ * up under the cursor; the dotted rule is painted in currentColor, so it
+ * brightens with the words.
+ *
+ * In CSS rather than mouse handlers because this page re-renders on every
+ * scroll beat and motion rewrites the style prop each time, which wiped an
+ * imperatively-set colour a few frames after the cursor arrived — the hover
+ * lit up and then dropped out from under the pointer. Nothing here may set
+ * `color` inline either, or it outranks the rule. */
+const CTA_HOVER_CSS = `
+  .onboarding-cta { color: ${inkA(0.82)}; transition: color 0.2s ease; }
+  .onboarding-cta:hover { color: ${INK}; }
+`;
 
 /** How words fade in (per-word cascade — opacity only, no rise/blur). One place
  *  for all text timing. */
@@ -96,12 +112,19 @@ const IMAGE = {
 };
 
 /** Directional slide-in used by the confession notes (RevealImage's
- *  `slideFrom`): they arrive from alternating sides with a slight tilt on the
- *  shared ease-out, instead of developing in place. */
+ *  `slideFrom`): they fly in from off the side of the screen with a slight tilt
+ *  on the shared ease-out, instead of developing in place. */
 const SLIDE = {
-  x: 80, //      px the note starts off to its side
+  // No `x`: the distance is a viewport width, read per note in RevealImage, so
+  // the note always starts clear of the edge whatever the window size.
   rotate: 5, //  deg tilt it straightens out of
-  durS: 0.9, //  slide + settle duration
+  /** Longer than the old 80px nudge, since the note now crosses most of the
+   *  screen. `ease` is a hard ease-out, so it covers that ground early and
+   *  spends the tail decelerating into place rather than reading as slow. */
+  durS: 1.15,
+  /** Opacity resolves well before the travel ends, so the note reads as a solid
+   *  object flying in rather than something materialising as it slides. */
+  fadeS: 0.34,
 };
 
 /**
@@ -265,11 +288,26 @@ const HERO_DRAW = {
   drawEase: [0.45, 0.05, 0.55, 0.95], // near-linear so each letter reveals evenly
 };
 const HERO_QUESTION = {
+  // The question arrives a word at a time, picking up where the title's own
+  // reveal leaves off. `fadeS` is what ONE word takes, not the sentence — the
+  // line as a whole runs for the last word's delay plus that.
+  staggerS: 0.07,
   fadeS: 0.65,
   arrowDelayS: 0.25, // beat after the question lands before the scroll cue fades in
 };
 
-/** Opening question beneath the hero title — one opacity fade, not word-by-word. */
+const OPENING_WORDS = OPENING_QUESTION.split(' ');
+
+/** How long the cascade runs end to end — what the scroll cue waits out. */
+const OPENING_REVEAL_S =
+  (OPENING_WORDS.length - 1) * HERO_QUESTION.staggerS + HERO_QUESTION.fadeS;
+
+/** Opening question beneath the hero title — a per-word cascade, the same move
+ *  the display copy further down the page makes, on the hero's slower clock.
+ *  The words are laid out from the first frame and only their opacity animates,
+ *  so the rag is settled before anything is visible and no line reflows as it
+ *  fills in. The spaces between them are real text nodes rather than margins,
+ *  which keeps the measure identical to the plain sentence. */
 function HeroOpeningQuestion({ hold = false, instant = false, style, onRevealComplete }) {
   const ref = useRef(null);
   const inView = useInView(ref, IN_VIEW);
@@ -293,24 +331,31 @@ function HeroOpeningQuestion({ hold = false, instant = false, style, onRevealCom
     const id = setTimeout(() => {
       doneRef.current = true;
       onRevealCompleteRef.current?.();
-    }, HERO_QUESTION.fadeS * 1000);
+    }, OPENING_REVEAL_S * 1000);
     return () => clearTimeout(id);
   }, [show, reduce, instant]);
 
   return (
-    <motion.p
-      ref={ref}
-      aria-label={OPENING_QUESTION}
-      initial={reduce || instant ? false : { opacity: 0 }}
-      animate={show ? { opacity: 1 } : undefined}
-      transition={{
-        duration: reduce || instant ? 0 : HERO_QUESTION.fadeS,
-        ease,
-      }}
-      style={{ margin: 0, ...style }}
-    >
-      {OPENING_QUESTION}
-    </motion.p>
+    <p ref={ref} aria-label={OPENING_QUESTION} style={{ margin: 0, ...style }}>
+      {OPENING_WORDS.map((w, i) => (
+        <Fragment key={i}>
+          {i > 0 ? ' ' : null}
+          <motion.span
+            aria-hidden="true"
+            initial={reduce || instant ? false : { opacity: 0 }}
+            animate={show ? { opacity: 1 } : undefined}
+            transition={{
+              duration: reduce || instant ? 0 : HERO_QUESTION.fadeS,
+              ease,
+              delay: reduce || instant ? 0 : i * HERO_QUESTION.staggerS,
+            }}
+            style={{ display: 'inline-block' }}
+          >
+            {w}
+          </motion.span>
+        </Fragment>
+      ))}
+    </p>
   );
 }
 
@@ -978,14 +1023,13 @@ const INTRO_LINE =
 // verbs, each set at its own angle. Line breaks are authored, not wrapped, so
 // the rag matches the Figma comp at every viewport width.
 const BODY_LINE = [
-  'AI',
-  'is entering',
-  'into the most personal',
-  'aspects of our lives,',
-  'changing how',
-  'we',
+  'AI is entering into the most',
+  'personal aspects of our lives,',
+  'changing how we',
 ].join('\n');
-const FRAGMENT_LINE = 'And even substituting our human relationships…';
+const FRAGMENT_LINE = ['And even', 'substituting our', 'human relationships…'].join(
+  '\n'
+);
 const FINAL_QUESTION = [
   'Every note is a real story',
   'from a real person',
@@ -993,11 +1037,14 @@ const FINAL_QUESTION = [
   'this new technology',
 ].join('\n');
 
+// The three notes the intro walks through. Hand-picked, so the ids are authored
+// here — but each `transcript` must be the sheet's Transcription for that Global
+// ID verbatim, since it's presented as what the person actually wrote.
 const NOTES = [
   {
-    id: 'AC_185',
-    serial: 'AC-185',
-    transcript: 'Forgive my sin: I talk to AI way more than to ALL the people in my life, combined :)',
+    id: 'AC_171',
+    serial: 'AC-171',
+    transcript: 'ChatGPT writes 99.9% of all my emails & actually many of my texts now too =)',
   },
   {
     id: 'AC_148',
@@ -1005,10 +1052,9 @@ const NOTES = [
     transcript: 'I asked it to read my writing & praise it... smh',
   },
   {
-    id: 'AC_190',
-    serial: 'AC-190',
-    transcript:
-      "In the early months of ChatGPT's release, I prayed to the chatbot every single day, attempting to find purpose and meaning in religion. ChatGPT hallucinated and convinced me that God is dead.",
+    id: 'AC_185',
+    serial: 'AC-185',
+    transcript: 'Forgive my sin: I talk to AI way more than to ALL people in my life, combined :(',
   },
 ];
 const noteSrc = (id) => `/confession_notes_2/${id}.webp`;
@@ -1021,6 +1067,11 @@ const noteSrc = (id) => `/confession_notes_2/${id}.webp`;
  * to reveal it one character at a time at a steady cadence instead (no caret).
  * The whole string is exposed once to assistive tech via aria-label; the
  * animated fragments are aria-hidden.
+ *
+ * Embed `\n` in `text` for authored line breaks — each line is its own block, so
+ * the rag is the one that was written rather than whatever the measure happens
+ * to wrap to. Pass `justify` to spread each line edge-to-edge. The cascade runs
+ * continuously across the breaks, so the stagger doesn't restart per line.
  */
 function RevealWords({
   text,
@@ -1029,16 +1080,32 @@ function RevealWords({
   delayStart = 0,
   typewriter = false,
   hold = false,
+  justify = false,
+  start,
   style,
 }) {
   const ref = useRef(null);
-  const inView = useInView(ref, IN_VIEW);
+  const scrolledInto = useInView(ref, IN_VIEW);
+  // `start` replaces the scroll trigger where there is no scroll — see the
+  // beat telling of this page, which holds everything in one fixed screen.
+  const inView = start === undefined ? scrolledInto : start;
   const reduce = useReducedMotion();
   // `hold` keeps the words at their initial (hidden) state even when in view —
   // used to defer the hero question until the opening loader lifts.
   const show = inView && !hold;
 
-  const words = useMemo(() => text.split(' '), [text]);
+  // Each line carries the running word count before it, which is what the
+  // stagger counts off.
+  const lines = useMemo(() => {
+    let n = 0;
+    return text.split('\n').map((line) => {
+      const words = line.split(/\s+/).filter(Boolean);
+      const start = n;
+      n += words.length;
+      return { words, start };
+    });
+  }, [text]);
+  const ariaText = useMemo(() => text.replace(/\n/g, ' '), [text]);
 
   // Typewriter: reveal each glyph in reading order at a steady cadence. Chars
   // are laid out (invisible) from the first frame, so the line breaks are fixed
@@ -1068,22 +1135,39 @@ function RevealWords({
 
   return createElement(
     as,
-    { ref, 'aria-label': text, style: { margin: 0, ...style } },
-    words.map((w, i) => (
-      <motion.span
-        key={i}
-        aria-hidden="true"
-        initial={reduce ? false : { opacity: 0 }}
-        animate={show ? { opacity: 1 } : undefined}
-        transition={{
-          duration: reduce ? 0 : cfg.durS,
-          ease,
-          delay: reduce ? 0 : delayStart + i * cfg.staggerS,
-        }}
-        style={{ display: 'inline-block', marginRight: '0.28em' }}
+    {
+      ref,
+      'aria-label': ariaText,
+      // Full width then capped by the caller's maxWidth, so a justified line
+      // has a measure to spread across rather than shrinking to its content.
+      style: { margin: '0 auto', width: '100%', ...style },
+    },
+    lines.map((line, li) => (
+      <span
+        key={li}
+        style={
+          justify
+            ? { display: 'flex', justifyContent: 'space-between', width: '100%' }
+            : { display: 'block' }
+        }
       >
-        {w}
-      </motion.span>
+        {line.words.map((w, i) => (
+          <motion.span
+            key={i}
+            aria-hidden="true"
+            initial={reduce ? false : { opacity: 0 }}
+            animate={show ? { opacity: 1 } : undefined}
+            transition={{
+              duration: reduce ? 0 : cfg.durS,
+              ease,
+              delay: reduce ? 0 : delayStart + (line.start + i) * cfg.staggerS,
+            }}
+            style={{ display: 'inline-block', ...(justify ? null : { marginRight: '0.28em' }) }}
+          >
+            {w}
+          </motion.span>
+        ))}
+      </span>
     ))
   );
 }
@@ -1140,11 +1224,18 @@ function RevealImage({ src, alt = '', width, maxHeight, aspectRatio, cfg = IMAGE
   const show = inView && (decoded || reduce) && !hold;
 
   // `slideFrom` swaps the develop-in-place fade for a directional slide: the
-  // note travels in from its side (x) while straightening out of a slight tilt
-  // (rotate), settling on the shared ease-out. The root clips overflow-x, so the
-  // off-side start never spawns a horizontal scrollbar.
+  // note flies in from off its side of the screen while straightening out of a
+  // slight tilt (rotate), settling on the shared ease-out. The root clips
+  // overflow-x, so the off-screen start never spawns a horizontal scrollbar.
   const sliding = slideFrom === 'left' || slideFrom === 'right';
   const dir = slideFrom === 'left' ? -1 : 1;
+
+  // How far out the note waits: one viewport width to its side, which clears the
+  // edge for any note at any window size, since one centred in the page never
+  // needs more than that. Read once, because this feeds `initial` — a mount-time
+  // value with nothing to update later. The root clips overflow-x, so parking a
+  // note out there never spawns a horizontal scrollbar.
+  const [travel] = useState(() => (typeof window === 'undefined' ? 0 : window.innerWidth));
 
   // Shared "Inactive Cards" DialKit panel — tuning the stack tunes this too.
   const inactive = useInactiveCardParams();
@@ -1243,9 +1334,13 @@ function RevealImage({ src, alt = '', width, maxHeight, aspectRatio, cfg = IMAGE
               isn't driving a rAF loop for the whole page. */}
           {showGrain && <CardNoiseFilterDefs params={inactive} />}
           <motion.div
-            initial={reduce ? false : { opacity: 0, x: dir * SLIDE.x, rotate: dir * SLIDE.rotate }}
+            initial={reduce ? false : { opacity: 0, x: dir * travel, rotate: dir * SLIDE.rotate }}
             animate={show ? { opacity: 1, x: 0, rotate: 0 } : undefined}
-            transition={{ duration: reduce ? 0 : SLIDE.durS, ease }}
+            transition={
+              reduce
+                ? { duration: 0 }
+                : { duration: SLIDE.durS, ease, opacity: { duration: SLIDE.fadeS, ease } }
+            }
             style={{
               width: '100%',
               display: 'flex',
@@ -1374,12 +1469,21 @@ function PlaceholderBox({ width, aspectRatio = '1024 / 729', label = 'placeholde
   );
 }
 
+/** The booth still slides over rather than flying in: it shares the notes' tilt
+ *  and direction so the alternation still reads, but not their off-screen trip —
+ *  it's a photo seated in the intro's column, not one of the confessions. */
+const BOOTH_SLIDE = {
+  x: 80, //      px it starts off to its left
+  rotate: SLIDE.rotate,
+  durS: 0.9, //  the notes' old timing, which suits this shorter distance
+};
+
 /** The confession-booth still that opens the intro — the Dolores Park
  *  "Confession Box" sign. Centered, sliding in from the left with a slight tilt
- *  (matching the confession-note slide-in, and setting up the alternation with
- *  the first note, which arrives from the right). The asset already carries its
- *  own white border + tilt on a black field, so the corners melt into the
- *  near-black page and no extra frame is needed. */
+ *  (setting up the alternation with the first note, which arrives from the
+ *  right). The asset already carries its own white border + tilt on a black
+ *  field, so the corners melt into the near-black page and no extra frame is
+ *  needed. */
 function IntroBoothStill({ width }) {
   const ref = useRef(null);
   const inView = useInView(ref, IN_VIEW);
@@ -1399,9 +1503,9 @@ function IntroBoothStill({ width }) {
         alt="A hand-painted “Confession Box — everyone has an AI secret” sign staked in Dolores Park."
         draggable={false}
         loading="eager"
-        initial={reduce ? false : { opacity: 0, x: -SLIDE.x, rotate: -SLIDE.rotate }}
+        initial={reduce ? false : { opacity: 0, x: -BOOTH_SLIDE.x, rotate: -BOOTH_SLIDE.rotate }}
         animate={inView ? { opacity: 1, x: 0, rotate: 0 } : undefined}
-        transition={{ duration: reduce ? 0 : SLIDE.durS, ease }}
+        transition={{ duration: reduce ? 0 : BOOTH_SLIDE.durS, ease }}
         style={{ flex: '0 0 auto', width: '56%', height: 'auto', display: 'block' }}
       />
     </div>
@@ -1453,23 +1557,30 @@ function Beat({ children, minVh = 0, style, ref }) {
 /* ─── Opening loader ───────────────────────────────────────────────────── */
 
 /* ─────────────────────────────────────────────────────────────────
- * OPENING LOADER STORYBOARD  (~3s · 26-still black & white confession riffle)
+ * OPENING LOADER STORYBOARD  (~2.3s · 22-still confession riffle)
  *
  * Read top-to-bottom. Times are ms from the moment the site opens.
  *
  *      0ms   first confession still HARD-CUTS in — no crossfade, just a
  *            tiny scale settle (startScale → 1.0) — held the longest
- *            (firstHold ≈ 190ms once time-scaled). Every still is grayscale,
- *            tilted ±maxTilt°, with grain masked to its own paper shape.
+ *            (firstHold ≈ 155ms once time-scaled). Every still is drained to
+ *            black & white, tilted ±maxTilt°, with grain masked to its own
+ *            paper shape — colour arrives only with the archive itself.
  *      …     stills riffle past faster and faster; each hold eases from
  *            firstHold → lastHold, and the whole run is time-scaled to land
  *            on exactly `totalMs` no matter how many `flips` there are. So
  *            `flips` sets the CADENCE (more flips = quicker cuts), while
  *            firstHold / lastHold only shape the acceleration curve.
- *   ~2500ms  COLLAPSE — the whole stack scales down hard (1.0 → collapseTo)
- *            over the last `collapseMs` (500ms), so the riffle visibly recedes
- *            before the hero crossfade.
- *   ~3000ms  the card crossfades out (fadeOutS) → the hero title reveals.
+ *   ~1100ms  COLLAPSE — the whole stack scales down hard (1.0 → collapseTo)
+ *            over the last `collapseMs` (1200ms). That window is now over half
+ *            the run, so the stills keep riffling all the way down as the stack
+ *            recedes, rather than collapsing as a separate final beat.
+ *   ~1840ms  the last still starts dissolving (noteFadeLeadMs before the end),
+ *            over noteFadeS — so it's fully gone ~2180ms, while the stack is
+ *            STILL shrinking. The note recedes into nothing instead of riding
+ *            the collapse down at full opacity and being cut off at the handoff.
+ *   ~2300ms  the collapse finishes on empty backdrop and the card crossfades
+ *            out (fadeOutS) → the hero title reveals.
  *
  * Every knob lives in the LOADER config below and is exposed live in the
  * "Opening Loader" DialKit panel (open any page with ?dial=1). Hit the
@@ -1479,30 +1590,37 @@ const LOADER = {
   // Every still in public/confession_notes_2/ — the run samples `flips` of them
   // at random, so drawing from the whole archive keeps the intro fresh per visit.
   pool: NOTE_STILL_IDS,
-  flips: 26, //        how many stills flip past before the hero
-  totalMs: 3000, //    whole card, first still → hero handoff
+  flips: 22, //        how many stills flip past before the hero
+  totalMs: 2300, //    whole card, first still → hero handoff
   firstHold: 300, //   ms the first still lingers (slowest)
-  lastHold: 70, //     ms the final stills whip by (fastest)
+  lastHold: 105, //    ms the final stills whip by (fastest)
   developS: 0.5, //    per-still scale-settle duration (hard-cut, no opacity fade)
   startScale: 1.03, // scale each still cuts in at, settling → 1.0
   maxTilt: 3, //       deg of random ± rotation per still
-  fadeOutS: 0.22, //   loader → hero crossfade-out
-  grayscale: true, //  render the stills black & white
+  fadeOutS: 0.24, //   loader → hero crossfade-out
+  grayscale: true, //  drains the stills to black & white
   // Final collapse — whole stack shrinks away in the last beat before handoff.
-  collapseMs: 500, //  ms window for the final scale-down
-  collapseTo: 0.12, // scale the stack lands on (much smaller than the riffle)
+  collapseMs: 1200, // ms window for the final scale-down
+  collapseTo: 0.2, //  scale the stack lands on (much smaller than the riffle)
   collapseEase: [0.55, 0, 1, 0.45], // ease-in: accelerates away
+  // The last still dissolves DURING the collapse rather than riding it all the
+  // way down and then cutting: the note is gone while the stack is still
+  // shrinking, so it reads as receding into nothing instead of being switched
+  // off at full opacity. Keep noteFadeS shorter than noteFadeLeadMs or the fade
+  // runs past the collapse and the cut comes back.
+  noteFadeLeadMs: 460, // ms before the handoff that the still starts dissolving
+  noteFadeS: 0.34, //    how long that dissolve takes
   // Endgame collapse (per-flip stepping — optional extra punch before collapse).
   shrinkCount: 0, //   0 = rely on collapseMs alone
-  shrinkTo: 0.82, //   scale the very last still lands on (1 = no collapse)
+  shrinkTo: 0.91, //   scale the very last still lands on (1 = no collapse)
   shrinkS: 0.16, //    s per step — deliberately quicker than developS
   // ease-out-expo: all the travel up front, then a hard settle.
   shrinkEase: [0.19, 1, 0.22, 1],
 };
 
 /**
- * ~2s opening title card. Flips through a stack of random confession stills —
- * all pinned in the same spot, black & white — spawning faster and faster,
+ * ~2.3s opening title card. Flips through a stack of random confession stills —
+ * all pinned in the same spot — spawning faster and faster,
  * then crossfades out to reveal the hero. Every value comes from the LOADER
  * config, overridable per-instance via `config` (the DialKit panel). Reduced
  * motion skips straight to the hero.
@@ -1512,6 +1630,9 @@ function OpeningLoader({ onDone, config }) {
   const flips = Math.max(2, Math.round(cfg.flips));
   const [frame, setFrame] = useState(0);
   const [stackScale, setStackScale] = useState(1);
+  // Flips once the still should start dissolving — part-way through the
+  // collapse, not at the handoff (see noteFadeLeadMs).
+  const [noteFaded, setNoteFaded] = useState(false);
   // Which stills have decoded. The stills are full-size webps (~170KB each), so
   // on a slow connection the run's worth of them can't possibly land inside
   // totalMs — the schedule below stays fixed regardless and simply shows the most
@@ -1539,6 +1660,7 @@ function OpeningLoader({ onDone, config }) {
     setFrame(0);
     setReady(new Set());
     setStackScale(1);
+    setNoteFaded(false);
     shots.forEach((s, i) => {
       const im = new Image();
       // A still that errors is deliberately left un-ready, so it gets skipped
@@ -1565,13 +1687,23 @@ function OpeningLoader({ onDone, config }) {
     });
     const collapseAt = Math.max(0, cfg.totalMs - cfg.collapseMs);
     timers.push(setTimeout(() => setStackScale(cfg.collapseTo), collapseAt));
+    const fadeAt = Math.max(0, cfg.totalMs - cfg.noteFadeLeadMs);
+    timers.push(setTimeout(() => setNoteFaded(true), fadeAt));
     const done = setTimeout(onDone, cfg.totalMs);
     return () => {
       timers.forEach(clearTimeout);
       clearTimeout(done);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shots, cfg.firstHold, cfg.lastHold, cfg.totalMs, cfg.collapseMs, cfg.collapseTo]);
+  }, [
+    shots,
+    cfg.firstHold,
+    cfg.lastHold,
+    cfg.totalMs,
+    cfg.collapseMs,
+    cfg.collapseTo,
+    cfg.noteFadeLeadMs,
+  ]);
 
   // Walk back from the scheduled beat to the most recent still that has decoded.
   // On a fast connection that's the scheduled one; on a slow one the previous
@@ -1617,8 +1749,7 @@ function OpeningLoader({ onDone, config }) {
         // layer) rather than a flat black card. It's positioned identically
         // (fixed, top-center ellipse), so when the loader crossfades out the
         // background stays put and only the stills → hero swap underneath.
-        background:
-          'radial-gradient(ellipse 120% 80% at 50% 0%, #161515 0%, #0B0A0A 42%, #050404 74%, #010000 100%)',
+        background: PAGE_GRADIENT,
         overflow: 'hidden',
         display: 'flex',
         alignItems: 'center',
@@ -1639,12 +1770,16 @@ function OpeningLoader({ onDone, config }) {
             each still from feeling static), until the trailing stills take over
             and collapse the stack down instead. */}
         <motion.div
-          animate={{ scale: stackScale }}
-          transition={
-            stackScale === 1
-              ? { duration: 0 }
-              : { duration: cfg.collapseMs / 1000, ease: cfg.collapseEase }
-          }
+          animate={{ scale: stackScale, opacity: noteFaded ? 0 : 1 }}
+          // Split per property: the scale keeps running its long collapse while
+          // the opacity dissolves on its own, shorter clock underneath it.
+          transition={{
+            scale:
+              stackScale === 1
+                ? { duration: 0 }
+                : { duration: cfg.collapseMs / 1000, ease: cfg.collapseEase },
+            opacity: { duration: noteFaded ? cfg.noteFadeS : 0, ease },
+          }}
           style={{
             position: 'relative',
             width: 'clamp(190px, 40vw, 330px)',
@@ -1748,6 +1883,8 @@ export default function OnboardingReveal({
       fadeOutS: [LOADER.fadeOutS, 0, 1, 0.02],
       collapseMs: [LOADER.collapseMs, 100, 1500, 25],
       collapseTo: [LOADER.collapseTo, 0.05, 1, 0.01],
+      noteFadeLeadMs: [LOADER.noteFadeLeadMs, 0, 1500, 20],
+      noteFadeS: [LOADER.noteFadeS, 0.05, 1.2, 0.02],
       shrinkCount: [LOADER.shrinkCount, 0, 8, 1],
       shrinkTo: [LOADER.shrinkTo, 0.3, 1, 0.01],
       shrinkS: [LOADER.shrinkS, 0.04, 0.6, 0.01],
@@ -1822,11 +1959,11 @@ export default function OnboardingReveal({
         position: 'relative',
         minHeight: '100vh',
         color: '#CFCAB7',
-        background: '#010000',
+        background: PAGE_BG,
         overflowX: 'hidden',
       }}
     >
-      {/* 2s opening loader — flips through random confessions, then lifts to
+      {/* ~2.3s opening loader — flips through random confessions, then lifts to
           reveal the hero. `key={loaderRun}` lets the DialKit Replay remount it. */}
       <AnimatePresence>
         {loading && (
@@ -1850,17 +1987,10 @@ export default function OnboardingReveal({
           zIndex: 0,
           isolation: 'isolate',
           pointerEvents: 'none',
-          background: '#010000',
+          background: PAGE_BG,
         }}
       >
-        <div
-          style={{
-            position: 'absolute',
-            inset: 0,
-            background:
-              'radial-gradient(ellipse 120% 80% at 50% 0%, #161515 0%, #0B0A0A 42%, #050404 74%, #010000 100%)',
-          }}
-        />
+        <div style={{ position: 'absolute', inset: 0, background: PAGE_GRADIENT }} />
         <TunableGrainBackground />
       </div>
 
@@ -1893,7 +2023,10 @@ export default function OnboardingReveal({
           Hidden from the pointer AND from tab order while it's invisible —
           otherwise it stays a click target over the closing copy and a keyboard
           user lands on something nobody can see. */}
+      <style>{CTA_HOVER_CSS}</style>
+
       <motion.a
+        className="onboarding-cta"
         href="/?view=grid"
         onClick={(e) => {
           e.preventDefault();
@@ -1917,7 +2050,6 @@ export default function OnboardingReveal({
           padding: '11px 20px',
           background: 'transparent',
           borderRadius: 999,
-          color: inkA(0.82),
           cursor: 'pointer',
           fontFamily: MONO,
           fontSize: 12.5,
@@ -1927,14 +2059,7 @@ export default function OnboardingReveal({
           // Kill the UA default link underline so it doesn't paint a continuous
           // rule across the gaps — the per-word spans carry the underline.
           textDecoration: 'none',
-          transition: 'color 0.2s ease',
           pointerEvents: atClosingBeat ? 'none' : 'auto',
-        }}
-        onMouseEnter={(e) => {
-          e.currentTarget.style.color = INK;
-        }}
-        onMouseLeave={(e) => {
-          e.currentTarget.style.color = inkA(0.82);
         }}
       >
         <span style={ONBOARDING_LINK_UNDERLINE}>Skip Intro</span>
@@ -1951,8 +2076,19 @@ export default function OnboardingReveal({
           textAlign: 'center',
         }}
       >
-        {/* HERO */}
-        <Beat minVh={100} style={{ paddingTop: 'clamp(24px, 6vh, 80px)', gap: 'clamp(26px, 5vh, 52px)' }}>
+        {/* HERO — over the confession field (see AsciiWall), which holds through
+            the first screen and fades out before the booth. */}
+        <Beat
+          minVh={100}
+          style={{
+            position: 'relative',
+            paddingTop: 'clamp(24px, 6vh, 80px)',
+            gap: 'clamp(26px, 5vh, 52px)',
+          }}
+        >
+          {/* Same gate the title takes, so the field starts writing a beat after
+              the title starts revealing rather than on its own clock. */}
+          <AsciiWall start={!loading && titleGate} />
           {createElement(
             {
               hand: WordmarkDraw,
@@ -1985,11 +2121,12 @@ export default function OnboardingReveal({
         {/* BOOTH + INTRO */}
         <Beat style={{ gap: 'clamp(30px, 6vh, 60px)' }}>
           {/* The Dolores Park booth still slides in, then the intro line
-              materializes through the mask dissolve beneath it. */}
+              cascades in word by word beneath it. */}
           <IntroBoothStill width="min(100%, 900px)" />
-          <RevealWordsGL
+          <RevealWords
             text={INTRO_LINE}
             as="h2"
+            cfg={WORD_DISPLAY}
             // Same display treatment as the section[3] fragments, just a touch
             // smaller since the intro is a longer full sentence.
             style={{ ...FRAGMENT_STYLE, fontSize: 'clamp(26px, 5vw, 46px)' }}
@@ -2006,13 +2143,14 @@ export default function OnboardingReveal({
           />
         </Beat>
 
-        {/* BODY — the statement dissolves in and stops short; the three verbs
+        {/* BODY — the statement cascades in and stops short; the three verbs
             that finish it land off-axis, and ascii noise creeps in around them
             (see BodyKicker). */}
         <Beat style={{ gap: 'clamp(10px, 2vh, 20px)' }}>
-          <RevealWordsGL
+          <RevealWords
             text={BODY_LINE}
             as="h2"
+            cfg={WORD_DISPLAY}
             style={FRAGMENT_STYLE}
           />
           <BodyKicker style={FRAGMENT_STYLE} />
@@ -2030,9 +2168,10 @@ export default function OnboardingReveal({
 
         {/* FRAGMENT */}
         <Beat>
-          <RevealWordsGL
+          <RevealWords
             text={FRAGMENT_LINE}
             as="h2"
+            cfg={WORD_DISPLAY}
             style={FRAGMENT_STYLE}
           />
         </Beat>
@@ -2047,17 +2186,13 @@ export default function OnboardingReveal({
           />
         </Beat>
 
-        {/* QUESTION + ENTER — over the confession field (see AsciiWall). Also
-            what the sticky skip watches for, to get out of its way. */}
-        <Beat
-          ref={enterBeatRef}
-          minVh={100}
-          style={{ gap: 'clamp(34px, 7vh, 68px)', position: 'relative' }}
-        >
-          <AsciiWall />
-          <RevealWordsGL
+        {/* QUESTION + ENTER — also what the sticky skip watches for, to get out
+            of its way. */}
+        <Beat ref={enterBeatRef} minVh={100} style={{ gap: 'clamp(34px, 7vh, 68px)' }}>
+          <RevealWords
             text={FINAL_QUESTION}
             as="h2"
+            cfg={WORD_DISPLAY}
             justify
             style={{
               maxWidth: 480,
@@ -2131,24 +2266,54 @@ function ScrollCue({ show = false }) {
   );
 }
 
+/* Shared with OnboardingBeats — the same piece, stepped on swipes instead of
+   scrolled. Everything below is the writing and the furniture, which both
+   tellings hold in common; only the mechanic that moves between beats differs.
+   Exported from here rather than lifted into a module of its own so this file
+   stays the one place the onboarding's copy and timings are authored. */
+export {
+  OpeningLoader,
+  HeroOpeningQuestion,
+  ScrollCue,
+  EnterButton,
+  RevealWords,
+  WORD_DISPLAY,
+  FRAGMENT_STYLE,
+  INTRO_LINE,
+  BODY_LINE,
+  FRAGMENT_LINE,
+  FINAL_QUESTION,
+  NOTES,
+  noteSrc,
+  CTA_HOVER_CSS,
+  ONBOARDING_LINK_UNDERLINE,
+  PROGRESS_DASHES,
+  MONO,
+  SERIF,
+  ease,
+};
+
 /** Final ENTER cta — mono, all-caps, matching the archive's EXPLORE button. */
-function EnterButton({ onClick }) {
+// `delayS` lets a caller hang the button off the end of the words above it
+// rather than the shared default, which is set for the scrolled telling.
+function EnterButton({ onClick, start, delayS = 0.5 }) {
   const ref = useRef(null);
-  const inView = useInView(ref, { once: true, margin: '0px 0px -10% 0px' });
+  const scrolledInto = useInView(ref, { once: true, margin: '0px 0px -10% 0px' });
+  const inView = start === undefined ? scrolledInto : start;
   const reduce = useReducedMotion();
   return (
     <motion.button
       ref={ref}
+      className="onboarding-cta"
       onClick={onClick}
       initial={reduce ? false : { opacity: 0, y: 12 }}
       animate={inView ? { opacity: 1, y: 0 } : undefined}
-      transition={{ duration: reduce ? 0 : 0.7, ease, delay: reduce ? 0 : 0.5 }}
+      transition={{ duration: reduce ? 0 : 0.7, ease, delay: reduce ? 0 : delayS }}
       style={{
         padding: '17px 40px',
         background: 'transparent',
         border: 'none',
         borderRadius: 999,
-        color: '#CFCAB7',
         cursor: 'pointer',
         fontFamily: MONO,
         fontSize: 15,

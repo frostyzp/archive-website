@@ -7,18 +7,18 @@ import { WORDMARK_STROKES, WORDMARK_VIEWBOX } from './wordmarkStrokes';
 /* ─────────────────────────────────────────────────────────────────────
  * WORDMARK WRITE-ON STORYBOARD
  *
- * The hero lettering traced on stroke by stroke, top row then bottom, left to
- * right — each stroke drawn along the route the pen actually took, so the W
- * goes down-up-down-up in one pass. ms after the hold lifts:
+ * The hero lettering traced on stroke by stroke, left to right along the line —
+ * each stroke drawn along the route the pen actually took, so a W goes
+ * down-up-down-up in one pass. ms after the hold lifts:
  *
  *    0ms   nothing on screen
  *  120ms   stroke 1 draws, taking longer the further the pen has to travel
- *          …each following stroke starts 58ms after the one before
- * ~1500ms  last stroke lands, hero title reports complete
+ *          …each following stroke starts 62ms after the one before
+ * ~2300ms  last stroke lands, hero title reports complete
  * ─────────────────────────────────────────────────────────────────────
  *
  * HOW A TRACE IS POSSIBLE HERE
- * Nothing in this art is a stroked line — it is 22 filled silhouettes, one per
+ * Nothing in this art is a stroked line — it is 31 filled silhouettes, one per
  * pen stroke, with the brush grain baked into ~178 subpaths each. `pathLength`
  * on the artwork would trace the outline of every speck rather than the letter.
  *
@@ -32,32 +32,40 @@ import { WORDMARK_STROKES, WORDMARK_VIEWBOX } from './wordmarkStrokes';
  * anywhere else without touching a neighbour.
  */
 
-const SRC = '/wordmark.svg';
-const ASPECT = 852 / 607;
+const SRC = '/wwtai_2.svg';
+
+/* The flat art, shown if the vector can't be fetched. It is the same lockup
+   baked to a small transparent PNG, so a failed fetch costs the write-on rather
+   than the hero. */
+const FALLBACK = '/wordmark-line.png';
+
+const [, , VIEW_W, VIEW_H] = WORDMARK_VIEWBOX.split(' ').map(Number);
+const ASPECT = VIEW_W / VIEW_H;
 
 const TIMING = {
   firstStroke: 120, // beat before the pen touches down
 };
 
 const DRAW = {
-  // Sized well down from the WebGL version — the write-on reads better when the
-  // eye can take the whole lockup in at once.
-  maxVw: 62,
-  maxVh: 42,
-  stagger: 58, //   ms between consecutive strokes
-  rowPause: 0, //   extra beat before "TELL AI" starts
-  strokeS: 0.22, // seconds for a stroke of average length
+  // A single line this wide is held to a share of the width; the height limit
+  // only bites in a letterbox window. On a phone it is allowed more of the
+  // screen, or a lockup 5.4 times wider than it is tall lands as a thread.
+  maxVw: 64,
+  maxVh: 30,
+  maxPhoneVw: 88,
+  stagger: 62, //   ms between consecutive strokes
+  strokeS: 0.24, // seconds for a stroke of average length
   // Pen easing: fast off the mark, settling at the end of the stroke.
   ease: [0.17, 0.84, 0.44, 1],
   // How much a stroke's length sets its duration. At 0 the tiny middle bar of
   // an E takes as long to draw as the whole W, which reads as a machine; at 1
   // the pen holds one constant speed and the short strokes flick past. The
-  // routes here run 30 to 452 units, so some of this is needed.
+  // routes here run 90 to 1500 units, so some of this is needed.
   lengthBias: 0.7,
   // Slack around each mask's box, on top of the half stroke-width its round cap
   // already needs, so the grain filter's edge wander isn't cropped by it.
-  pad: 3,
-  fill: '#FFFFFF',
+  pad: 5,
+  fill: '#e7e5da', // warm off-white, held back from pure white
 };
 
 /**
@@ -65,26 +73,31 @@ const DRAW = {
  * the nav arrows and the text hero wear, so the wordmark sits in the same world.
  *
  * The numbers are NOT the ones those use, because this filter runs in the
- * wordmark's own 852×607 user space rather than on screen pixels. baseFrequency
- * is a period in those units: the arrows' 0.86 would put a noise cell inside a
- * single pixel here and read as flat static. 0.38 gives a cell of ~2.6 units,
- * fine enough that the edge frays like a dry brush rather than wobbling like a
- * wet one — at 0.2 the cell is ~5 units and the contour undulates instead.
- * `scale` is likewise user units: ±2.5 either way, about 1.7px where the hero
- * renders an 852-unit box at ~575px.
+ * wordmark's own 2461×456 user space rather than on screen pixels.
+ * baseFrequency is a period in those units: the arrows' 0.86 would put a noise
+ * cell inside a single pixel here and read as flat static. 0.23 gives a cell of
+ * ~4.3 units against letters ~430 units tall, fine enough that the edge frays
+ * like a dry brush rather than wobbling like a wet one.
  *
- * Which is the catch with all of these — the intensity is tied to the wordmark's
- * user space, so the same numbers bite harder the smaller it is drawn. The nav
- * mark doesn't use this filter at all; it's a baked PNG.
+ * Which is the catch with all of these — the intensity is tied to the
+ * wordmark's user space, so the same numbers bite differently the larger the
+ * art is drawn. These are scaled up from the ones the older, smaller lockup
+ * used, in step with how much taller its letters are.
  *
  * The art already carries real brush grain baked into ~178 subpaths per stroke;
  * this is only meant to make that edge move, not to invent texture.
+ *
+ * Which is what `scale` is held down to. At 8 units — ~5 screen px at the size
+ * the hero draws it — the displacement stopped reading as a brush edge and
+ * started throwing spikes off the tops of the letters, with specks detaching
+ * into the background: texture invented rather than moved. Half that keeps the
+ * crawl and lets the baked grain be the thing you actually see.
  */
 const GRAIN = {
-  baseFrequency: 0.38,
+  baseFrequency: 0.23,
   octaves: 3,
-  scale: 5, //  user units of edge displacement
-  fps: 10, //   seed hops/sec; 0 holds it still
+  scale: 4, //  user units of edge displacement
+  fps: 5, //    seed hops/sec; 0 holds it still
   seed: 4,
 };
 
@@ -103,8 +116,8 @@ function transitionSeconds(t) {
   return t?.duration ?? t?.visualDuration ?? DRAW.strokeS;
 }
 
-/** The 22 `d` strings, fetched once and shared. Kept out of the bundle — the
- *  art is ~1.2MB of path data and has no business in a JS chunk. */
+/** The 31 `d` strings, fetched once and shared. Kept out of the bundle — the
+ *  art is ~1.6MB of path data and has no business in a JS chunk. */
 let dCache = null;
 async function loadPathData() {
   if (dCache) return dCache;
@@ -117,8 +130,8 @@ async function loadPathData() {
 
 /**
  * The animated <filter> itself, kept in its own component so the 30fps seed
- * crawl re-renders this one node instead of the 22 clip rects around it — those
- * are mid-animation during the write-on and have no business re-rendering.
+ * crawl re-renders this one node instead of the 31 masks around it — those are
+ * mid-animation during the write-on and have no business re-rendering.
  */
 function WordmarkGrain({ id, reduceMotion, cfg }) {
   const animate = !reduceMotion && cfg.fps > 0;
@@ -178,12 +191,11 @@ export default function WordmarkDraw({ hold = false, onRevealComplete, reduceMot
     {
       size: {
         maxVw: [DRAW.maxVw, 20, 100, 1],
-        maxVh: [DRAW.maxVh, 15, 90, 1],
+        maxVh: [DRAW.maxVh, 8, 60, 1],
       },
       write: {
         firstStroke: [TIMING.firstStroke, 0, 1500, 20],
         stagger: [DRAW.stagger, 0, 260, 2],
-        rowPause: [DRAW.rowPause, 0, 1200, 20],
         // Duration + curve for a stroke of average length, with a live bezier
         // editor. Each stroke's own duration scales off this by `lengthBias`.
         stroke: { type: 'easing', duration: DRAW.strokeS, ease: DRAW.ease },
@@ -191,18 +203,18 @@ export default function WordmarkDraw({ hold = false, onRevealComplete, reduceMot
       },
       look: {
         fill: { type: 'color', default: DRAW.fill },
-        pad: [DRAW.pad, 0, 20, 0.5],
+        pad: [DRAW.pad, 0, 30, 0.5],
       },
       grain: {
         on: true,
         baseFrequency: [GRAIN.baseFrequency, 0.02, 1.2, 0.01],
         octaves: [GRAIN.octaves, 1, 4, 1],
-        scale: [GRAIN.scale, 0, 12, 0.1],
+        scale: [GRAIN.scale, 0, 20, 0.1],
         fps: [GRAIN.fps, 0, 30, 1],
       },
       // Freeze the write-on and drag through it by hand. The only practical way
-      // to judge stroke order and coverage — the whole sequence is over in
-      // well under two seconds.
+      // to judge stroke order and coverage — the whole sequence is over in a
+      // little over two seconds.
       scrub: {
         hold: false,
         at: [0, 0, 1, 0.005],
@@ -251,9 +263,11 @@ function WordmarkDrawRun({ hold, onRevealComplete, reduceMotion, config }) {
   // the pen takes across it.
   const strokes = useMemo(() => {
     if (!paths) return [];
-    return WORDMARK_STROKES.map((s) => ({ ...s, d: paths[s.i], line: WORDMARK_CENTERLINES[s.i] })).filter(
-      (s) => s.d && s.line
-    );
+    return WORDMARK_STROKES.map((s) => ({
+      ...s,
+      d: paths[s.i],
+      line: WORDMARK_CENTERLINES[s.i],
+    })).filter((s) => s.d && s.line);
   }, [paths]);
 
   const { size, write, look, scrub, grain } = config;
@@ -261,15 +275,14 @@ function WordmarkDrawRun({ hold, onRevealComplete, reduceMotion, config }) {
   const baseMs = transitionSeconds(write.stroke) * 1000;
 
   // When each stroke starts and how long it draws for, in ms after the hold
-  // lifts. The second line can be held back a beat so the two rows read as two
-  // passes of the hand.
+  // lifts.
   const { startsAt, durations, totalMs } = useMemo(() => {
     if (!strokes.length) return { startsAt: [], durations: [], totalMs: 0 };
     const mean = strokes.reduce((sum, s) => sum + s.line.len, 0) / strokes.length;
-    const starts = strokes.map(
-      (s, n) => write.firstStroke + n * write.stagger + (s.row === 1 ? write.rowPause : 0)
+    const starts = strokes.map((s, n) => write.firstStroke + n * write.stagger);
+    const spans = strokes.map(
+      (s) => baseMs * (1 - write.lengthBias + write.lengthBias * (s.line.len / mean))
     );
-    const spans = strokes.map((s) => baseMs * (1 - write.lengthBias + write.lengthBias * (s.line.len / mean)));
     return {
       startsAt: starts,
       durations: spans,
@@ -277,7 +290,7 @@ function WordmarkDrawRun({ hold, onRevealComplete, reduceMotion, config }) {
       // long stroke can still be drawing after a later short one has landed.
       totalMs: Math.max(...starts.map((t, n) => t + spans[n])),
     };
-  }, [strokes, write.firstStroke, write.stagger, write.rowPause, write.lengthBias, baseMs]);
+  }, [strokes, write.firstStroke, write.stagger, write.lengthBias, baseMs]);
 
   const doneRef = useRef(onRevealComplete);
   doneRef.current = onRevealComplete;
@@ -292,17 +305,22 @@ function WordmarkDrawRun({ hold, onRevealComplete, reduceMotion, config }) {
   const wrapStyle = {
     position: 'relative',
     display: 'block',
-    // Bounded on both axes so the lockup can't overflow a short viewport. Not
-    // `margin: auto` — an over-wide block resolves that to zero and hangs off
-    // the right; the beat's `align-items: center` already centers it.
-    width: `min(${size.maxVw}vw, calc(${size.maxVh}vh * ${ASPECT}))`,
+    // Bounded on every axis so the lockup can't overflow a short viewport or
+    // reach the bezels of a narrow one. Not `margin: auto` — an over-wide block
+    // resolves that to zero and hangs off the right; the beat's
+    // `align-items: center` already centers it.
+    width: `min(${DRAW.maxPhoneVw}vw, max(${size.maxVw}vw, 300px), calc(${size.maxVh}vh * ${ASPECT}))`,
   };
 
   // Nothing to draw with — show the flat art rather than an empty hero.
   if (failed) {
     return (
       <div ref={hostRef} style={wrapStyle}>
-        <img src={SRC} alt="What We Tell AI" style={{ display: 'block', width: '100%', height: 'auto' }} />
+        <img
+          src={FALLBACK}
+          alt="What We Tell AI"
+          style={{ display: 'block', width: '100%', height: 'auto' }}
+        />
       </div>
     );
   }
@@ -323,7 +341,10 @@ function WordmarkDrawRun({ hold, onRevealComplete, reduceMotion, config }) {
             const margin = s.line.width / 2 + look.pad;
 
             // Where this stroke sits in a hand-driven scrub of the whole run.
-            const scrubbed = Math.max(0, Math.min(1, (scrub.at * totalMs - startsAt[n]) / durations[n]));
+            const scrubbed = Math.max(
+              0,
+              Math.min(1, (scrub.at * totalMs - startsAt[n]) / durations[n])
+            );
             const target = scrub.hold ? scrubbed : run || reduce ? 1 : 0;
 
             return (

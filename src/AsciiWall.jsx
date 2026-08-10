@@ -1,15 +1,17 @@
-import { useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { motion, useInView, useReducedMotion } from 'motion/react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useReducedMotion } from 'motion/react';
 import { useDialKit } from 'dialkit';
-import { CONFESSIONS } from './confessions';
+import { CONFESSIONS as BUNDLED_CONFESSIONS } from './confessions';
+import { loadConfessionsOnce } from './loadConfessions';
 import { inkA } from './colors';
 
 /* ─────────────────────────────────────────────────────────────────────
  * ASCII WALL
  *
- * Backdrop for the closing beat: every confession in the archive run together
- * into one unbroken monospace field, then punched through with empty
- * rectangles. The closing copy sits inside the largest of those holes.
+ * Backdrop for the top of the page: every confession in the archive run
+ * together into one unbroken monospace field, punched through with small empty
+ * rectangles, holding for most of the first screen and then fading out from
+ * under the hero.
  *
  * The field is built as a CHARACTER GRID rather than as wrapping paragraphs.
  * Wrapped text can't be punched — a hole in the middle of a line would reflow
@@ -20,27 +22,61 @@ import { inkA } from './colors';
  * blanks. Nothing uses it yet, which is the point — dropping an ascii shape in
  * later is a change to the hole list, not to the wall.
  *
- * Rows render one DOM node each (~60 of them), not one per cell. A full screen
- * is ~20k characters and 20k animated spans would be unusable.
+ * Words are dimmed individually (see WORD_ALPHA) so the field reads as
+ * fragments surfacing out of a murmur rather than as one even grain.
+ *
+ * Rows render one DOM node per word (spaces stay bare text) rather than one
+ * per cell — a full screen is ~20k characters and that many animated spans
+ * would be unusable. The reveal fades those word nodes in on shuffled delays,
+ * so the field fills as scattered murmurs rather than a left→right sweep.
  * ───────────────────────────────────────────────────────────────────── */
 
 const MONO = 'var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace)';
-const EASE_OUT = [0.165, 0.84, 0.44, 1];
 
 const WALL = {
   fontSize: 9, //       px — texture, not reading size
   lineHeight: 1.4,
   letterSpacing: 0.08, // em
-  alpha: 0.2, //        dim enough that the closing copy still leads
-  holes: 18, //         empty rects punched into the field
-  holeMin: 12, //       hole width in cells; below ~10 a hole reads as a
-  holeMax: 34, //       paragraph break in the field rather than a punch
+  alpha: 0.32, //       dim enough that the hero still leads
+  // How far down the page the field reaches, and where inside that it starts
+  // fading out — so it holds through the hero and is gone by the first scroll.
+  heightVh: 85,
+  fadeFrom: 0.72, //    fraction of the height where the fade-out begins
+  holes: 40, //         empty rects punched into the field
+  holeMin: 4, //        hole width in cells — a scatter of small punches rather
+  holeMax: 16, //       than a few big voids, which left the field in slabs
   holeJitter: 0.4, //   0 = every hole square, 1 = up to 2:1 either way
-  clearW: 0.58, //      centre clearing for the copy, fraction of the grid
-  clearH: 0.44,
   seed: 7, //           reroll the layout
-  revealS: 0.55,
-  rowStaggerS: 0.016, // per row, measured out from the centre
+  // Word reveal. Each word fades in on its own clock with a shuffled delay, so
+  // the field blooms as scattered fragments rather than typing left→right.
+  wordFadeS: 0.85, //    per-word fade-in duration
+  wordSpreadS: 2.4, //   window over which word delays are scattered
+  fadeSpeedJitter: 0.35, // ± fraction on each word's duration
+  // Beat between the hero title starting to reveal and the field behind it
+  // starting to write, so the two read as one gesture that begins at the title.
+  startDelayS: 0.4,
+};
+
+/**
+ * Opacity a word can take, as a fraction of the field's `alpha`, with the share
+ * of words landing on each. Half stay at full strength so the wall still reads
+ * as one field; the rest drop back in three steps, which is what gives it the
+ * depth of a crowd talking at once. Shares must sum to 1.
+ */
+const WORD_ALPHA = [
+  { level: 1, share: 0.5 },
+  { level: 0.75, share: 0.2 },
+  { level: 0.5, share: 0.18 },
+  { level: 0.25, share: 0.12 },
+];
+
+const pickWordAlpha = (r) => {
+  let acc = 0;
+  for (const { level, share } of WORD_ALPHA) {
+    acc += share;
+    if (r < acc) return level;
+  }
+  return 1;
 };
 
 /* Deterministic PRNG (mulberry32). The layout has to survive re-renders and
@@ -57,11 +93,22 @@ function rng(seed) {
 
 /* Every confession as one stream. Uppercased and space-collapsed because at 9px
    the field reads as texture rather than as words, and lowercase turns to mush
-   at that size while caps hold an even grain. */
-const STREAM = CONFESSIONS.map((c) => c.transcription)
-  .join('   ')
-  .toUpperCase()
-  .replace(/\s+/g, ' ');
+   at that size while caps hold an even grain.
+
+   The text is the real corpus — the same transcriptions of the scanned notes
+   that the archive itself shows. It's a texture, but it's a texture you can stop
+   and read, so it has to be true. */
+const toStream = (confessions) =>
+  confessions
+    .map((c) => c.transcription)
+    .filter(Boolean)
+    .join('   ')
+    .toUpperCase()
+    .replace(/\s+/g, ' ');
+
+/* Only until the sheet answers (and if it never does). The bundled set is
+   placeholder copy, so it's a stand-in for the grain, not for the content. */
+const BUNDLED_STREAM = toStream(BUNDLED_CONFESSIONS);
 
 /** Cells of clear field kept between neighbouring holes. */
 const HOLE_GAP = 3;
@@ -74,30 +121,20 @@ const overlaps = (a, b, gap) =>
   b.y < a.y + a.h + gap;
 
 /**
- * Places the centre clearing plus `cfg.holes` random rects.
+ * Places `cfg.holes` random rects.
  *
  * Holes are sized in CELLS, but a cell is much taller than it is wide, so a
  * square hole needs roughly twice as many columns as rows — hence the aspect
  * correction. Without it every "square" comes out as a tall slot.
  *
- * Placement is rejection-sampled against everything already down, the clearing
- * included. Allowed to overlap they merge into one ragged void — the squares
- * only read as squares when there's field between them.
+ * Placement is rejection-sampled against everything already down. Allowed to
+ * overlap they merge into one ragged void — the squares only read as squares
+ * when there's field between them.
  */
 function makeHoles({ cols, rows, cellW, cellH }, cfg) {
   const rand = rng(Math.round(cfg.seed));
   const aspect = cellH / cellW;
-
-  const clearW = Math.round(cols * cfg.clearW);
-  const clearH = Math.round(rows * cfg.clearH);
-  const holes = [
-    {
-      x: Math.round((cols - clearW) / 2),
-      y: Math.round((rows - clearH) / 2),
-      w: clearW,
-      h: clearH,
-    },
-  ];
+  const holes = [];
 
   for (let n = 0; n < Math.round(cfg.holes); n++) {
     const w = Math.round(cfg.holeMin + rand() * Math.max(0, cfg.holeMax - cfg.holeMin));
@@ -122,12 +159,12 @@ function makeHoles({ cols, rows, cellW, cellH }, cfg) {
 }
 
 /** Fills the grid from the stream, then clears (or stamps) each hole. */
-function buildRows({ cols, rows }, holes) {
+function buildRows({ cols, rows }, holes, stream) {
   const grid = [];
   let i = 0;
   for (let r = 0; r < rows; r++) {
     const line = new Array(cols);
-    for (let c = 0; c < cols; c++) line[c] = STREAM[i++ % STREAM.length];
+    for (let c = 0; c < cols; c++) line[c] = stream[i++ % stream.length];
     grid.push(line);
   }
   holes.forEach(({ x, y, w, h, art }) => {
@@ -140,49 +177,92 @@ function buildRows({ cols, rows }, holes) {
   return grid.map((line) => line.join(''));
 }
 
-const PROBE = 'X'.repeat(50);
-const IN_VIEW = { once: true, margin: '0px 0px -20% 0px' };
+/**
+ * Splits a row into runs of spaces and runs of glyphs, giving each glyph run its
+ * own opacity level. A "word" here is whatever sits between two blanks, so the
+ * corpus's own words plus the fragments the row edges and the holes cut out of
+ * them — which is the right unit either way: it is what the eye groups.
+ */
+const toWords = (line, rand) =>
+  (line.match(/ +|[^ ]+/g) ?? []).map((t) =>
+    t[0] === ' ' ? { t, level: 1 } : { t, level: pickWordAlpha(rand()) }
+  );
 
-/* The field is scoped to one beat, so without this it would begin and end on a
-   ruler-straight horizontal cut as you scroll into it. Fades the top and bottom
-   rows out instead, so it surfaces out of the beats either side. */
-const EDGE_FADE = 'linear-gradient(to bottom, transparent, #000 15%, #000 85%, transparent)';
+const PROBE = 'X'.repeat(50);
+
+/* The field starts at the very top of the page, so it wants no fade there — but
+   it has to stop somewhere, and without this it would end on a ruler-straight
+   horizontal cut. Holds full strength through the hero, then fades the last rows
+   out into the beat below. */
+const EDGE_FADE = `linear-gradient(to bottom, #000 ${WALL.fadeFrom * 100}%, transparent)`;
 
 /**
- * Full-bleed confession field behind the closing beat.
+ * Full-bleed confession field behind the top of the page.
  *
  * Breaks out of the 660px reading column with a 100vw box, and sits at z-index
  * -1 so the beat's own copy paints over it — a positioned child at z 0 would
  * cover the in-flow text instead.
+ *
+ * `start` is the hero title beginning its own reveal: the field holds unwritten
+ * until then. It can't key off scrolling into view the way a mid-page beat would
+ * — it opens the page already in view, and the loader means "in view" and "the
+ * hero has started" are seconds apart.
  */
-export default function AsciiWall() {
+export default function AsciiWall({ start = true }) {
   const hostRef = useRef(null);
   const probeRef = useRef(null);
-  const inView = useInView(hostRef, IN_VIEW);
   const reduce = useReducedMotion();
 
-  const config = useDialKit('Closing Wall', {
+  const config = useDialKit('Confession Wall', {
     type: {
       fontSize: [WALL.fontSize, 5, 20, 0.5],
-      alpha: [WALL.alpha, 0.02, 0.6, 0.01],
+      // Top of the range is literal full-strength ink: the per-word levels are
+      // fractions of this, so it sets how loud the whole field is.
+      alpha: [WALL.alpha, 0.02, 1, 0.01],
     },
     holes: {
-      count: [WALL.holes, 0, 60, 1],
+      count: [WALL.holes, 0, 120, 1],
       min: [WALL.holeMin, 2, 40, 1],
       max: [WALL.holeMax, 2, 80, 1],
       jitter: [WALL.holeJitter, 0, 1, 0.05],
       seed: [WALL.seed, 1, 200, 1],
     },
-    clearing: {
-      w: [WALL.clearW, 0.2, 0.95, 0.01],
-      h: [WALL.clearH, 0.1, 0.9, 0.01],
-    },
     reveal: {
-      fade: [WALL.revealS, 0.05, 2, 0.05],
-      rowStagger: [WALL.rowStaggerS, 0, 0.12, 0.002],
+      delay: [WALL.startDelayS, 0, 3, 0.05],
+      fade: [WALL.wordFadeS, 0.1, 3, 0.05],
+      spread: [WALL.wordSpreadS, 0, 6, 0.1],
     },
   });
-  const { type: typeCfg, holes: holeCfg, clearing, reveal } = config;
+  const { type: typeCfg, holes: holeCfg, reveal } = config;
+
+  // Pull the corpus on mount rather than when the beat comes into view: the
+  // reader has the whole intro to scroll through first, so the sheet has landed
+  // long before the field is needed. On the archive route this is the same
+  // request `useConfessions` makes (see `loadConfessionsOnce`); on /onboarding,
+  // where nothing else loads the corpus, it's the only one.
+  const [sheetStream, setSheetStream] = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    loadConfessionsOnce()
+      .then((confessions) => {
+        if (cancelled) return;
+        setSheetStream(toStream(confessions) || null);
+      })
+      .catch((error) => {
+        // eslint-disable-next-line no-console
+        console.warn('[ascii wall] sheet load failed, using bundled text', error);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Swapping the text while words are fading in would reshuffle mid-reveal, so
+  // the stream is only allowed to change up to the moment the reveal starts —
+  // after that the field is whatever was in hand.
+  const streamRef = useRef(BUNDLED_STREAM);
+  if (!start) streamRef.current = sheetStream || BUNDLED_STREAM;
+  const stream = streamRef.current;
 
   // Measure the host and one character, then derive the grid. Cell width has to
   // be measured rather than computed — it depends on the resolved mono face and
@@ -223,19 +303,23 @@ export default function AsciiWall() {
 
   const lines = useMemo(() => {
     if (!box) return [];
-    return buildRows(
+    const rows = buildRows(
       box,
       makeHoles(box, {
         holes: holeCfg.count,
         holeMin: Math.min(holeCfg.min, holeCfg.max),
         holeMax: Math.max(holeCfg.min, holeCfg.max),
         holeJitter: holeCfg.jitter,
-        clearW: clearing.w,
-        clearH: clearing.h,
         seed: holeCfg.seed,
-      })
+      }),
+      stream
     );
-  }, [box, holeCfg, clearing]);
+    // One walk of the PRNG across the whole field, so the shares in WORD_ALPHA
+    // hold over the wall rather than per row. Seeded off the layout so a resize
+    // doesn't re-roll which words are bright.
+    const rand = rng(Math.round(holeCfg.seed) * 31 + 7);
+    return rows.map((line) => toWords(line, rand));
+  }, [box, holeCfg, stream]);
 
   const type = {
     fontFamily: MONO,
@@ -244,7 +328,68 @@ export default function AsciiWall() {
     letterSpacing: `${WALL.letterSpacing}em`,
     whiteSpace: 'pre',
   };
-  const mid = (lines.length - 1) / 2;
+
+  // Per-word fade delay + duration. Seeded off the layout seed so a resize
+  // (which rebuilds the grid) doesn't re-roll the timing mid-reveal. Delays are
+  // shuffled across the whole field — no left→right or centre-out bias.
+  const wordTiming = useMemo(() => {
+    const rand = rng(Math.round(holeCfg.seed) * 977 + 13);
+    let first = Infinity;
+    const rows = lines.map((row) =>
+      row.map(({ t }) => {
+        if (t[0] === ' ') return null;
+        const offset = rand() * reveal.spread;
+        const dur = Math.max(
+          0.05,
+          reveal.fade * (1 + (rand() * 2 - 1) * WALL.fadeSpeedJitter)
+        );
+        if (offset < first) first = offset;
+        return { offset, dur };
+      })
+    );
+    if (!Number.isFinite(first)) first = 0;
+    // Slide the whole spread so the first word lands exactly on `delay`.
+    return rows.map((row) =>
+      row.map((t) => (t ? { delay: reveal.delay + t.offset - first, dur: t.dur } : null))
+    );
+  }, [lines, holeCfg.seed, reveal.delay, reveal.spread, reveal.fade]);
+
+  // Spaces stay bare text; every glyph-run is a span so it can fade in on its
+  // own clock. Dimmed words keep their softer ink via colour (opacity animates
+  // 0→1 either way).
+  const renderRow = (row, timings) =>
+    row.map(({ t, level }, i) => {
+      if (t[0] === ' ') return t;
+      const timing = timings?.[i];
+      const style = {
+        ...(level < 1 ? { color: inkA(typeCfg.alpha * level) } : null),
+      };
+      if (reduce) {
+        return (
+          <span key={i} style={style}>
+            {t}
+          </span>
+        );
+      }
+      if (!start || !timing) {
+        return (
+          <span key={i} style={{ ...style, opacity: 0 }}>
+            {t}
+          </span>
+        );
+      }
+      return (
+        <span
+          key={i}
+          style={{
+            ...style,
+            animation: `ascii-wall-word ${timing.dur}s ease-out ${timing.delay}s both`,
+          }}
+        >
+          {t}
+        </span>
+      );
+    });
 
   return (
     <div
@@ -253,7 +398,7 @@ export default function AsciiWall() {
       style={{
         position: 'absolute',
         top: 0,
-        bottom: 0,
+        height: `${WALL.heightVh}vh`,
         left: '50%',
         width: box ? box.vw : '100vw',
         transform: 'translateX(-50%)',
@@ -267,23 +412,12 @@ export default function AsciiWall() {
         ...type,
       }}
     >
+      <style>{'@keyframes ascii-wall-word{from{opacity:0}to{opacity:1}}'}</style>
       <span ref={probeRef} style={{ ...type, position: 'absolute', visibility: 'hidden' }}>
         {PROBE}
       </span>
       {lines.map((line, i) => (
-        <motion.div
-          key={i}
-          initial={reduce ? false : { opacity: 0 }}
-          animate={{ opacity: inView ? 1 : 0 }}
-          transition={{
-            duration: reduce ? 0 : reveal.fade,
-            ease: EASE_OUT,
-            // Out from the middle, so the field grows around the copy.
-            delay: reduce ? 0 : Math.abs(i - mid) * reveal.rowStagger,
-          }}
-        >
-          {line}
-        </motion.div>
+        <div key={i}>{renderRow(line, wordTiming[i])}</div>
       ))}
     </div>
   );

@@ -15,7 +15,7 @@ import { inkA } from './colors';
  *    0ms   nothing — the body line above is still dissolving in
  *  900ms   "communicate"  rises + untilts from a steeper angle
  * 1160ms   "work"         same, tilted harder the other way
- * 1420ms   "think…"       same, nearly upright
+ * 1420ms   "think"        same, nearly upright
  *
  * The marks belong to the words, so each group trails ITS OWN verb rather than
  * the whole set arriving at one time. Measured from the moment that verb lands:
@@ -50,7 +50,7 @@ const VERBS = {
   items: [
     { text: 'communicate', tilt: -3.4, align: 'flex-start', nudgeX: '1%' },
     { text: 'work', tilt: -11, align: 'flex-end', nudgeX: '-9%' },
-    { text: 'think…', tilt: 1.6, align: 'center', nudgeX: '-6%' },
+    { text: 'think', tilt: 1.6, align: 'center', nudgeX: '-6%' },
   ],
 };
 
@@ -123,10 +123,20 @@ const NEURONS = {
 
    They RING the verbs rather than sitting under them, which is possible because
    each verb is pushed to one side: "communicate" runs left, so the noise gathers
-   to its right; "work" runs right, so the noise gathers to its left; "think…" is
-   centred and short, leaving both gutters open. Nothing reaches past ~86% or
-   below ~-4% — the page has no overflow-x guard, so a mark hanging further would
-   pull a horizontal scrollbar on a phone.
+   to its right; "work" runs right, so the noise gathers to its left; "think" is
+   centred and short, leaving both gutters open. Nothing hangs further left than
+   ~-4%, and nothing crosses the right edge — the page has no overflow-x guard, so
+   a mark reaching past the block would pull a horizontal scrollbar on a phone.
+
+   Every position is set against the three word boxes, measured off a real render:
+   "communicate" holds x 0–23% / y -4–38%, "work" x 90–100% / y 28–72%, "think"
+   x 45–54% / y 66–101%. That diagonal is what the ring is drawn around, and it is
+   also the constraint — a verb is ~40px tall against marks of up to 51px, so a
+   mark can't clear one vertically without climbing into the body line above. Hence
+   the side gutters, roughly two marks to a verb, grouped below by which verb they
+   belong to. It is also why the two-row motifs are scaled down here: at full size
+   the right gutter only has the height for two of them, and the third ended up
+   either sitting on the type or trailing off the bottom of the screen.
 
    Motifs repeat, so each instance carries a `phase` (ms into the loop it starts
    at) — without it two SPARKs would be the same deterministic function of the
@@ -139,17 +149,19 @@ const MARKS = {
   alpha: 0.45, //  dim enough to read as marginalia, not as copy
   size: 'clamp(12px, 2vw, 17px)',
   items: [
-    // ── around "communicate" ──
-    { id: 'c-spark', motif: SPARK, top: '-13%', left: '3%', tilt: -5, phase: 0, delay: 0 },
-    { id: 'c-cells', motif: NEURONS, top: '-6%', left: '62%', tilt: 3, scale: 0.9, dim: 0.8, phase: 380, delay: 0.18 },
-    // ── around "work" ──
-    { id: 'w-blocks', motif: BLOCKS, top: '18%', left: '74%', tilt: 0, phase: 0, delay: 0.06 },
-    { id: 'w-spark', motif: SPARK, top: '40%', left: '-3%', tilt: 4, scale: 0.85, dim: 0.75, phase: 540, delay: 0.24 },
-    // ── around "think…" ──
-    { id: 't-blocks', motif: BLOCKS, top: '60%', left: '1%', tilt: -3, scale: 0.85, dim: 0.75, phase: 300, delay: 0.3 },
-    { id: 't-spark', motif: SPARK, top: '70%', left: '72%', tilt: -6, scale: 0.9, dim: 0.85, phase: 220, delay: 0.14 },
-    { id: 't-cells', motif: NEURONS, top: '88%', left: '28%', tilt: 0, phase: 0, delay: 0.1 },
-    { id: 'b-cells', motif: NEURONS, top: '104%', left: '70%', tilt: 2, scale: 0.8, dim: 0.7, phase: 660, delay: 0.36 },
+    // ── off "communicate"'s right shoulder, and on round to the right gutter ──
+    { id: 'c-spark', motif: SPARK, top: '-16%', left: '26%', tilt: -5, phase: 0, delay: 0 },
+    { id: 'c-cells', motif: NEURONS, top: '-14%', left: '62%', tilt: 3, scale: 0.8, dim: 0.8, phase: 380, delay: 0.18 },
+    // ── inboard of "work", and its far-left gutter ──
+    { id: 'w-blocks', motif: BLOCKS, top: '36%', left: '62%', tilt: 0, scale: 0.8, phase: 0, delay: 0.06 },
+    { id: 'w-spark', motif: SPARK, top: '40%', left: '-2%', tilt: 4, scale: 0.85, dim: 0.75, phase: 540, delay: 0.24 },
+    // ── down the inside, between "communicate" and "think" ──
+    { id: 't-cells', motif: NEURONS, top: '44%', left: '25%', tilt: 0, scale: 0.85, phase: 0, delay: 0.1 },
+    // ── "think"'s two open gutters ──
+    { id: 't-blocks', motif: BLOCKS, top: '74%', left: '1%', tilt: -3, scale: 0.8, dim: 0.75, phase: 300, delay: 0.3 },
+    { id: 't-spark', motif: SPARK, top: '92%', left: '60%', tilt: -6, scale: 0.9, dim: 0.85, phase: 220, delay: 0.14 },
+    // ── and back up under "work", closing the ring ──
+    { id: 'b-cells', motif: NEURONS, top: '78%', left: '78%', tilt: 2, scale: 0.7, dim: 0.7, phase: 660, delay: 0.36 },
   ],
 };
 
@@ -162,9 +174,13 @@ const IN_VIEW = { once: true, margin: '0px 0px -24% 0px' };
  * is the only place the order lives. Under reduced motion every stage resolves
  * at once with no tilt animation and no running motifs.
  */
-export default function BodyKicker({ style }) {
+/* `start` overrides the scroll trigger for pages that don't scroll: on the beat
+   telling of the onboarding, the whole thing sits in one fixed screen, where
+   nothing ever "comes into view" and the arriving beat is the cue instead. */
+export default function BodyKicker({ style, start }) {
   const ref = useRef(null);
-  const inView = useInView(ref, IN_VIEW);
+  const scrolledInto = useInView(ref, IN_VIEW);
+  const inView = start === undefined ? scrolledInto : start;
   const reduce = useReducedMotion();
 
   const [replay, setReplay] = useState(0);

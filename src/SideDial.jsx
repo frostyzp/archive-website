@@ -740,17 +740,17 @@ const INACTIVE_OPACITY = {
 // it's a transform (not layout), the image visually overflows its box — so the
 // transcription/meta below must be sized to the *scaled* width to line up with
 // the image's real edges. Single source of truth for both.
-const ACTIVE_IMG_SCALE = 1.12;
+export const ACTIVE_IMG_SCALE = 1.12;
 
 // ── Active-note size (single source of truth) ─────────────────────────────
 // The card is HEIGHT-DRIVEN: its height is a fraction of the viewport (capped in
 // px), and the width then settles to the image's own aspect ratio, capped so a
 // wide (landscape) note never spills past the screen edges. The desktop active
 // card is scaled a further ACTIVE_IMG_SCALE on top. Bump these to grow the note.
-const CARD_HEIGHT_VH = 46; //    desktop filmstrip note height (vh)
-const CARD_HEIGHT_MAX = 512; //  px cap on that height
-const CARD_WIDTH_VW = 84; //     width cap for wide/landscape notes (vw)
-const CARD_WIDTH_MAX = 560; //   px cap on that width
+export const CARD_HEIGHT_VH = 46; //    desktop filmstrip note height (vh)
+export const CARD_HEIGHT_MAX = 512; //  px cap on that height
+export const CARD_WIDTH_VW = 84; //     width cap for wide/landscape notes (vw)
+export const CARD_WIDTH_MAX = 560; //   px cap on that width
 // Mobile carousel notes run a touch shorter than desktop so the prev/next peeks
 // survive; V_STACK_PAD_VH (below) is derived from this so centering stays exact.
 const CARD_HEIGHT_VH_MOBILE = 44;
@@ -769,16 +769,44 @@ const GRAIN_HOLD_MS = 350;
  * the previous peeking from the top edge and the next from the bottom. Native
  * vertical scroll-snap drives it (swipe up/down). */
 // Gap (px) between stacked notes. Bigger gap ⇒ smaller neighbour peek.
-// ~118 lands a clear ~120px peek on a full-height phone (~80px at 760px tall).
-const V_STACK_GAP = 118;
+// The active note's transcript is taken out of flow (see st.vMetaBlock) so every
+// item measures the same height, which means this gap is also the only thing
+// separating that transcript from the next note — hence it has to clear the
+// transcript's own cap (~112px) plus its offset, rather than the ~118 that used
+// to be enough when the transcript pushed the next note down by its own height.
+const V_STACK_GAP = 140;
 // Vertical padding (vh) above the first / below the last note so either can
 // scroll to the exact viewport centre: (100 − noteVh)/2, kept in sync with the
 // mobile note height so the active note always lands dead-centre.
 const V_STACK_PAD_VH = (100 - CARD_HEIGHT_VH_MOBILE) / 2;
+// Px the resting note sits BELOW the exact viewport centre. Zero — the note is
+// centred. It used to sit lower to duck a category label pinned over the top of
+// the stack; that label now rides at the bottom with the note counter (see
+// NoteOpenView's mStepperWrap), so the chrome is bottom-weighted and any
+// downward bias would push the note toward the crowded edge, not away from it.
+//
+// Kept as a named constant because three places must agree on it or the snap
+// fights the scroll detector: `scroll-padding-top` (which moves the snapport's
+// centre, and so where CSS parks a note), the JS centring/detection math, and
+// the start/end padding (which is what lets the first and last note reach that
+// position at all — get it wrong under mandatory snap and the end notes become
+// unreachable).
+const V_CENTER_OFFSET = 0;
+// Px a note may sit off the resting line before we bother correcting it. Only
+// ever absorbs sub-pixel layout residue — a real move to the next note is ~500px
+// — and stops that residue being handed to the snap engine (see
+// scrollItemToCenter for why that's destructive).
+const SNAP_EPSILON = 2;
 // Neighbour opacity by ring distance. Higher than the horizontal strip's faint
 // 0.18/0.07 so the peeking prev/next notes actually read on a phone against the
 // pure-black backdrop.
 const V_INACTIVE_OPACITY = { near: 0.46, far: 0.14 };
+// How many notes either side of the focus to mount fully (image + meta). The
+// rest are height-only spacers so scroll-snap geometry stays correct without
+// downloading/decoding every note in the category.
+const V_RENDER_WINDOW = 2;
+const V_SCROLL_SETTLE_MS = 150;
+const V_IMAGE_HEIGHT = `min(${CARD_HEIGHT_VH_MOBILE}vh, ${CARD_HEIGHT_MAX}px)`;
 
 const HOVER_EASE = 'cubic-bezier(0.17, 0.84, 0.44, 1)';
 
@@ -926,6 +954,7 @@ export function DialNavHint({
         <span
           style={{
             ...dialNavHintStyles.keyGlyph,
+            ...(item.kind === 'exit' ? null : dialNavHintStyles.keyGlyphArrow),
             ...(grained ? { filter: `url(#${grainId})` } : null),
           }}
         >
@@ -1034,12 +1063,19 @@ const dialNavHintStyles = {
     // ESC / ← / → / ↑ / ↓ as plain Courier glyphs so the legend reads as
     // monospaced text rather than drawn icons. White rather than the parchment
     // parchment cream used elsewhere, and near-opaque, since the grain filter
-    // (see NAV_GRAIN) eats these 12px edges and costs perceived brightness.
+    // (see NAV_GRAIN) eats these small edges and costs perceived brightness.
     fontFamily: COURIER,
     fontSize: 12,
     letterSpacing: '0.04em',
     lineHeight: 1,
     color: 'rgba(255, 255, 255, 0.96)',
+  },
+  keyGlyphArrow: {
+    // Stepped up off the ESC size: a lone arrow sitting in the same key box
+    // reads much smaller than a three-letter word does, so matching it
+    // metrically leaves the arrows looking undersized. Matching it optically
+    // means going bigger.
+    fontSize: 17,
   },
 };
 
@@ -2154,6 +2190,15 @@ export function HorizontalConfessionStack({
                 src={item.confession.image}
                 alt={`Confession ${item.confession.id}`}
                 draggable={false}
+                // Off the raster path, like the grid's tiles and the vertical
+                // stack's cards. The strip carries COPY_COUNT × every note for
+                // the infinite scroll, so a synchronous decode here is paid on
+                // the frame the view is trying to appear on. (Not `lazy`: the
+                // cards take their width from the image's intrinsic size, and
+                // `allImagesResolved` gates the coverflow's geometry on every
+                // image having loaded — an unloaded neighbour collapses the
+                // strip and the stride math with it.)
+                decoding="async"
                 style={{
                   ...st.cardImg,
                   opacity: isActive
@@ -2286,6 +2331,12 @@ const META_CROSSFADE_GAP = 24;
 const META_SLOT_MOVE_S = 0.42;
 /** How long the outgoing value takes to clear before the new one types in. */
 const META_VALUE_EXIT_S = 0.14;
+/**
+ * Offset between the DATE row starting to type and the LOCATION row following.
+ * Short enough that they still read as one block arriving — long enough that the
+ * block is read top-down instead of both rows switching on at once.
+ */
+const META_ROW_STAGGER_S = 0.1;
 
 /**
  * Pins the DATE / LOCATION block above the active card's image.
@@ -2396,8 +2447,11 @@ function MetaCrossfadeSlot({ confession, reduceMotion, columnWidth, anchorEl }) 
  * wordFadeS. Split per CHARACTER rather than per word (TranscriptReveal splits on
  * whitespace) because these values are only a token or two long — a date like
  * "4/22/2026" is a single word and would get no stagger at all.
+ *
+ * `delay` holds the whole value back, which is how the rows of the block are
+ * offset from one another (see META_ROW_STAGGER_S).
  */
-function MetaValueReveal({ text, reduceMotion }) {
+function MetaValueReveal({ text, reduceMotion, delay = 0 }) {
   return (
     // A motion root so the outgoing value can clear itself before the incoming
     // one types in (the caller swaps these inside an AnimatePresence).
@@ -2419,7 +2473,7 @@ function MetaValueReveal({ text, reduceMotion }) {
               transition={{
                 duration: TRANSCRIPT_REVEAL.wordFadeS,
                 ease: EASE_OUT,
-                delay: i * TRANSCRIPT_REVEAL.wordStagger,
+                delay: delay + i * TRANSCRIPT_REVEAL.wordStagger,
               }}
             >
               {ch}
@@ -2438,7 +2492,7 @@ function MetaValueReveal({ text, reduceMotion }) {
  * character (see MetaValueReveal); the dial page fades each value in as one
  * piece after META_TIMING.metaRow.
  */
-function NoteMeta({ confession, reduceMotion, columnWidth = '100%', crossfadeBlock = false }) {
+export function NoteMeta({ confession, reduceMotion, columnWidth = '100%', crossfadeBlock = false }) {
   const date = confession?.metadata?.date || '';
   const location = confession?.metadata?.location || '';
   if (!date && !location) return null;
@@ -2457,9 +2511,12 @@ function NoteMeta({ confession, reduceMotion, columnWidth = '100%', crossfadeBlo
     // one continuous object being relabelled rather than something that blinks
     // out and back. Values reveal on the transcript's stagger, which is why the
     // outgoing one clears first (mode="wait") instead of crossfading under it.
+    //
+    // The rows are offset from each other rather than typing in together, so the
+    // block resolves downward the way it's read.
     return (
       <div style={{ ...st.metaAboveRow, width: columnWidth }}>
-        {rows.map(([label, value]) => (
+        {rows.map(([label, value], row) => (
           <div key={label} style={st.metaAboveItem}>
             <span style={st.sideMetaLabel}>{label}</span>
             <AnimatePresence mode="wait" initial={false}>
@@ -2467,6 +2524,7 @@ function NoteMeta({ confession, reduceMotion, columnWidth = '100%', crossfadeBlo
                 key={`${confession?.id}-${label}`}
                 text={value}
                 reduceMotion={reduceMotion}
+                delay={row * META_ROW_STAGGER_S}
               />
             </AnimatePresence>
           </div>
@@ -2648,6 +2706,12 @@ function TranscriptReveal({ text, reduceMotion, instantWords = false }) {
  * tilt logic is untouched. No infinite loop here — a flat, snappable list is
  * plenty for touch and far more robust.
  */
+/** Viewport-space y a note rests at: the scrollport's centre, pushed down by
+ *  V_CENTER_OFFSET. The CSS half of this is `scroll-padding-top` on
+ *  st.vScrollContainer — the two have to describe the same line, or the browser
+ *  parks a note somewhere the detector then reads as off-centre. */
+const vCenterY = (top, clientHeight) => top + clientHeight / 2 + V_CENTER_OFFSET;
+
 export function VerticalConfessionStack({
   confessions,
   activeIndex,
@@ -2658,8 +2722,15 @@ export function VerticalConfessionStack({
   transcriptInstantWords = false,
 }) {
   const scrollRef = useRef(null);
+  const itemRefs = useRef([]);
+  const imgRefs = useRef([]);
+  const itemStrideRef = useRef(0);
   const reduceMotion = useReducedMotion();
   const [metaAnchorEl, setMetaAnchorEl] = useState(null);
+  const [isScrolling, setIsScrolling] = useState(false);
+  // Drives the render window during a flick — updated on every scroll frame so
+  // notes we're flying past mount before activeIndex catches up from the parent.
+  const [scrollFocus, setScrollFocus] = useState(activeIndex);
   const inactive = useInactiveCardParams();
   const noiseEnabled = inactive.noise?.enabled ?? true;
   const inactiveFilter = [
@@ -2670,26 +2741,26 @@ export function VerticalConfessionStack({
     .filter(Boolean)
     .join(' ');
   const grainOnlyFilter = noiseEnabled ? `url(#${CARD_FILTER_ID})` : 'none';
+  // Vertical carousel is mobile-only — keep the SVG grain static; the 30fps
+  // seed animation is pure overhead on a phone and runs during scroll.
+  const stackNoiseParams = useMemo(
+    () => ({
+      ...inactive,
+      noise: { ...(inactive.noise ?? {}), animate: false },
+    }),
+    [inactive]
+  );
 
   const n = confessions.length;
   const activeIndexRef = useRef(activeIndex);
   activeIndexRef.current = activeIndex;
-  // 'user' = the index changed because the user scrolled (don't fight them with
-  // a programmatic re-centre); 'external' = dial/click/mount (DO centre it).
   const sourceRef = useRef('external');
   const hasInitialScrolledRef = useRef(false);
-  // Last index we programmatically scrolled to — lets the external-change effect
-  // measure the jump distance so a far theme jump can snap instantly instead of
-  // gliding across every note in between.
   const lastScrolledIndexRef = useRef(activeIndex);
-  // Wall-clock through which scroll-detection is muted after a programmatic
-  // re-centre (dial / theme chip / card tap). The settle event a jump fires
-  // would otherwise pick a note we scrolled past and yank activeIndex off the
-  // target — so the stack renders one note active while sitting on another.
   const progScrollUntilRef = useRef(0);
+  const rafRef = useRef(0);
+  const scrollEndRef = useRef(0);
 
-  // Grain-hold on the freshly-active note — matches the horizontal stack so the
-  // note "settles" into focus rather than de-graining the instant it centres.
   const [grainHeld, setGrainHeld] = useState(true);
   useLayoutEffect(() => {
     setGrainHeld(true);
@@ -2697,37 +2768,50 @@ export function VerticalConfessionStack({
     return () => clearTimeout(t);
   }, [activeIndex]);
 
-  // Centre item `i`'s IMAGE in the viewport (not the whole item — the active
-  // item is taller because of its date row, which would otherwise push the
-  // image low). Image box heights are CSS-fixed, so this is stable pre-load.
+  useEffect(() => {
+    setScrollFocus(activeIndex);
+  }, [activeIndex]);
+
+  itemRefs.current.length = n;
+  imgRefs.current.length = n;
+
+  const renderLo = Math.max(
+    0,
+    Math.min(activeIndex, scrollFocus) - V_RENDER_WINDOW
+  );
+  const renderHi = Math.min(
+    n - 1,
+    Math.max(activeIndex, scrollFocus) + V_RENDER_WINDOW
+  );
+
+  useLayoutEffect(() => {
+    const img = imgRefs.current[activeIndex];
+    if (!img) return;
+    const h = img.getBoundingClientRect().height;
+    if (h > 0) itemStrideRef.current = h + V_STACK_GAP;
+  }, [activeIndex, n, renderLo, renderHi]);
+
   const scrollItemToCenter = useCallback((i, behavior) => {
     const el = scrollRef.current;
     if (!el) return;
-    const item = el.querySelectorAll('[data-vcard]')[i];
+    const item = itemRefs.current[i];
     if (!item) return;
-    const img = item.querySelector('img') || item;
+    const img = imgRefs.current[i] || item.querySelector('img') || item;
     const ir = img.getBoundingClientRect();
     const er = el.getBoundingClientRect();
-    const delta = ir.top + ir.height / 2 - (er.top + el.clientHeight / 2);
-    // Mute scroll-detection for the length of this glide (plus a settle margin)
-    // so the events it fires don't reassign activeIndex to a passed-over note.
+    const delta = ir.top + ir.height / 2 - vCenterY(er.top, el.clientHeight);
+    if (Math.abs(delta) < SNAP_EPSILON) return;
     progScrollUntilRef.current =
       performance.now() + (behavior === 'smooth' ? 700 : 260);
     el.scrollBy({ top: delta, behavior: behavior || 'auto' });
   }, []);
 
-  // Seed: centre the initially-active note on mount (no animation).
   useLayoutEffect(() => {
     if (hasInitialScrolledRef.current) return;
     scrollItemToCenter(activeIndexRef.current, 'auto');
     hasInitialScrolledRef.current = true;
   }, [scrollItemToCenter]);
 
-  // External index change (dial jump / theme chip / card tap) → centre it. Skip
-  // when the change came from the user's own scroll. Near moves glide smoothly;
-  // far jumps (a theme chip that lands many notes away) snap instantly — a
-  // smooth glide across 20+ notes both reads as a blur and lets every note we
-  // pass over register as "centred" and yank activeIndex off the target.
   useEffect(() => {
     if (sourceRef.current === 'user') {
       sourceRef.current = 'external';
@@ -2741,23 +2825,24 @@ export function VerticalConfessionStack({
     scrollItemToCenter(activeIndex, behavior);
   }, [activeIndex, reduceMotion, scrollItemToCenter]);
 
-  // Detect the centred note on scroll (rAF-throttled) and report it upward.
-  const rafRef = useRef(0);
-  const handleScroll = () => {
-    if (rafRef.current) return;
-    rafRef.current = requestAnimationFrame(() => {
-      rafRef.current = 0;
-      // Skip while a programmatic re-centre is still settling (see the ref).
-      if (performance.now() < progScrollUntilRef.current) return;
-      const el = scrollRef.current;
-      if (!el) return;
-      const er = el.getBoundingClientRect();
-      const center = er.top + el.clientHeight / 2;
-      const items = el.querySelectorAll('[data-vcard]');
+  const detectCenteredIndex = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return -1;
+    const er = el.getBoundingClientRect();
+    const center = vCenterY(er.top, el.clientHeight);
+    const stride = itemStrideRef.current;
+    if (stride > 0 && imgRefs.current[0]) {
+      const padTop = parseFloat(getComputedStyle(el).paddingTop) || 0;
+      const y = el.scrollTop + el.clientHeight / 2 + V_CENTER_OFFSET - padTop;
+      const guess = Math.round(y / stride);
+      const candidates = [guess - 1, guess, guess + 1, activeIndexRef.current].filter(
+        (i) => i >= 0 && i < n
+      );
       let best = -1;
       let bestDist = Infinity;
-      items.forEach((item, i) => {
-        const img = item.querySelector('img') || item;
+      for (const i of candidates) {
+        const img = imgRefs.current[i];
+        if (!img) continue;
         const r = img.getBoundingClientRect();
         const c = r.top + r.height / 2;
         const d = Math.abs(c - center);
@@ -2765,19 +2850,63 @@ export function VerticalConfessionStack({
           bestDist = d;
           best = i;
         }
-      });
-      if (best >= 0 && best !== activeIndexRef.current) {
+      }
+      if (best >= 0) return best;
+    }
+    let best = -1;
+    let bestDist = Infinity;
+    for (let i = renderLo; i <= renderHi; i += 1) {
+      const img = imgRefs.current[i];
+      if (!img) continue;
+      const r = img.getBoundingClientRect();
+      const c = r.top + r.height / 2;
+      const d = Math.abs(c - center);
+      if (d < bestDist) {
+        bestDist = d;
+        best = i;
+      }
+    }
+    return best;
+  }, [n, renderHi, renderLo]);
+
+  const isScrollingRef = useRef(false);
+  const handleScroll = useCallback(() => {
+    if (!isScrollingRef.current) {
+      isScrollingRef.current = true;
+      setIsScrolling(true);
+    }
+    window.clearTimeout(scrollEndRef.current);
+    scrollEndRef.current = window.setTimeout(() => {
+      isScrollingRef.current = false;
+      setIsScrolling(false);
+    }, V_SCROLL_SETTLE_MS);
+
+    if (rafRef.current) return;
+    rafRef.current = requestAnimationFrame(() => {
+      rafRef.current = 0;
+      if (performance.now() < progScrollUntilRef.current) return;
+      const best = detectCenteredIndex();
+      if (best < 0) return;
+      setScrollFocus((cur) => (cur === best ? cur : best));
+      if (best !== activeIndexRef.current) {
         sourceRef.current = 'user';
         onActiveChange(best);
       }
     });
-  };
-  useEffect(
-    () => () => {
+  }, [detectCenteredIndex, onActiveChange]);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return undefined;
+    el.addEventListener('scroll', handleScroll, { passive: true });
+    return () => {
+      el.removeEventListener('scroll', handleScroll);
+      window.clearTimeout(scrollEndRef.current);
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
-    },
-    []
-  );
+    };
+  }, [handleScroll]);
+
+  const useLiteNeighbors = isScrolling || reduceMotion;
 
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%' }}>
@@ -2789,20 +2918,51 @@ export function VerticalConfessionStack({
           anchorEl={metaAnchorEl}
         />
       ) : null}
-      <div ref={scrollRef} onScroll={handleScroll} style={st.vScrollContainer}>
-      <CardNoiseFilterDefs params={inactive} />
+      <div ref={scrollRef} style={st.vScrollContainer}>
+      <CardNoiseFilterDefs params={stackNoiseParams} />
       {confessions.map((c, i) => {
+        const inWindow = i >= renderLo && i <= renderHi;
+        if (!inWindow) {
+          return (
+            <div
+              key={c.id}
+              data-vcard
+              data-vspacer
+              ref={(el) => {
+                itemRefs.current[i] = el;
+              }}
+              aria-hidden="true"
+              style={st.vItem}
+            >
+              <div
+                ref={(el) => {
+                  imgRefs.current[i] = el;
+                }}
+                style={{
+                  height: V_IMAGE_HEIGHT,
+                  width: '100%',
+                  flexShrink: 0,
+                  scrollSnapAlign: 'center',
+                }}
+              />
+            </div>
+          );
+        }
+
         const isActive = i === activeIndex;
-        // Wave the entrance outward from the active note (its neighbours wash in
-        // around it), capped so a long list doesn't crawl in forever.
         const staggerDelay =
           !mountEntrance || reduceMotion
             ? 0
             : Math.min(Math.abs(i - activeIndex) * 0.1, 0.9);
+        const ring = Math.abs(i - activeIndex);
+        const eagerImage = ring <= 1;
         return (
           <motion.div
             key={c.id}
             data-vcard
+            ref={(el) => {
+              itemRefs.current[i] = el;
+            }}
             initial={reduceMotion || !mountEntrance ? false : { opacity: 0 }}
             animate={{ opacity: 1 }}
             transition={
@@ -2828,33 +2988,40 @@ export function VerticalConfessionStack({
               ref={metaBlockCrossfade && isActive ? (el) => setMetaAnchorEl(el) : undefined}
               style={{
                 ...st.cardImageBox,
-                // Mobile carousel note is a touch shorter than the desktop strip
-                // (keeps the prev/next peeks); width still follows the aspect ratio.
-                height: `min(${CARD_HEIGHT_VH_MOBILE}vh, ${CARD_HEIGHT_MAX}px)`,
+                height: V_IMAGE_HEIGHT,
+                scrollSnapAlign: 'center',
               }}
             >
               <img
+                ref={(el) => {
+                  imgRefs.current[i] = el;
+                }}
                 src={c.image}
                 alt={`Confession ${c.id}`}
                 draggable={false}
+                loading={eagerImage ? 'eager' : 'lazy'}
+                decoding="async"
                 style={{
                   ...st.cardImg,
+                  willChange: isActive && !useLiteNeighbors ? 'transform' : 'auto',
                   opacity: isActive
                     ? 1
-                    : Math.abs(i - activeIndex) <= 1
+                    : ring <= 1
                       ? V_INACTIVE_OPACITY.near
                       : V_INACTIVE_OPACITY.far,
                   transform: `scale(${isActive ? 1 : inactive.scale})`,
                   filter: isActive
-                    ? grainHeld
+                    ? grainHeld && !useLiteNeighbors
                       ? grainOnlyFilter
                       : 'none'
-                    : inactiveFilter || 'none',
+                    : useLiteNeighbors || !inactiveFilter
+                      ? 'none'
+                      : inactiveFilter,
                 }}
               />
             </div>
             {isActive && c.transcription ? (
-              <div style={st.metaBlock} aria-live="polite">
+              <div style={st.vMetaBlock} aria-live="polite">
                 <TranscriptReveal
                   key={c.id}
                   text={c.transcription}
@@ -2926,17 +3093,27 @@ const st = {
     flexDirection: 'column',
     alignItems: 'center',
     gap: V_STACK_GAP,
-    // Headroom so the first / last note can reach the exact viewport centre.
-    paddingTop: `${V_STACK_PAD_VH}vh`,
-    paddingBottom: `${V_STACK_PAD_VH}vh`,
+    // Headroom so the first / last note can reach the resting position — the
+    // centre shifted down by V_CENTER_OFFSET, hence the ± on each end.
+    paddingTop: `calc(${V_STACK_PAD_VH}vh + ${V_CENTER_OFFSET}px)`,
+    paddingBottom: `calc(${V_STACK_PAD_VH}vh - ${V_CENTER_OFFSET}px)`,
     overflowY: 'auto',
     overflowX: 'hidden',
-    // Native snap: each note settles to centre after a swipe. Proximity (not
-    // mandatory) so a long transcript scroll or a small nudge doesn't get
-    // yanked back.
-    scrollSnapType: 'y proximity',
+    // Native snap: each note settles to centre after a swipe. Mandatory rather
+    // than proximity — proximity only engages when the scroll happens to end
+    // near a note, so a normal swipe would often just drift and stop wherever it
+    // ran out, which read as the snapping not working. Nothing here is taller
+    // than the viewport, so mandatory can't strand content between snap points,
+    // and the transcript is its own nested scroller so scrolling it doesn't move
+    // this container at all.
+    scrollSnapType: 'y mandatory',
+    // Shifts the snapport's centre down by half of this — i.e. exactly
+    // V_CENTER_OFFSET — so CSS parks a note where the JS math expects it.
+    scrollPaddingTop: V_CENTER_OFFSET * 2,
     overflowAnchor: 'none',
     WebkitOverflowScrolling: 'touch',
+    overscrollBehaviorY: 'contain',
+    touchAction: 'pan-y',
     scrollbarWidth: 'none',
     msOverflowStyle: 'none',
   },
@@ -2947,9 +3124,38 @@ const st = {
     flexDirection: 'column',
     alignItems: 'center',
     justifyContent: 'center',
-    scrollSnapAlign: 'center',
-    scrollSnapStop: 'always',
+    // No scroll-snap-align here: the snap target is the IMAGE box (see the
+    // render), because that's what the JS centres on and what the reader is
+    // actually looking at. Aligning the item instead parked the item's box —
+    // which is a different point whenever anything else sits inside it — and
+    // left the image sitting above centre.
+    //
+    // No scroll-snap-stop either. Forcing a stop at every note meant one swipe
+    // could only ever advance one note, so getting anywhere in a 35-note stack
+    // took 35 swipes; that, more than frame rate, is what made this feel slow.
+    // Without it a flick carries as far as it's thrown and still settles on a
+    // note.
     width: 'min(86vw, 430px)',
+  },
+  // The active note's transcript, hung BELOW the note rather than sitting in
+  // the column with it. In flow it made the active item ~70-130px taller than
+  // its neighbours, so every time the active note changed the stack's whole
+  // layout shifted under the finger mid-scroll — which moved the snap points
+  // during the gesture and is why a swipe so often landed off-centre. Out of
+  // flow, every item is exactly the image box, so nothing reflows while
+  // scrolling and the snap points hold still.
+  vMetaBlock: {
+    position: 'absolute',
+    top: '100%',
+    left: '50%',
+    transform: 'translateX(-50%)',
+    marginTop: 14,
+    width: 'min(max(100%, 320px), 90vw)',
+    maxWidth: 520,
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    pointerEvents: 'auto',
   },
   cardWrapper: {
     flexShrink: 0,
@@ -3193,4 +3399,18 @@ const st = {
       'opacity 0.30s cubic-bezier(0.4, 0, 0.2, 1) 0.12s',
     pointerEvents: 'none',
   },
+};
+
+/**
+ * The DATE / LOCATION block's look, exported so surfaces outside the note stack
+ * can wear it without restating the numbers. The INDEX preview (App's Lightbox)
+ * uses it to present its own rows — it carries an extra THEME row that links out,
+ * so it can't just render <NoteMeta/>, but it should still read as the same
+ * object. `block` carries the divider under the last row.
+ */
+export const NOTE_META_STYLE = {
+  block: st.metaAboveRow,
+  row: st.metaAboveItem,
+  label: st.sideMetaLabel,
+  value: st.sideMetaValue,
 };
