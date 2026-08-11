@@ -673,17 +673,30 @@ const TRANSCRIPT_FADE_S = 0.22;
  * Times are ms after the note becomes active:
  *
  *  400ms   date · location row fades in
- *  800ms   transcription reveals — words stagger-fade in fast,
- *          one every 18ms, each over 0.28s
+ *  500ms   transcription reveals — the dissolve's cloudy field
+ *          appears under the note and condenses over ~0.9s
+ *          (no WebGL: words stagger-fade in fast instead, one
+ *          every 18ms, each over 0.28s)
  *
  * The transcription renders absolutely below the date row (st.transcriptReveal)
  * so its variable length never changes the card's height — a long confession
  * never grows or reflows the note. The image + date row alone size the card.
+ *
+ * The 400ms row beat is the DIAL PAGE's. On EXPLORE the metadata is a persistent
+ * frame that outlives the active note (MetaCrossfadeSlot), so it has no per-note
+ * beat to wait out — it holds once, on entrance, for META_ENTRANCE_HOLD_S, and
+ * from then on the values simply swap.
  * ───────────────────────────────────────────────────────── */
 
 const META_TIMING = {
   metaRow: 400, // ms to wait before the date · location row fades in
-  transcriptStart: 800, // ms to wait before the transcription reveal begins
+  // ms to wait before the transcription reveal begins. Was 800, which put the
+  // note's words a beat and a half behind its picture and then spent another
+  // 1.5s resolving them — the wait read as the page still loading rather than as
+  // choreography. 500 is the earliest that still lets the image land alone
+  // (it is in by ~360ms) before anything else moves. The other half of the fix
+  // is TRANSCRIPT_DISSOLVE.stiffness, which is where most of the time went.
+  transcriptStart: 500,
 };
 
 /* Transcription — word-by-word stagger-fade (snappy). Now the no-WebGL fallback
@@ -716,13 +729,19 @@ const TRANSCRIPT_REVEAL = {
  *             last of the resolve. Canvas type has no hinting and grayscale AA,
  *             which at this size reads as coarse, pixelated letterforms — so
  *             the raster is never left standing in for finished text.
- *   stiffness Up from 9 to 14 (~1.2s rather than ~1.5s) so the transcript
- *             resolves close to the beat the old word stagger took (~0.8s) and
- *             the note doesn't sit half-legible.
+ *   stiffness 24, up from the onboarding's 9. The stated aim at 14 was to
+ *             resolve near the beat the old word stagger took (~0.8s), but
+ *             measured it was 1.17s to the hand-off plus 0.34s of cross-fade —
+ *             1.5s of half-legible text, which is what actually made the
+ *             transcript feel slow (the 800ms delay it used to sit behind was
+ *             the smaller half of the wait). 24 clears the block in ~0.88s and
+ *             finally makes the number match the intent. The look is untouched:
+ *             `doneAt` is a progress value, so the amount of blur still on the
+ *             raster at the hand-off is the same however fast we get there.
  */
 const TRANSCRIPT_DISSOLVE = {
   maxBlur: 6, //     px of un-blur at the front — roughly one character wide
-  stiffness: 14, //  ~1.2s for the front to clear the block
+  stiffness: 24, //  ~0.88s for the front to clear the block
   chroma: 0, //      no colour split on 1px strokes
   doneAt: 0.88, //   hand off with some blur still on, and resolve in the DOM
   handoffS: 0.34, // longer than the default, since it is doing real work now
@@ -2344,6 +2363,29 @@ const META_VALUE_EXIT_S = 0.14;
  * block is read top-down instead of both rows switching on at once.
  */
 const META_ROW_STAGGER_S = 0.1;
+/**
+ * How long the block waits on ENTRANCE — its first appearance in the view —
+ * before fading in. Everything above is a note CHANGE, which must stay
+ * immediate: the block is a persistent frame, so a delay spent on the wrong
+ * element would be re-paid every time you scrolled to the next note. This one is
+ * spent on a wrapper that mounts once and never remounts (see the reveal below),
+ * so it is structurally incapable of lagging a value swap. The one way to remount
+ * it is a note with NEITHER a date nor a location, which drops the whole block
+ * and would make the note after it hold again — every row in the sheet carries
+ * both today, and a note that has neither has no block to be late with.
+ *
+ * 0.8s, which is a real pause and not a stagger: the stage — note image and all
+ * — is already in by ~0.36s, so the block arrives into a settled frame instead
+ * of riding the same wash as the picture. The transcript's field is by then
+ * already condensing underneath (META_TIMING.transcriptStart, 500ms), and that
+ * ordering is on purpose rather than a collision left standing: the field spends
+ * its first second illegible, so what the reader actually gets is the picture,
+ * then the date and place, then — last — words they can read (~1.7s). The block
+ * arrives into a frame that is visibly resolving rather than into a still one,
+ * which is the difference between a header that has been waited for and one that
+ * has been forgotten about.
+ */
+const META_ENTRANCE_HOLD_S = 0.8;
 
 /**
  * Pins the DATE / LOCATION block above the active card's image.
@@ -2438,12 +2480,33 @@ function MetaCrossfadeSlot({ confession, reduceMotion, columnWidth, anchorEl }) 
           : { duration: META_SLOT_MOVE_S, ease: EASE_OUT }
       }
     >
-      <NoteMeta
-        confession={confession}
-        reduceMotion={reduceMotion}
-        columnWidth="100%"
-        crossfadeBlock
-      />
+      {/* The ENTRANCE, and only the entrance. This element carries no key and
+          sits inside the persistent slot, so it mounts once — when the view
+          first has a note to label — and plays exactly one fade. A note change
+          re-keys the VALUES inside it (MetaValueReveal) and never touches this
+          opacity, so the hold can't be charged to a scroll. It is deliberately
+          not folded into the wrapper above, whose opacity is owned by the
+          position machinery and drops to 0 whenever the anchor is momentarily
+          missing — a hold there would re-serve itself on every such blip.
+          The whole block fades as one piece rather than typing in: at 0.8s the
+          values have already dealt themselves out under the cover of this
+          element, so what arrives is a finished object. */}
+      <motion.div
+        initial={reduceMotion ? false : { opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{
+          duration: reduceMotion ? 0 : TRANSCRIPT_FADE_S,
+          ease: EASE_OUT,
+          delay: reduceMotion ? 0 : META_ENTRANCE_HOLD_S,
+        }}
+      >
+        <NoteMeta
+          confession={confession}
+          reduceMotion={reduceMotion}
+          columnWidth="100%"
+          crossfadeBlock
+        />
+      </motion.div>
     </motion.div>
   );
 }

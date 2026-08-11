@@ -50,7 +50,6 @@ import {
 import { INK, inkA } from './colors';
 import { PaperTextureLayer, usePaperStockDials } from './PaperTexture';
 import { LINK_UNDERLINE, LINK_UNDERLINE_CSS, linkUnderlineRaised } from './linkUnderline';
-import { ScatterLabel } from './letterScatter';
 import { TracedOutline } from './TracedOutline';
 import { subscribeToKit } from './kit';
 import NoteOpenView, {
@@ -895,6 +894,53 @@ const ABOUT_DRAWER = {
   // as one object and then show what else is filed in it, rather than growing
   // extra tabs while it is still moving.
   tabInStepS: 0.09,
+
+  // ── Phone: the same drawer as a bottom sheet ──────────────────────────
+  // The band of archive left showing above the sheet, measured off the archive
+  // rather than picked: on a phone the search field and the CATEGORY / LOCATION
+  // selects end at 111px, so this is the line the page's own chrome stops on.
+  // The band holds the nav bar and the whole filter rail, both entire — at the
+  // 80px the compact panel used to spend on top padding the sheet's edge cut
+  // through the search field, and further down (152) it halves the confession
+  // count. It is also where the desktop grid starts its tiles
+  // (FILTER_SIDEBAR_TOP), which is the same line arrived at from the other side.
+  //
+  // Shallower than this and the panel reads as a full screen with a gap over it
+  // rather than as a sheet: 64px leaves the bar alone up there and nothing of
+  // the archive to see under.
+  sheetTopBand: 112,
+  // Ceiling for that band on a short viewport — a phone on its side is ~375px
+  // tall, where 112 would be a third of the screen. The sheet is anchored top
+  // and bottom rather than given a height, so it can never overflow one; this
+  // is only about how much of a short screen the gap is allowed to take. Bites
+  // below ~560px tall, and hands the room back to the copy.
+  sheetTopBandMaxVh: 20,
+  // Top corners only — the foot runs off the bottom of the screen. Held at the
+  // mailing-list card's 8 rather than the large radius a generic sheet wears:
+  // that and the tab crop's 5 are the whole of this drawer's corner vocabulary,
+  // and the sheet is the biggest surface in it, so it takes the bigger of the
+  // two.
+  sheetRadius: 8,
+  // Air above the tab row now that the sheet's own edge, not the nav bar, is
+  // what the header has to clear. Reads as the panel's inset rather than the
+  // 22px sides repeated, which would sit the tabs too far down for a surface
+  // this short.
+  sheetPadTop: 18,
+  // Deeper than the full-bleed takeover's 0.55. That scrim only had to dim a
+  // page nobody could see; this one is a 112px band of live archive held next
+  // to the sheet's own #2e2e2e, and at 0.55 the grid behind it still read as
+  // content rather than as the lid the sheet has been laid over.
+  sheetScrim: 'rgba(8, 8, 10, 0.62)',
+  // Cast upward, so the band above reads as the archive lying under the sheet
+  // rather than a window cut out of it. Matches the desktop drawer's spill.
+  sheetShadow: '0 -20px 50px rgba(0, 0, 0, 0.45)',
+  // In the drawer's slide family — a sheet crossing the whole screen wants a
+  // touch less than the 0.48 a third of one takes, or the travel reads slow.
+  sheetRiseS: 0.46,
+  // Shorter on the way out. Coming up is the panel arriving and can be watched;
+  // going down is the answer to a tap, and anything that leisurely on a dismiss
+  // reads as the sheet not having heard it.
+  sheetFallS: 0.34,
 };
 
 /* A hidden tab can't animate its way to nothing: `box-sizing: border-box` keeps
@@ -903,6 +949,18 @@ const ABOUT_DRAWER = {
    back out of the strip with a negative margin — otherwise the shut drawer would
    show ABOUT with 60px of reserved nothing hanging underneath it. */
 const ABOUT_TAB_COLLAPSED_H = ABOUT_DRAWER.tabPadY * 2 + 2;
+
+/* How far the sections you aren't reading sit tucked behind the open drawer's
+   spine, and so how far one comes out when you reach for it. The strip is clipped
+   at the spine, so this is simply how much of a tab's width is filed away:
+   the label stays clear of the cut and the trapezoid still reads as a tab, it just
+   stops competing with the section that is actually open.
+
+   The shut drawer's lean, reused rather than a second figure that nearly matches
+   it. Reaching for a filed tab and reaching for the closed drawer are the same
+   gesture in two places, and they should cover the same ground in the same time —
+   which is also what lets a tab come out to exactly where it used to sit. */
+const ABOUT_TAB_TUCK_X = ABOUT_DRAWER.hoverNudgeX;
 
 /* `label` is the tab; `title` is the heading the panel shows for it. The two are
    different words on purpose — a tab is a marker and wants to be short, while the
@@ -947,6 +1005,26 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false, onPeekLan
   // is the part someone who asked for less movement asked to be without.
   const peekNudged = peekInviting && !reduceMotion;
 
+  // The same invitation one level in: which of the open drawer's filed sections
+  // the pointer or the keyboard is reaching for, so that tab alone comes out from
+  // behind the spine. An id rather than a boolean per tab, because only one can be
+  // reached for at a time and crossing from one to the next should hand over
+  // rather than briefly light both.
+  const [reachedTab, setReachedTab] = useState(null);
+  // Crossing tabs fires the leave on the one you came from and the enter on the
+  // one you arrived at, and only that order is guaranteed for a single pointer
+  // move — so a leave only ever clears its own tab. Ordered the other way it
+  // wiped the tab the pointer had just landed on, which read as the strip
+  // refusing every second hover.
+  const releaseTab = (id) => setReachedTab((cur) => (cur === id ? null : cur));
+  // Which tabs have finished arriving. The strip's staged timing belongs to the
+  // entrance and to nothing else: a tab that has landed answers a pointer at once,
+  // where sharing the entrance's clock it stayed out for the half second that
+  // clock holds the later tabs back — long after the pointer had gone. A tab drops
+  // out of this the moment it is filed back behind the spine, so the next time the
+  // drawer opens the whole strip arrives on its beats again.
+  const landedTabs = useRef(new Set());
+
   // Mailing-list signup state.
   const [email, setEmail] = useState('');
   // 'idle' | 'submitting' | 'success' | 'error'
@@ -973,8 +1051,12 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false, onPeekLan
   // came back from a close still holding it and settled six pixels off the edge
   // with the pointer nowhere near — and nothing would clear it until the pointer
   // entered the sliver and left it again.
+  // The same goes for a tab: the strip that comes back after a close would come
+  // back with one section already out of the spine, and nothing near it to explain
+  // why.
   useEffect(() => {
     if (open) setPeekInvited(false);
+    setReachedTab(null);
   }, [open]);
 
   async function handleSubscribe(e) {
@@ -1666,21 +1748,21 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false, onPeekLan
     </div>
   );
 
-  // The section's name, and on phone the way out of the drawer beside it. Hoisted
-  // out of the section bodies so neither fades when you change tabs.
+  // The section's name. Hoisted out of the section bodies so it doesn't fade
+  // when you change tabs.
   //
-  // Phone only, like the tab row above it: that breakpoint is a full-bleed
-  // takeover with nothing of the page left showing to tap, so the ✕ is the way
-  // back. The desktop drawer keeps the exits it already had — the dimmed page
-  // behind it, ESC, and the wordmark — and none of them cost the header a mark.
+  // Neither breakpoint spends a mark on an exit. The phone carried a ✕ while it
+  // was a full-bleed takeover with nothing of the page left showing to tap; as a
+  // sheet it leaves a band of live archive above it, and tapping that dismisses
+  // it exactly as the dimmed page does on desktop. ESC closes both.
   //
-  // Which is also why the row is mounted in different places by breakpoint (see
-  // below): first thing inside the scrolling column on desktop, so the heading
-  // travels with the copy it names rather than hanging over it, but still in the
-  // fixed header on phone, where scrolling this row away would take the only
-  // visible way out of a full-bleed takeover with it. The bottom margin is the
-  // gap the column's top padding used to give the heading, carried on the row
-  // now that the row lives inside the scroll.
+  // The row is still mounted in different places by breakpoint (see below):
+  // first thing inside the scrolling column on desktop, so the heading travels
+  // with the copy it names rather than hanging over it, but in the fixed header
+  // on phone, where it sits under tabs that have to stay put while a long
+  // section runs beneath them. The bottom margin is the gap the column's top
+  // padding used to give the heading, carried on the row now that the row lives
+  // inside the scroll.
   const titleRow = (
     <div
       style={{
@@ -1688,50 +1770,15 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false, onPeekLan
         alignItems: 'center',
         justifyContent: 'space-between',
         gap: 12,
-        marginBottom: compact ? 0 : 18,
+        marginBottom: 18,
       }}
     >
       <h2 style={{ ...headStyle, margin: 0 }}>{activeTab.title}</h2>
-      {compact ? (
-        <button
-          type="button"
-          className="about-close"
-          aria-label="Close about"
-          onClick={onClose}
-          style={{
-            flex: '0 0 auto',
-            // Out into the panel's own padding: the glyph lines up with the right
-            // edge of the copy, and the hit area it needs spills into the margin
-            // rather than pushing the mark in off the column.
-            marginRight: -7,
-            width: 34,
-            height: 34,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            padding: 0,
-            border: 'none',
-            borderRadius: 6,
-            background: 'none',
-            color: inkA(0.55),
-            cursor: 'pointer',
-            fontFamily: MONO_FONT,
-            fontSize: 16,
-            lineHeight: 1,
-            transition: `color 0.18s ${HOVER_EASE}, background 0.18s ${HOVER_EASE}`,
-          }}
-        >
-          ✕
-        </button>
-      ) : null}
     </div>
   );
 
   const sharedStyles = `
     .about-top-tab:hover:not([aria-selected='true']) { color: ${inkA(0.7)}; }
-    .about-close:hover, .about-close:focus-visible {
-      color: #fff; background: ${inkA(0.08)};
-    }
     .about-contact-link {
       display: inline-block; color: ${inkA(0.72)};
       text-decoration: none;
@@ -1751,19 +1798,16 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false, onPeekLan
     .about-col::-webkit-scrollbar-thumb {
       background: ${inkA(0.14)}; border-radius: 4px;
     }
+    /* Every hover state a folder tab has is animated on the tab itself now (see
+       \`invited\` and \`reached\`), so there is no :hover rule here to reconcile with.
+       There was one, lifting the unread sections to rgba(…,0.72) with !important
+       so it could out-rank the colour framer writes inline; kept alongside the
+       lean it out-ranked it as well, snapping the label to a duller grey the
+       instant the pointer arrived and pinning it there for the length of a fade
+       that was supposed to be carrying it somewhere brighter. */
     .about-drawer-tab {
       clip-path: ${ABOUT_DRAWER.tabClip};
       -webkit-clip-path: ${ABOUT_DRAWER.tabClip};
-    }
-    /* The open drawer's unread sections lift on hover from here, where a rule
-       can out-rank the colour framer writes inline on the tab. The peeking tab
-       is held out of it: while the drawer is shut that same lift is animated with
-       the panel's lean (see \`invited\`), and this rule — !important, untransitioned,
-       and a duller grey than the accent — would win it, snapping ABOUT to
-       rgba(…,0.72) the instant the pointer arrived and pinning it there for the
-       length of the fade that was supposed to be taking it somewhere brighter. */
-    .about-drawer-tab:hover:not([aria-selected='true']):not(:disabled):not([data-peek]) {
-      color: ${inkA(0.72)} !important;
     }
   `;
 
@@ -1824,6 +1868,18 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false, onPeekLan
           // colour tweens instead of one.
           const invited = peekInviting && shown;
 
+          // Filed away: an open drawer's other two sections sit part-hidden behind
+          // the spine, so the one you are reading is the only tab standing at full
+          // width. Never the section you are on — that one is pulled the other way,
+          // flush to the panel — and never the shut drawer's ABOUT, which is the
+          // whole of what a closed drawer has to offer and already leans on its own.
+          const filed = open && shown && !isActive;
+          // Reached for: brought back out to where a tab used to rest, on the same
+          // slow lean the closed drawer answers a pointer with. Travel goes under
+          // reduced motion and the lit label stays, as it does there.
+          const reached = filed && reachedTab === tab.id;
+          const leanedOut = reached && !reduceMotion;
+
           // ABOUT is the tab that hangs off the closed drawer, so it is already
           // there and waits for nothing. The rest arrive after the panel has
           // finished sliding, each a beat behind the one above.
@@ -1851,6 +1907,24 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false, onPeekLan
             duration: 0,
             delay: reduceMotion ? 0 : open ? arriveDelay : ABOUT_DRAWER.fadeS,
           };
+
+          // A tab still on its way in keeps the strip's staged timing for x — that
+          // travel out from under the spine, on its own beat, *is* the entrance.
+          // Once it has landed x belongs to the pointer instead, and answers at
+          // once: the lean's slow clock on the way out, the panel's own fade going
+          // back or being pulled flush by a selection.
+          if (!shown) landedTabs.current.delete(tab.id);
+          const xClock =
+            shown && landedTabs.current.has(tab.id)
+              ? {
+                  duration: reduceMotion
+                    ? 0
+                    : leanedOut
+                      ? ABOUT_DRAWER.hoverNudgeS
+                      : ABOUT_DRAWER.fadeS,
+                  ease: easeOut,
+                }
+              : arrive;
           return (
             <motion.button
               key={tab.id}
@@ -1864,11 +1938,21 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false, onPeekLan
               aria-label={tab.label}
               aria-selected={isActive}
               aria-controls="about-panel-body"
-              // What exempts the peeking tab from the stylesheet's hover lift —
-              // see the `.about-drawer-tab:hover` rule.
-              data-peek={!open && shown ? 'true' : undefined}
               disabled={!shown}
               onClick={() => shown && selectTab(tab.id)}
+              // Framer's hover pair rather than a CSS :hover, for the same reason
+              // the closed drawer uses it: these are pointer-aware, so a tap on a
+              // touch screen — which enters and never leaves — cannot leave a tab
+              // standing out of the spine for the rest of the session.
+              onHoverStart={() => setReachedTab(tab.id)}
+              onHoverEnd={() => releaseTab(tab.id)}
+              // Landed — see `xClock`. Fires for every animation this tab runs,
+              // which is the point: after the first one it is simply a tab on an
+              // open drawer, and the only thing left to distinguish is whether it
+              // has arrived yet.
+              onAnimationComplete={() => {
+                if (shown) landedTabs.current.add(tab.id);
+              }}
               // The keyboard gets the same invitation the pointer does: the shut
               // drawer's tab is reachable by tab key and, without this, was the
               // one control on the page that gave nothing back when it was
@@ -1877,17 +1961,26 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false, onPeekLan
               // invitation left the drawer leaning out behind the panel it had
               // just opened, with the pointer long gone.
               onFocus={(e) => {
-                if (!open && peekEntranceDone.current && e.currentTarget.matches(':focus-visible')) {
-                  setPeekInvited(true);
-                }
+                if (!e.currentTarget.matches(':focus-visible')) return;
+                if (open) setReachedTab(tab.id);
+                else if (peekEntranceDone.current) setPeekInvited(true);
               }}
-              onBlur={() => setPeekInvited(false)}
+              onBlur={() => {
+                setPeekInvited(false);
+                releaseTab(tab.id);
+              }}
               initial={false}
               animate={{
                 opacity: shown ? 1 : 0,
                 // Sideways, not downwards: a tab comes out from under the panel's
-                // spine and travels left into place, and leaves the same way.
-                x: shown ? 0 : ABOUT_DRAWER.tabInX,
+                // spine and travels left into place, and leaves the same way. Its
+                // place is short of the strip's edge while it is filed, and where
+                // it always used to sit once you reach for it or open it.
+                x: !shown
+                  ? ABOUT_DRAWER.tabInX
+                  : filed && !leanedOut
+                    ? ABOUT_TAB_TUCK_X
+                    : 0,
                 height: shown ? ABOUT_DRAWER.tabH : 0,
                 marginBottom: shown
                   ? 0
@@ -1899,25 +1992,27 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false, onPeekLan
                 // The accent the drawer already spends on called-out type, rather
                 // than a brighter grey: the tab is being offered, and the yellow
                 // is what the rest of the panel uses to say so.
-                color: isActive ? '#fff' : invited ? ACCENT_INK : inkA(0.48),
+                color:
+                  isActive ? '#fff' : invited || reached ? ACCENT_INK : inkA(0.48),
               }}
               transition={{
                 duration: reduceMotion ? 0 : ABOUT_DRAWER.fadeS,
                 ease: easeOut,
-                // Only the tab's arrival is held back. Its colours keep the
-                // panel's own clock, so the section you are reading lights up
+                // Only the tab's arrival is held back — x hands its clock over
+                // once that is done (see `xClock`). Its colours keep the panel's
+                // own timing throughout, so the section you are reading lights up
                 // with the surface it belongs to rather than half a beat later.
-                x: arrive,
+                x: xClock,
                 opacity: arrive,
                 height: slot,
                 marginBottom: slot,
-                // Except the invitation, which travels with the panel it belongs
-                // to: on `fadeS` the letters were at full accent while the drawer
-                // was a third of the way out, so the tab lit and then the drawer
-                // followed instead of the two being one gesture. It is a tween
-                // even under reduced motion — a colour arriving instantly is a
-                // different thing from a panel that moves.
-                ...(invited
+                // Except either invitation, which keeps time with the lean it
+                // belongs to: on `fadeS` the letters were at full accent while the
+                // drawer was a third of the way out, so the tab lit and then the
+                // drawer followed instead of the two being one gesture. It is a
+                // tween even under reduced motion — a colour arriving instantly is
+                // a different thing from something that moves.
+                ...(invited || reached
                   ? { color: { duration: ABOUT_DRAWER.hoverNudgeS, ease: easeOut } }
                   : null),
               }}
@@ -1973,13 +2068,14 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false, onPeekLan
       </div>
       )}
 
-      {/* Only the phone gets a header out of the scroll: the top tabs and the ✕
-          are how you get around and out of a full-bleed takeover, so they stay
-          put while a long section runs under them. Desktop needs neither pinned —
-          its section navigation hangs off the spine in the folder tabs — so the
-          heading goes into the column and scrolls with the copy. Side padding is
-          shared by header and column, which keeps the tab rule the same width as
-          the copy it sits over. */}
+      {/* Only the phone gets a header out of the scroll, and only the tab row is
+          in it: those three markers are the sole way to reach the other sections
+          on this breakpoint, so they stay put while a long section runs under
+          them. Desktop needs no pinned header at all — its section navigation
+          hangs off the spine in the folder tabs. The section heading scrolls
+          with the copy it names at both sizes. Side padding is shared by header
+          and column, which keeps the tab rule the same width as the copy it sits
+          over. */}
       <div
         style={{
           position: 'relative',
@@ -1988,19 +2084,19 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false, onPeekLan
           display: 'flex',
           flexDirection: 'column',
           // Modest inset — the drawer is full-bleed under the chrome, so matching
-          // the grid's 112px top left a dead band above the copy.
+          // the grid's 112px top left a dead band above the copy. The phone's
+          // 80px was the same kind of reservation, bought for the same reason:
+          // that panel slid under the fixed nav bar and the tabs had to clear
+          // it. A sheet stops below the bar instead (see `sheetTopBand`), so
+          // there is nothing left overhead to make room for and the figure is
+          // now just the air the tabs want off the sheet's own edge.
           padding: compact
-            ? `${24 + ARCHIVE_NAV_CHROME_HEIGHT + 16}px 22px 0`
+            ? `${ABOUT_DRAWER.sheetPadTop}px 22px 0`
             : `28px 28px 0`,
           boxSizing: 'border-box',
         }}
       >
-        {compact ? (
-          <div style={{ flex: '0 0 auto' }}>
-            {topTabs}
-            {titleRow}
-          </div>
-        ) : null}
+        {compact ? <div style={{ flex: '0 0 auto' }}>{topTabs}</div> : null}
 
         <div
           id="about-panel-body"
@@ -2013,12 +2109,18 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false, onPeekLan
             overflowY: 'auto',
             overflowX: 'hidden',
             WebkitOverflowScrolling: 'touch',
+            // The sheet leaves the archive on screen above it, so a flick that
+            // runs this column past its end must stop there rather than hand the
+            // rest of the gesture to the page underneath and scroll the grid
+            // behind the panel.
+            overscrollBehavior: 'contain',
             outline: 'none',
-            // Air under the heading card, and enough at the foot that the last
-            // line clears the phone's home bar. Desktop opens flush instead: its
-            // heading is inside this column now and carries that gap on its own
-            // margin, so a top pad here would push the title down the panel and
-            // leave a band of dead space the copy never scrolls through.
+            // Flush at the top at both sizes: the heading is the first thing in
+            // this column and carries its own gap on a bottom margin, so a top
+            // pad here would push the title down and leave a band of dead space
+            // the copy never scrolls through. On phone the tab row's own 16px
+            // margin is already the air between the tabs and the heading. The
+            // foot is deep enough that the last line clears the home bar.
             //
             // Side padding and the negative margin below are one move, not two:
             // together they widen the box (and with it the clip `overflowX` cuts
@@ -2026,12 +2128,12 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false, onPeekLan
             // mailing-list card can bleed out past the text without its dashed
             // edge being sliced off. Nothing here moves the reading column.
             padding: compact
-              ? `16px ${colBleedGutter}px 72px`
+              ? `0 ${colBleedGutter}px 72px`
               : `0 ${colBleedGutter}px 48px`,
             marginInline: -colBleedGutter,
           }}
         >
-          {compact ? null : titleRow}
+          {titleRow}
           <AnimatePresence mode="wait">
             <motion.div
               key={activeSection}
@@ -2048,8 +2150,18 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false, onPeekLan
     </>
   );
 
-  // Phone keeps the old full-bleed takeover (no permanent side peek).
+  // Phone gets the same drawer as a bottom sheet (no permanent side peek). It
+  // comes up over the archive and stops short of the top, leaving a band of the
+  // page — nav bar and all — showing above it, which is what tells you the
+  // archive is still there to go back to. Everything from the section tabs down
+  // is on the sheet's surface; nothing of the panel reaches into the band.
   if (compact) {
+    // Anchored top and bottom rather than given a height, so the sheet is
+    // whatever is left of the viewport and cannot overflow one. `min()` is the
+    // short-viewport guard: a phone on its side is ~375px tall, where the flat
+    // band would take nearly a third of the screen and push the tabs down into
+    // a sheet with no room left to read in.
+    const sheetTop = `min(${ABOUT_DRAWER.sheetTopBand}px, ${ABOUT_DRAWER.sheetTopBandMaxVh}vh)`;
     return (
       <AnimatePresence>
         {open && (
@@ -2064,8 +2176,12 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false, onPeekLan
               position: 'fixed',
               inset: 0,
               zIndex: 1000,
-              background: 'rgba(8, 8, 10, 0.55)',
+              background: ABOUT_DRAWER.sheetScrim,
               cursor: 'pointer',
+              // The band above the sheet is live page: without this a drag that
+              // starts there scrolls the archive underneath, and the sheet comes
+              // back to a grid parked somewhere else than it was left.
+              touchAction: 'none',
             }}
           />
         )}
@@ -2075,16 +2191,41 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false, onPeekLan
             role="dialog"
             aria-modal="true"
             aria-label="About What We Tell AI"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: reduceMotion ? 0.2 : 0.4, ease: easeOut }}
+            // It comes up, and it goes back down — the panel arrives from off
+            // the bottom of the screen rather than resolving out of nothing
+            // where it will end up. `100%` is the sheet's own height, which is
+            // exactly the distance that parks it under the viewport.
+            //
+            // Reduced motion keeps the arrival and loses the travel: the sheet
+            // still has to appear and dismiss, and promptly, but the part that
+            // crosses the screen is the part that was asked to be gone.
+            initial={reduceMotion ? { opacity: 0 } : { y: '100%' }}
+            animate={reduceMotion ? { opacity: 1 } : { y: 0 }}
+            exit={
+              reduceMotion
+                ? { opacity: 0, transition: { duration: ABOUT_DRAWER.fadeS, ease: easeOut } }
+                : { y: '100%', transition: { duration: ABOUT_DRAWER.sheetFallS, ease: easeOut } }
+            }
+            transition={{
+              duration: reduceMotion ? ABOUT_DRAWER.fadeS : ABOUT_DRAWER.sheetRiseS,
+              ease: easeOut,
+            }}
             style={{
               position: 'fixed',
-              inset: 0,
+              top: sheetTop,
+              left: 0,
+              right: 0,
+              bottom: 0,
               zIndex: 1001,
               background: ABOUT_DRAWER.bg,
+              // Top corners only: the foot of the sheet runs off the bottom of
+              // the screen and has no corner to round.
+              borderRadius: `${ABOUT_DRAWER.sheetRadius}px ${ABOUT_DRAWER.sheetRadius}px 0 0`,
+              boxShadow: ABOUT_DRAWER.sheetShadow,
               color: INK,
+              // Also what crops the panel's paper stock to the rounded top —
+              // the layer is square, and without this it would fill back in the
+              // two corners the sheet just cut.
               overflow: 'hidden',
             }}
           >
@@ -2205,15 +2346,6 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false, onPeekLan
   );
 }
 
-/** How much of the onboarding cta's scatter the view tabs take.
- *
- *  Less, because these are chrome rather than a closing flourish: the cta is met
- *  once at the end of a sequence, while a cursor crosses INDEX / EXPLORE on the
- *  way to everything else in the bar. At full strength the pair twitched as the
- *  pointer passed over them, which is the difference between a label coming
- *  loose and a nav bar that can't sit still. */
-const NAV_SCATTER_STRENGTH = 0.6;
-
 function ToggleButton({ active, onClick, children, style }) {
   const [hovered, setHovered] = useState(false);
   return (
@@ -2222,13 +2354,10 @@ function ToggleButton({ active, onClick, children, style }) {
         onClick?.(e);
       }}
       // Motion's hover pair rather than mouseenter / :hover, because it is
-      // pointer-aware: a tap on a phone fires neither, so the letters can't be
-      // left scattered by a touch that never "leaves."
+      // pointer-aware: a tap on a phone fires neither, so the lift can't be left
+      // on by a touch that never "leaves."
       onHoverStart={() => setHovered(true)}
       onHoverEnd={() => setHovered(false)}
-      // The label is a span per glyph below, which a screen reader would
-      // otherwise spell out a letter at a time.
-      aria-label={children}
       style={{
         background: 'none',
         border: 'none',
@@ -2244,17 +2373,9 @@ function ToggleButton({ active, onClick, children, style }) {
         ...style,
       }}
     >
-      {/* The dotted rule is painted on the button, so it stays one line under
-          the word while the glyphs come loose above it.
-
-          The tab you are already on doesn't scatter: hover on this pair has
-          always meant "you can go here" — it is why the opacity lift skips the
-          active tab too — and the current view is not somewhere to go. */}
-      <ScatterLabel
-        text={children}
-        scattered={hovered && !active}
-        strength={NAV_SCATTER_STRENGTH}
-      />
+      {/* Hover on this pair means "you can go here", which is why the opacity
+          lift above skips the tab you are already on. */}
+      {children}
     </motion.button>
   );
 }
@@ -2841,17 +2962,22 @@ const facetMenuPanelStyle = {
   boxShadow: MENU_SURFACE_SHADOW,
 };
 
-/** A single Category / Location row inside the facet menu. */
+/** A single Category / Location row inside the facet menu. Ink and gap are the
+    sidebar's checkbox rows (inkA(0.7) → INK when checked, 12px to the mark), so
+    the two ways into the same filters read as one control. No fill on a checked
+    row: the tint it used to carry was the same value as the hover tint, which
+    now that rows wear a real checkmark made a checked row look merely hovered.
+    State is the mark; the fill is the pointer. */
 const facetMenuItemStyle = (current) => ({
   display: 'flex',
   alignItems: 'center',
-  gap: 10,
+  gap: 12,
   width: '100%',
   padding: '9px 12px',
   borderRadius: 0,
   border: 'none',
-  background: current ? 'rgba(207,202,183,0.09)' : 'transparent',
-  color: current ? INK : inkA(0.72),
+  background: 'transparent',
+  color: current ? INK : inkA(0.7),
   fontFamily: 'var(--font-mono)',
   fontSize: 12,
   letterSpacing: '0.12em',
@@ -3004,16 +3130,19 @@ const FACET_MARK_FILTER = {
 const FACET_CHECK_SIZE = 13;
 const FACET_CHECK_EASE = [0.165, 0.84, 0.44, 1];
 
-/** Square checkbox with a pathLength-drawn checkmark (no fill-in). */
-function FacetCheckboxMark({ on, style }) {
+/** Square checkbox with a pathLength-drawn checkmark (no fill-in). Shared by the
+    desktop rail's accordions and the phone bar's facet dropdowns, so the two
+    surfaces cannot drift: pass `size` for a roomier mark rather than forking
+    the mark itself. */
+function FacetCheckboxMark({ on, size = FACET_CHECK_SIZE, style }) {
   const reduceMotion = useReducedMotion();
   return (
     <span
       aria-hidden="true"
       className="facet-checkbox-box"
       style={{
-        width: FACET_CHECK_SIZE,
-        height: FACET_CHECK_SIZE,
+        width: size,
+        height: size,
         flex: '0 0 auto',
         boxSizing: 'border-box',
         display: 'inline-flex',
@@ -3023,12 +3152,16 @@ function FacetCheckboxMark({ on, style }) {
         border: `1px solid ${on ? inkA(0.9) : inkA(0.4)}`,
         background: 'transparent',
         color: on ? INK : inkA(0.4),
+        // Here rather than at the call sites: every surface that uses the mark
+        // brightens its border on row hover (.facet-checkbox-row), and an
+        // instant jump reads as a different box rather than the same one lit.
+        transition: `border-color 0.18s ${HOVER_EASE}, color 0.18s ${HOVER_EASE}`,
         ...style,
       }}
     >
       <svg
-        width={FACET_CHECK_SIZE - 2}
-        height={FACET_CHECK_SIZE - 2}
+        width={size - 2}
+        height={size - 2}
         viewBox="0 0 12 12"
         fill="none"
         aria-hidden="true"
@@ -4690,7 +4823,10 @@ function GridView({
           (append ?dial=1 to the URL, then hover a tile to preview). */}
       <GridImageFilter animate={!reduceMotion} />
 
-      {/* The same treatment at glyph scale, for the rail's checkmark strokes. */}
+      {/* The same treatment at glyph scale, for the checkmark strokes — the
+          rail's on desktop, the facet dropdown's on compact. Mounted out here
+          rather than inside either branch: a missing filter reference doesn't
+          degrade to an unfiltered stroke, it drops the mark entirely. */}
       <NoiseDisplaceFilter
         id={FACET_MARK_FILTER_ID}
         {...FACET_MARK_FILTER}
@@ -4868,7 +5004,13 @@ function GridView({
         .grid-chip { transition: background 0.2s ${HOVER_EASE}, color 0.2s ${HOVER_EASE}, border-color 0.2s ${HOVER_EASE}; }
         .grid-chip:not(.is-active):hover { border-color: rgba(207,202,183,0.45); color: #CFCAB7; }
         .facet-menu-btn:hover { border-color: rgba(207,202,183,0.4); background: ${MOBILE_FILTER_FILL_HOVER}; }
-        .facet-menu-item:hover { background: rgba(207,202,183,0.09); color: #CFCAB7; }
+        /* The dropdown's rows keep a hover fill the rail's don't need — they are
+           full-width bands in a floating panel, and the pointer wants to see
+           which one it is on. !important because the row's resting background is
+           inline (a bare <button> with no background at all gets the UA's grey),
+           which is why this rule did nothing before. Text is left to
+           .facet-checkbox-row below, so both surfaces brighten by one rule. */
+        .facet-menu-item:hover { background: rgba(207,202,183,0.09) !important; }
         /* Desktop filter sidebar (search + Category/Location accordions). */
         .facet-accordion-btn:hover { color: #EDE7D6; }
         .facet-checkbox-row:hover { color: #CFCAB7 !important; }
@@ -5048,40 +5190,35 @@ function GridView({
                           transition={{ duration: 0.16, ease }}
                           style={{ ...facetMenuPanelStyle, maxHeight: 340, overflowY: 'auto' }}
                         >
-                          {facetValues(f.id).map((opt) => (
-                            <button
-                              key={opt.key}
-                              type="button"
-                              role="menuitemcheckbox"
-                              aria-checked={opt.on}
-                              className="facet-menu-item"
-                              onClick={opt.onClick}
-                              style={facetMenuItemStyle(opt.on)}
-                            >
-                              <span
-                                aria-hidden="true"
-                                style={{
-                                  width: 14,
-                                  height: 14,
-                                  borderRadius: 999,
-                                  flex: '0 0 auto',
-                                  display: 'inline-flex',
-                                  alignItems: 'center',
-                                  justifyContent: 'center',
-                                  border: `1px solid ${
-                                    opt.on ? 'rgba(207,202,183,0.9)' : 'rgba(207,202,183,0.4)'
-                                  }`,
-                                }}
+                          {/* Values only — the "All …" reset is dropped, exactly
+                              as the desktop rail drops it: an unticked list
+                              already says "everything", and on a phone the row
+                              only added a permanently-dim first stop for the
+                              keyboard to land on. This bar is the compact
+                              layout's alone (see the `compact` branch above), so
+                              no width gets it back; the reset for a phone is
+                              unticking the row you ticked, plus the empty
+                              state's "Clear all filters" when a filter leaves
+                              nothing on screen. */}
+                          {facetValues(f.id)
+                            .filter((opt) => opt.key !== '__all')
+                            .map((opt) => (
+                              <button
+                                key={opt.key}
+                                type="button"
+                                role="menuitemcheckbox"
+                                aria-checked={opt.on}
+                                /* Both classes on purpose: facet-menu-item is the
+                                   dropdown's hover fill, facet-checkbox-row is the
+                                   shared ink + the box brightening with it. */
+                                className="facet-menu-item facet-checkbox-row"
+                                onClick={opt.onClick}
+                                style={facetMenuItemStyle(opt.on)}
                               >
-                                {opt.on ? (
-                                  <span
-                                    style={{ width: 7, height: 7, borderRadius: 999, background: '#fff' }}
-                                  />
-                                ) : null}
-                              </span>
-                              <span style={{ flex: 1, textAlign: 'left' }}>{opt.label}</span>
-                            </button>
-                          ))}
+                                <FacetCheckboxMark on={opt.on} />
+                                <span style={{ flex: 1, textAlign: 'left' }}>{opt.label}</span>
+                              </button>
+                            ))}
                         </motion.div>
                       ) : null}
                     </AnimatePresence>
@@ -5768,6 +5905,7 @@ const LB_NAV_FRAME_HALF = 'min(45vw, 360px)';
 
 function Lightbox({ confession, onClose, onPrev, onNext, onExplore }) {
   const reduceMotion = useReducedMotion();
+  const compact = useArchiveNavCompact();
   const open = !!confession;
   const canNav = !!(onPrev || onNext);
 
@@ -5833,11 +5971,50 @@ function Lightbox({ confession, onClose, onPrev, onNext, onExplore }) {
   const themeValue = confession?.category
     ? confession.category.toUpperCase()
     : 'N/A';
+  const themeRow = ['THEME', themeValue, 'theme'];
+  // On a phone THEME leaves the block above the note and re-forms under the
+  // transcription, so the reader gets the confession's words before its
+  // classification — the order EXPLORE already uses on mobile. Desktop keeps
+  // all three rows above the image. Moved in the markup, not with CSS order, so
+  // the reading order matches the visual order. The row is unconditional (THEME
+  // falls back to N/A), so the block above stays exactly two rows tall on every
+  // note and nothing shifts as you page through.
+  const themeBelow = compact;
   const metaRows = [
     ['DATE', meta.date || ''],
     ['LOCATION', meta.location || ''],
-    ['THEME', themeValue, 'theme'],
+    ...(themeBelow ? [] : [themeRow]),
   ];
+
+  // Shared so the THEME row is the same row wherever it lands — above the note
+  // on desktop, below the transcription on a phone — including its link into
+  // the category.
+  const renderMetaRow = ([label, value, kind]) => (
+    <div key={label} style={NOTE_META_STYLE.row}>
+      <span style={NOTE_META_STYLE.label}>{label}</span>
+      {kind === 'theme' && confession?.category && onExplore ? (
+        <button
+          type="button"
+          title="Explore notes in this category"
+          onClick={(e) => { e.stopPropagation(); onExplore(confession.category); }}
+          style={{
+            background: 'none',
+            border: 'none',
+            padding: 0,
+            margin: 0,
+            font: 'inherit',
+            color: 'inherit',
+            cursor: 'pointer',
+            textAlign: 'left',
+          }}
+        >
+          <span style={{ ...NOTE_META_STYLE.value, ...LINK_UNDERLINE }}>{value}</span>
+        </button>
+      ) : (
+        <span style={NOTE_META_STYLE.value}>{value}</span>
+      )}
+    </div>
+  );
 
   // Portalled to the body, not left inside GridView. The view root is
   // `position: absolute; z-index: 1`, which makes it a stacking context — so
@@ -5915,32 +6092,7 @@ function Lightbox({ confession, onClose, onPrev, onNext, onExplore }) {
                 marginBottom: NOTE_META_STYLE.block.marginBottom - PREVIEW_STACK_GAP,
               }}
             >
-              {metaRows.map(([label, value, kind]) => (
-                <div key={label} style={NOTE_META_STYLE.row}>
-                  <span style={NOTE_META_STYLE.label}>{label}</span>
-                  {kind === 'theme' && confession?.category && onExplore ? (
-                    <button
-                      type="button"
-                      title="Explore notes in this category"
-                      onClick={(e) => { e.stopPropagation(); onExplore(confession.category); }}
-                      style={{
-                        background: 'none',
-                        border: 'none',
-                        padding: 0,
-                        margin: 0,
-                        font: 'inherit',
-                        color: 'inherit',
-                        cursor: 'pointer',
-                        textAlign: 'left',
-                      }}
-                    >
-                      <span style={{ ...NOTE_META_STYLE.value, ...LINK_UNDERLINE }}>{value}</span>
-                    </button>
-                  ) : (
-                    <span style={NOTE_META_STYLE.value}>{value}</span>
-                  )}
-                </div>
-              ))}
+              {metaRows.map(renderMetaRow)}
             </motion.div>
 
             {/* Constant frame (see PREVIEW_FRAME). The tilt wrapper inside still
@@ -6041,11 +6193,55 @@ function Lightbox({ confession, onClose, onPrev, onNext, onExplore }) {
                   display: 'block',
                   textAlign: 'center',
                   ...TRANSCRIPTION_TEXT,
+                  // The slot is a fixed number of lines and the long notes
+                  // deliberately overflow it rather than growing it. With THEME
+                  // now sitting underneath on a phone, that overflow would land
+                  // on top of it — at 320px a fifth of the corpus runs past four
+                  // lines, the worst note to ten — so on compact the text is
+                  // clamped to the slot it was already drawn to fit. Matches the
+                  // phone's other note surfaces, which show the transcript as a
+                  // clamped peek (V_TRANSCRIPT_LINES) beneath the note itself.
+                  ...(themeBelow
+                    ? {
+                        display: '-webkit-box',
+                        WebkitLineClamp: PREVIEW_TRANSCRIPT_LINES,
+                        WebkitBoxOrient: 'vertical',
+                        overflow: 'hidden',
+                      }
+                    : null),
                 }}
               >
                 {transcription}
               </Text>
             </motion.div>
+
+            {/* Phone: the THEME row, re-formed under the transcription. */}
+            {themeBelow && (
+              <motion.div
+                initial={{ opacity: 0, y: 6 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.24, ease: easeOut, delay: 0.06 }}
+                style={{
+                  ...NOTE_META_STYLE.block,
+                  width: '100%',
+                  maxWidth: 'min(88vw, 560px)',
+                  // The block styles a header: rule underneath, 24px of air below
+                  // it before the image. As a footer the rule belongs on top —
+                  // dividing it from the transcript — and the column's own gap
+                  // supplies the spacing, so the header margins would only double
+                  // the gap the swap already leaves.
+                  borderBottom: 'none',
+                  borderTop: '1px solid rgba(207, 202, 183, 0.18)',
+                  paddingTop: 12,
+                  paddingBottom: 0,
+                  marginTop: 0,
+                  marginBottom: 0,
+                }}
+              >
+                {renderMetaRow(themeRow)}
+              </motion.div>
+            )}
           </div>
 
           {canNav && (
@@ -6162,6 +6358,7 @@ function Lightbox({ confession, onClose, onPrev, onNext, onExplore }) {
  */
 function NoteDrawer({ confession, onClose, onPrev, onNext }) {
   const reduceMotion = useReducedMotion();
+  const compact = useArchiveNavCompact();
   const open = !!confession;
   const canNav = !!(onPrev || onNext);
 
@@ -6182,11 +6379,23 @@ function NoteDrawer({ confession, onClose, onPrev, onNext }) {
   // Detail metadata — show whichever fields are present (live sheet vs. bundled
   // fallback carry different subsets). Order: theme → location → collected.
   const meta = confession?.metadata || {};
-  const metaEntries = [
-    ['Theme', confession?.category ? formatCategoryLabel(confession.category) : null],
+  const themeEntry = ['Theme', confession?.category ? formatCategoryLabel(confession.category) : null];
+  const allMetaEntries = [
+    themeEntry,
     ['Location', meta.location],
     ['Collected', meta.collected],
   ].filter(([, v]) => v);
+
+  // On a phone the theme travels to the bottom, under the transcription: the
+  // confession's own words come first and the classification reads as a
+  // footnote on them. Matches EXPLORE, where the category is docked below the
+  // transcript. Desktop keeps theme at the head of the metadata block.
+  // Reordered in the markup rather than with CSS order so the reading order
+  // assistive tech gets matches the order on screen.
+  const showThemeBelow = compact && !!themeEntry[1];
+  const metaEntries = showThemeBelow
+    ? allMetaEntries.filter((e) => e !== themeEntry)
+    : allMetaEntries;
 
   const backdropMotion = reduceMotion
     ? { initial: { opacity: 0 }, animate: { opacity: 1 }, exit: { opacity: 0 } }
@@ -6357,6 +6566,25 @@ function NoteDrawer({ confession, onClose, onPrev, onNext }) {
                   >
                     {transcription}
                   </Text>
+                </div>
+              )}
+
+              {showThemeBelow && (
+                <div
+                  style={{
+                    marginTop: 18,
+                    paddingTop: 14,
+                    borderTop: '1px solid rgba(207,202,183,0.1)',
+                    display: 'flex',
+                    gap: 14,
+                    alignItems: 'baseline',
+                    justifyContent: 'space-between',
+                  }}
+                >
+                  <span style={{ ...labelStyle, flex: '0 0 auto' }}>{themeEntry[0]}</span>
+                  <span style={{ ...valueStyle, flex: '1 1 auto', minWidth: 0, textAlign: 'right', overflowWrap: 'anywhere' }}>
+                    {themeEntry[1]}
+                  </span>
                 </div>
               )}
             </>
@@ -6706,13 +6934,26 @@ const expValueStyle = {
 /** Metadata caption under the enlarged note (NOTE # / DATE / LOCATION / THEME
  *  + a two-line transcript peek). */
 function ExperimentCaption({ note }) {
+  const compact = useArchiveNavCompact();
   const m = note.metadata || {};
+  const themeRow = ['THEME', note.category ? formatCategoryLabel(note.category) : 'N/A'];
+  // Phone: THEME leaves the metadata line and re-forms under the transcript
+  // peek, so the note's words are read before its classification — the order
+  // EXPLORE, the note drawer and the lightbox all use on mobile. On desktop the
+  // caption stays one metadata line above the peek.
+  const themeBelow = compact;
   const rows = [
     ['DATE', m.date],
     ['LOCATION', m.location],
-    ['THEME', note.category ? formatCategoryLabel(note.category) : 'N/A'],
+    ...(themeBelow ? [] : [themeRow]),
   ];
   const transcription = (note.transcription || '').trim();
+  const metaRow = ([label, value]) => (
+    <div key={label} style={{ display: 'flex', gap: 6, alignItems: 'baseline' }}>
+      <span style={expLabelStyle}>{label}</span>
+      <span style={expValueStyle}>{value || '—'}</span>
+    </div>
+  );
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8, flex: '0 0 auto' }}>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 18px' }}>
@@ -6720,12 +6961,7 @@ function ExperimentCaption({ note }) {
           <span style={expLabelStyle}>NOTE</span>
           <span style={expValueStyle}>{String(note.id)}</span>
         </div>
-        {rows.map(([label, value]) => (
-          <div key={label} style={{ display: 'flex', gap: 6, alignItems: 'baseline' }}>
-            <span style={expLabelStyle}>{label}</span>
-            <span style={expValueStyle}>{value || '—'}</span>
-          </div>
-        ))}
+        {rows.map(metaRow)}
       </div>
       {transcription ? (
         <p
@@ -6744,6 +6980,7 @@ function ExperimentCaption({ note }) {
           {transcription}
         </p>
       ) : null}
+      {themeBelow ? metaRow(themeRow) : null}
     </div>
   );
 }

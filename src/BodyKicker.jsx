@@ -13,7 +13,7 @@ import { inkA } from './colors';
  * Read top-to-bottom. Each value is ms after the beat scrolls into view.
  *
  *    0ms   nothing — the body line above is still dissolving in
- *  900ms   "communicate"  rises + untilts from a steeper angle
+ *  900ms   "communicate"  fades in, untilting from a steeper angle
  * 1160ms   "work"         same, tilted harder the other way
  * 1420ms   "think"        same, nearly upright
  *
@@ -64,7 +64,6 @@ const MONO = 'var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace)';
  * verb's tail arrives underneath the start of "work" at 390px while still looking
  * loose at 1440. */
 const VERBS = {
-  riseY: 20, //        px each verb rises from
   entryTiltMul: 2.1, // entrance angle as a multiple of the resting tilt
   spread: 16.5, //     % of the block a verb sits off centre at offX ±1
   spring: { type: 'spring', stiffness: 180, damping: 18, mass: 1 },
@@ -227,7 +226,6 @@ export default function BodyKicker({ style, start, delayS = 0 }) {
       verbStagger: [TIMING.verbStagger, 0, 900, 20],
       asciiType: [TIMING.asciiType, 0, 4000, 50],
       asciiIdle: [TIMING.asciiIdle, 0, 6000, 50],
-      riseY: [VERBS.riseY, 0, 80, 1],
       entryTiltMul: [VERBS.entryTiltMul, 0, 5, 0.1],
       tiltScale: [1, 0, 3, 0.05],
       spread: [VERBS.spread, 0, 40, 0.5],
@@ -295,8 +293,8 @@ export default function BodyKicker({ style, start, delayS = 0 }) {
             /* The offset is `left` rather than a transform: it resolves against
                the BLOCK's width, so the scatter holds its proportions from a
                desktop down to a phone, and it leaves the transform entirely to
-               the entrance — the rise and the untilt still turn the line about
-               its own centre. */
+               the entrance's untilt, which turns the line about its own
+               centre. */
             style={{
               alignSelf: 'center',
               position: 'relative',
@@ -305,12 +303,10 @@ export default function BodyKicker({ style, start, delayS = 0 }) {
             }}
             initial={{
               opacity: 0,
-              y: dials.riseY,
               rotate: tilt * dials.entryTiltMul,
             }}
             animate={{
               opacity: on ? 1 : 0,
-              y: on ? 0 : dials.riseY,
               rotate: on ? tilt : tilt * dials.entryTiltMul,
             }}
             transition={reduce ? { duration: 0.3 } : VERBS.spring}

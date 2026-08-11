@@ -54,10 +54,14 @@ const STACK_INACTIVE_OPACITY = { near: 0.06, far: 0.025 };
 const MORPH_S = 0.52; // s — bridge image travel/scale
 const BRIDGE_FADE_S = 0.3; // s — stack (neighbours + dial + chrome) fades up
 // The category context (desktop left wheel / mobile top-left caption) washes in
-// a beat AFTER the note and its date/location have landed (cf. META_TIMING in
-// SideDial: metaRow 0.4s), so the eye reads the note first and the surrounding
-// category settles in second rather than popping in with everything else.
-const CATEGORY_REVEAL_DELAY_S = 0.55;
+// a beat AFTER the note and its date/location have landed (cf.
+// META_ENTRANCE_HOLD_S in SideDial: the metadata block holds 0.8s on entrance),
+// so the eye reads the note first and the surrounding category settles in second
+// rather than popping in with everything else. Kept the same 0.15s behind the
+// metadata's arrival that it sat at when that block came in on 0.4s — the
+// category is the frame around the note, and it can't be the thing that
+// introduces the note's own date and place.
+const CATEGORY_REVEAL_DELAY_S = 0.95;
 // The dark backdrop no longer slams opaque on frame 0. During a morph it stays
 // transparent for a beat — the clicked note lifts off (crisp bridge) while the
 // rest of the index dissolves underneath (see GRID EXIT in App.jsx) — then the
