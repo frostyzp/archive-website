@@ -48,9 +48,13 @@ import {
   useInactiveCardParams,
 } from './noise';
 import { INK, inkA } from './colors';
+import { PaperTextureLayer, usePaperStockDials } from './PaperTexture';
 import { LINK_UNDERLINE, LINK_UNDERLINE_CSS, linkUnderlineRaised } from './linkUnderline';
+import { ScatterLabel } from './letterScatter';
+import { TracedOutline } from './TracedOutline';
 import { subscribeToKit } from './kit';
 import NoteOpenView, {
+  NOTE_SURFACE_Z,
   TILE_PADDING,
   WHEEL,
   wheelSlot,
@@ -77,9 +81,9 @@ const HOVER_EASE_ARR = [0.17, 0.84, 0.44, 1];
  * so the thing on top reads as the only live layer. Eased slowly enough that it
  * settles with whatever is fading in over it.
  *
- * Worn by the grid behind the note Lightbox and by the whole view behind the
- * About drawer — the same recession either way, so opening one never looks like
- * a different kind of thing to opening the other.
+ * Worn by the grid behind the note Lightbox. The About drawer dims the page with
+ * its own backdrop instead — the index categories and notes stay as they are
+ * behind that wash rather than being blurred and halved again on top of it.
  */
 const recede = (on) => ({
   filter: on ? 'grayscale(1) blur(3px)' : 'none',
@@ -189,6 +193,15 @@ function useGridColumns() {
 // labels stay legible when grid content scrolls underneath.
 const ARCHIVE_NAV_GRADIENT_HEIGHT = 152;
 
+/**
+ * The layer the edge washes sit on. Anything that puts TEXT inside the top or
+ * bottom 152px has to clear this or it gets read through up to 0.88 of black —
+ * which is a scrim, not a colour choice, and no amount of brightening the type
+ * fixes it. The full-note surfaces (the index Lightbox, the EXPLORE tab) are
+ * both in that band, so both elevate past it; see NOTE_SURFACE_Z.
+ */
+const ARCHIVE_EDGE_WASH_Z = 150;
+
 /** One vertical rhythm for fixed title / view toggle / ABOUT. */
 const ARCHIVE_NAV_CHROME_HEIGHT = 40;
 
@@ -267,7 +280,7 @@ const MENU_SURFACE_SHADOW = '0 18px 46px rgba(0,0,0,0.55)';
  * content fades out at the edge instead of being cut off. Both ends share the
  * same stops and height — only the direction flips.
  */
-function ArchiveEdgeGradientWash({ edge = 'top', zIndex = 150 }) {
+function ArchiveEdgeGradientWash({ edge = 'top', zIndex = ARCHIVE_EDGE_WASH_Z }) {
   const atTop = edge === 'top';
   return (
     <div
@@ -815,6 +828,12 @@ const ABOUT_DRAWER = {
   // at #2e2e2e against a #0a0a0a page a closed drawer reads as a light grey
   // slab stuck to the edge of the screen rather than something put away.
   idle: '#1f1f1f',
+  // How much paper stock the panel wears, and the folder tabs cut from the same
+  // surface with it. This is the drawer's own knob — the sheet's character lives
+  // in PaperTexture; this is only how far it comes through here. Raise for more
+  // present stock, drop toward 0 for a flat panel. See PaperTexture for what the
+  // grain measures at this strength.
+  paperStrength: 0.09,
   // Section headings ride on a card — see `headStyle`. Darker than the panel
   // and set in a mid grey rather than the warm ink the copy wears, so it reads
   // as a label laid on the panel instead of a brighter run of the same text.
@@ -827,6 +846,15 @@ const ABOUT_DRAWER = {
   cardBtn: '#3a3a3a',
   cardBtnHover: '#4a4a4a',
   cardTilt: -1.2, // deg — leans with the heading cards, a touch shallower
+  // How far past the copy column's inset the card runs, each side. The slab is
+  // the one object in the column that isn't a run of text, and at the column's
+  // own width it read as another paragraph with a box drawn round it; carried out
+  // into the panel's margin it reads as laid over the column instead of set into
+  // it. Both figures leave the tilted card ~12px short of the panel's edge — the
+  // phone's inset is only 22px, so the desktop bleed there would put the card
+  // nearly on the screen edge, hence the shorter one.
+  cardBleedX: 12,
+  cardBleedXCompact: 8,
   tabOutline: 'rgba(255,255,255,0.12)',
   // Wide enough for nav-sized type (16px) once it is rotated −90°, plus air on
   // the outer edge and at the spine.
@@ -850,6 +878,16 @@ const ABOUT_DRAWER = {
   // Panel body visible beyond the hanging tab — enough to read as a drawer
   // peeking, not just a lone tab.
   peekSliver: 18,
+  // Further out the shut drawer leans while the pointer is on it. Held under the
+  // 10px the sliver has spare before the copy column's 28px inset: at 12 the
+  // nudge brought the first line of the section out past the edge, so instead of
+  // a drawer acknowledging the cursor it looked like one coming open a crack and
+  // stopping — and the exposed edge is where the column's own scrollbar lives.
+  hoverNudgeX: 6,
+  // Deliberately unlike the rest of the site's hover work, which answers in
+  // ~0.18s. Six pixels covered that fast is a twitch; drawn out this long the
+  // same six read as the drawer breathing toward you.
+  hoverNudgeS: 0.7,
   slideS: 0.48,
   fadeS: 0.22,
   // Between the tabs that only exist once the drawer is open, as they drop in
@@ -880,7 +918,7 @@ const ABOUT_TABS = [
  * / ESC) both exit with opacity only — no scale or drift so it reads as a
  * simple dismiss. prefers-reduced-motion skips transforms on enter too.
  */
-function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false }) {
+function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false, onPeekLanded }) {
   const reduceMotion = useReducedMotion();
   // Desktop: right-side peek drawer with file-folder tabs. Phone: full-bleed
   // takeover (same copy), opened from the nav — no permanent peek on a narrow
@@ -889,10 +927,25 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false }) {
   // The peek entrance is a mount-time animation: `initial` parks the drawer off
   // the right edge with no animation, and framer's own `delay` holds it there
   // until the filter rail has landed. Driving it from state instead animated the
-  // drawer *out* first, which is what read as a bounce. Replays are a remount
-  // (the parent keys this component), so there is nothing to reset here.
+  // drawer *out* first, which is what read as a bounce. It runs once a session —
+  // the parent refuses it after the first landing (`aboutPeekIsSpent`), so a tab
+  // that is already peeking never gets pulled back off the edge to arrive again.
   const shouldPeekEntrance = !compact && !reduceMotion && !skipPeekEntrance;
   const peekEntranceDone = useRef(!shouldPeekEntrance);
+
+  // Whether the pointer (or the keyboard) is on the shut drawer, which leans it a
+  // few pixels further out and lights its tab. An invitation, not an opening: the
+  // drawer answers that you have found it and waits to be clicked.
+  const [peekInvited, setPeekInvited] = useState(false);
+  // Only ever while the drawer is shut, and never on a phone, where there is no
+  // sliver to lean and no pointer to lean toward. Everything downstream reads
+  // this rather than the raw state, so an invitation left standing by a drawer
+  // that opened under the cursor can't reach the panel's x or the tab's colour.
+  const peekInviting = peekInvited && !open && !compact;
+  // Reduced motion keeps the lit tab and loses the travel: a pointer landing on
+  // something and that thing brightening is feedback, whereas the panel sliding
+  // is the part someone who asked for less movement asked to be without.
+  const peekNudged = peekInviting && !reduceMotion;
 
   // Mailing-list signup state.
   const [email, setEmail] = useState('');
@@ -913,6 +966,15 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false }) {
       setSubscribeError('');
       setActiveSection('about');
     }
+  }, [open]);
+
+  // A panel that opens under the cursor never gets a pointerleave, so the
+  // invitation has to be withdrawn when it is accepted. Without this the drawer
+  // came back from a close still holding it and settled six pixels off the edge
+  // with the pointer nowhere near — and nothing would clear it until the pointer
+  // entered the sliver and left it again.
+  useEffect(() => {
+    if (open) setPeekInvited(false);
   }, [open]);
 
   async function handleSubscribe(e) {
@@ -945,6 +1007,13 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false }) {
   }, [open, onClose]);
 
   const easeOut = [0.165, 0.84, 0.44, 1];
+
+  // One sheet of stock for the whole drawer — the panel and every folder tab cut
+  // from it — so tuning it in the "Paper Stock" panel (?dial=1) can't leave the
+  // tabs wearing different paper than the surface they belong to. The strength
+  // the drawer ships is what the dial opens on; each tab still adds its own seed
+  // offset below to keep its own crop of the field.
+  const paper = usePaperStockDials({ strength: ABOUT_DRAWER.paperStrength });
 
   // ── Shared copy + styles for the three columns ──────────────────────────
   // Body copy sits on the same warm ink as the rest of the drawer. It used to be
@@ -1001,7 +1070,7 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false }) {
   };
 
   const introParas = [
-    'What We Tell AI is a project exploring our secrets about our complex relationship with A.I. (artificial intelligence).',
+    'What We Tell AI is a project exploring our secrets about our complex relationship with Artificial Intelligence (A.I.)',
     'Last September, we set up a box in Dolores Park, San Francisco and asked strangers to write down a confession about their relationship with A.I.',
     'Since then, we’ve collected more than 350 handwritten notes gathered in parks, shopping malls, and even AI conferences across the California Bay Area, New York, and beyond.',
     'A snapshot of these strange times, WWTAI shines a light on the emerging taboos around AI use and its increasing presence in our intimate lives in 2026, just 3 years after the release of ChatGPT.',
@@ -1153,7 +1222,12 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false }) {
     fontSize: 11,
     letterSpacing: '0.12em',
     textTransform: 'uppercase',
-    color: inkA(0.45),
+    // The same ink as the values opposite them. These rows are the column's
+    // closing matter, not a form — CONTACT and INSTAGRAM are one line of
+    // information read across, and dropping the label to a dimmer grey made it
+    // look like a field caption sat behind glass. The alignment and the hairlines
+    // already say which side is which without a change of colour doing it.
+    color: inkA(0.88),
     lineHeight: 1.5,
   };
   const creditCardValueStyle = {
@@ -1164,6 +1238,17 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false }) {
     color: inkA(0.88),
     lineHeight: 1.5,
     textAlign: 'right',
+  };
+  // A row carrying more than one value stacks them down the right edge rather
+  // than running them together on one line. At this tracking a comma list is
+  // long enough to reach the label opposite it — "FAKTORY, COURIER NEW" sat on
+  // top of TYPEFACES — and the two contact links already read as a stack, so the
+  // whole card holds one shape for "this row has several answers".
+  const creditCardStackStyle = {
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'flex-end',
+    gap: 6,
   };
 
   // Credits + contact — mono rows, label left and value right, hairlines between
@@ -1184,14 +1269,7 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false }) {
           key: 'contact',
           label: 'Contact',
           value: (
-            <div
-              style={{
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: 'flex-end',
-                gap: 6,
-              }}
-            >
+            <div style={creditCardStackStyle}>
               <a
                 className="about-contact-link"
                 href="https://www.instagram.com/whatwetellai"
@@ -1245,7 +1323,10 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false }) {
           key: 'type',
           label: 'Typefaces',
           value: (
-            <span style={creditCardValueStyle}>Faktory, Courier New</span>
+            <div style={creditCardStackStyle}>
+              <span style={creditCardValueStyle}>Faktory</span>
+              <span style={creditCardValueStyle}>Courier New</span>
+            </div>
           ),
           last: true,
         },
@@ -1293,18 +1374,36 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false }) {
   // the panel, tilted with the section headings, holding a title line over a
   // hairline, a rule-only field, and a filled button across the foot. Rendered
   // once per breakpoint, so the <style> block is safe here.
+  //
+  // The dashed edge is the same hairline the search fields and facet tabs wear,
+  // which is what keeps a filled slab in a panel of unfilled matter reading as
+  // part of the same drawing rather than as a component from somewhere else. It
+  // is a border on the card, not a ring around it: the width comes from the
+  // column plus the bleed below, so the 1px comes out of the inside.
+  const cardBleedX = compact ? ABOUT_DRAWER.cardBleedXCompact : ABOUT_DRAWER.cardBleedX;
+  // The column clips what leaves it, and its padding box sits exactly on the
+  // inset the copy is set to — so a card bleeding outward would have its dashed
+  // edge sliced off at both sides. See the copy column, which opens its clip by
+  // this much without moving the copy. Wider than the bleed itself: the tilt
+  // swings the corners ~2px further out again, and the rest is air, so the dash
+  // sits clear of the clip rather than against it.
+  const colBleedGutter = cardBleedX + 6;
   const emailArmed = email.trim().length > 0;
   const mailingListBlock = () => (
     <div
       className="about-subscribe"
       style={{
         marginTop: 22,
-        // The tilt swings the corners a couple of px past the card's box; the
-        // inset keeps them off the column's edges rather than under its clip.
-        marginInline: 3,
+        // Negative, so the slab runs out past the column's inset on both sides
+        // rather than being held to the width of the copy above it.
+        marginInline: -cardBleedX,
         padding: compact ? '16px 16px 15px' : '17px 18px 16px',
         background: ABOUT_DRAWER.cardBg,
-        borderRadius: 12,
+        border: `1px dashed ${inkA(0.22)}`,
+        // Held at the SUBSCRIBE button's own radius (8) rather than going tighter:
+        // that button runs the full width of the card, so anything smaller here
+        // would leave the inner corner rounder than the outer one it sits in.
+        borderRadius: 8,
         transform: `rotate(${ABOUT_DRAWER.cardTilt}deg)`,
       }}
     >
@@ -1482,9 +1581,16 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false }) {
   const openX = 'calc(0% + 0px)';
   // Peek: a few px of panel body + the hanging ABOUT tab. Fully hidden on
   // phone (opened from the nav) and when the drawer would cover a note lightbox.
+  //
+  // The hover lean is folded into this one resting figure rather than given an
+  // animation of its own. Two animations on x — the slide and the nudge — fought
+  // over the transform: whichever ran last won the property outright, so a hover
+  // caught near the end of a close snapped the drawer to the sliver and back out.
   const closedX = compact
     ? `calc(100% + ${ABOUT_DRAWER.tabW}px)`
-    : `calc(100% + ${-ABOUT_DRAWER.peekSliver}px)`;
+    : `calc(100% + ${-(
+        ABOUT_DRAWER.peekSliver + (peekNudged ? ABOUT_DRAWER.hoverNudgeX : 0)
+      )}px)`;
   const peekHiddenX = `calc(100% + ${ABOUT_DRAWER.tabW}px)`;
 
   // Phone's section navigation: three markers on a hairline, the one you are
@@ -1541,7 +1647,19 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false }) {
               transition: `color 0.18s ${HOVER_EASE}, background 0.18s ${HOVER_EASE}`,
             }}
           >
-            {tab.label}
+            {/* Only the live tab has a surface to texture — the rest are cut-outs
+                in the panel, and stock over nothing would just be a grey smear
+                where a transparent tab used to be. */}
+            {on ? (
+              <PaperTextureLayer
+                {...paper}
+                id="roughpaper-about-top-tab"
+                seed={paper.seed + 3}
+                radius="5px 5px 0 0"
+              />
+            ) : null}
+            {/* Over the stock, which sits at z-index 0. */}
+            <span style={{ position: 'relative' }}>{tab.label}</span>
           </button>
         );
       })}
@@ -1637,7 +1755,14 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false }) {
       clip-path: ${ABOUT_DRAWER.tabClip};
       -webkit-clip-path: ${ABOUT_DRAWER.tabClip};
     }
-    .about-drawer-tab:hover:not([aria-selected='true']):not(:disabled) {
+    /* The open drawer's unread sections lift on hover from here, where a rule
+       can out-rank the colour framer writes inline on the tab. The peeking tab
+       is held out of it: while the drawer is shut that same lift is animated with
+       the panel's lean (see \`invited\`), and this rule — !important, untransitioned,
+       and a duller grey than the accent — would win it, snapping ABOUT to
+       rgba(…,0.72) the instant the pointer arrived and pinning it there for the
+       length of the fade that was supposed to be taking it somewhere brighter. */
+    .about-drawer-tab:hover:not([aria-selected='true']):not(:disabled):not([data-peek]) {
       color: ${inkA(0.72)} !important;
     }
   `;
@@ -1645,6 +1770,14 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false }) {
   const drawerContent = (
     <>
       <style>{sharedStyles}</style>
+
+      {/* The panel's stock. An empty layer that generates lit paper and blends it
+          into the fill behind it, so the surface keeps its grey — and keeps
+          riding the light/dark switch of the slide — while picking up tooth. It
+          sits under the copy (the column is z-index 1) and under the folder tabs
+          (z-index 2), and stops at the panel's edges, so the tabs hanging off the
+          spine stay clean. */}
+      <PaperTextureLayer {...paper} />
 
       {/* File-folder tabs on the left edge — flush to the top, and the section
           navigation on desktop. They hang outside the panel, which a phone's
@@ -1683,6 +1816,13 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false }) {
           // selected treatment — the panel's own light grey, on a black page,
           // announcing a section nobody is reading.
           const isActive = open && activeSection === tab.id;
+          // ABOUT is the only lettering a shut drawer has on screen, and it is
+          // dim on purpose, so it is the thing that brightens while the panel
+          // leans out. `shown` narrows this to that one tab: the other two are
+          // hidden at zero opacity behind the spine while the drawer is shut, and
+          // lighting type nobody can see is how a hover ends up costing three
+          // colour tweens instead of one.
+          const invited = peekInviting && shown;
 
           // ABOUT is the tab that hangs off the closed drawer, so it is already
           // there and waits for nothing. The rest arrive after the panel has
@@ -1724,8 +1864,24 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false }) {
               aria-label={tab.label}
               aria-selected={isActive}
               aria-controls="about-panel-body"
+              // What exempts the peeking tab from the stylesheet's hover lift —
+              // see the `.about-drawer-tab:hover` rule.
+              data-peek={!open && shown ? 'true' : undefined}
               disabled={!shown}
               onClick={() => shown && selectTab(tab.id)}
+              // The keyboard gets the same invitation the pointer does: the shut
+              // drawer's tab is reachable by tab key and, without this, was the
+              // one control on the page that gave nothing back when it was
+              // reached. Guarded on :focus-visible because a click focuses too,
+              // and a mouse already has the hover — counting that click as an
+              // invitation left the drawer leaning out behind the panel it had
+              // just opened, with the pointer long gone.
+              onFocus={(e) => {
+                if (!open && peekEntranceDone.current && e.currentTarget.matches(':focus-visible')) {
+                  setPeekInvited(true);
+                }
+              }}
+              onBlur={() => setPeekInvited(false)}
               initial={false}
               animate={{
                 opacity: shown ? 1 : 0,
@@ -1740,7 +1896,10 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false }) {
                 // Animated rather than set in `style` so the tab lights with the
                 // panel it belongs to instead of snapping ahead of the slide.
                 backgroundColor: isActive ? ABOUT_DRAWER.bg : ABOUT_DRAWER.idle,
-                color: isActive ? '#fff' : inkA(0.48),
+                // The accent the drawer already spends on called-out type, rather
+                // than a brighter grey: the tab is being offered, and the yellow
+                // is what the rest of the panel uses to say so.
+                color: isActive ? '#fff' : invited ? ACCENT_INK : inkA(0.48),
               }}
               transition={{
                 duration: reduceMotion ? 0 : ABOUT_DRAWER.fadeS,
@@ -1752,6 +1911,15 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false }) {
                 opacity: arrive,
                 height: slot,
                 marginBottom: slot,
+                // Except the invitation, which travels with the panel it belongs
+                // to: on `fadeS` the letters were at full accent while the drawer
+                // was a third of the way out, so the tab lit and then the drawer
+                // followed instead of the two being one gesture. It is a tween
+                // even under reduced motion — a colour arriving instantly is a
+                // different thing from a panel that moves.
+                ...(invited
+                  ? { color: { duration: ABOUT_DRAWER.hoverNudgeS, ease: easeOut } }
+                  : null),
               }}
               style={{
                 position: 'relative',
@@ -1773,8 +1941,20 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false }) {
                 marginRight: isActive ? -1 : 0,
               }}
             >
+              {/* A tab is cut from the same stock as the panel, so it carries the
+                  same grain — its own crop of the field, seeded per tab so four
+                  of them stacked up the spine don't repeat the same patch. The
+                  panel's layer already declares the filter for the drawer; these
+                  each need their own, since the seed is what differs. */}
+              <PaperTextureLayer
+                {...paper}
+                id={`roughpaper-about-tab-${n}`}
+                seed={paper.seed + n * 7}
+              />
               <span
                 style={{
+                  // Over the stock, which sits at z-index 0.
+                  position: 'relative',
                   fontFamily: ARCHIVE_NAV_TEXT.fontFamily,
                   fontSize: ARCHIVE_NAV_TEXT.fontSize,
                   fontWeight: ARCHIVE_NAV_TEXT.fontWeight,
@@ -1839,7 +2019,16 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false }) {
             // heading is inside this column now and carries that gap on its own
             // margin, so a top pad here would push the title down the panel and
             // leave a band of dead space the copy never scrolls through.
-            padding: compact ? '16px 0 72px' : '0 0 48px',
+            //
+            // Side padding and the negative margin below are one move, not two:
+            // together they widen the box (and with it the clip `overflowX` cuts
+            // at) while putting the copy back on exactly the inset it had, so the
+            // mailing-list card can bleed out past the text without its dashed
+            // edge being sliced off. Nothing here moves the reading column.
+            padding: compact
+              ? `16px ${colBleedGutter}px 72px`
+              : `0 ${colBleedGutter}px 48px`,
+            marginInline: -colBleedGutter,
           }}
         >
           {compact ? null : titleRow}
@@ -1958,9 +2147,45 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false }) {
           duration: reduceMotion ? 0 : ABOUT_DRAWER.slideS,
           ease: easeOut,
           delay: open || peekEntranceDone.current ? 0 : ABOUT_PEEK_ENTER_DELAY,
+          // Leaning out is a slower thing than the drawer's own slide, and both
+          // are the same property, so the lean brings its own clock for as long
+          // as it lasts. Framer takes a named value's transition whole rather
+          // than merging it into the defaults above, which is what keeps the
+          // entrance delay off a nudge that lands after the drawer has arrived.
+          //
+          // The way out only. Settling back rides `slideS`, which is also what a
+          // close needs, and x cannot tell those two apart without a record of
+          // why it last changed — while a six-pixel return drawn out longer than
+          // the tab's own dimming reads as the drawer lagging behind the pointer
+          // rather than easing home.
+          ...(peekNudged
+            ? { x: { duration: ABOUT_DRAWER.hoverNudgeS, ease: easeOut } }
+            : null),
         }}
+        // Read on the panel, not on the tab. The tab hangs outside the spine on a
+        // translateX(-100%), so what the pointer meets is two strips of one
+        // object — a handler on each fired an end and a start as the cursor
+        // crossed between them, and the drawer settled a pixel back before
+        // leaning out again. The tab is a descendant of this element, so
+        // pointerenter/leave here spans both and ignores the seam.
+        //
+        // Framer's hover pair rather than a CSS :hover, because it is
+        // pointer-aware: a tap fires neither, so a touch that never "leaves"
+        // can't strand the drawer six pixels out for the rest of the session.
+        onHoverStart={() => {
+          // Nothing during the once-a-session entrance. The arrival owns x and
+          // still has `ABOUT_PEEK_ENTER_DELAY` on it, so a nudge landing while
+          // the drawer was still sliding in re-queued that wait from wherever it
+          // had got to and left the panel stopped short of the edge.
+          if (!open && peekEntranceDone.current) setPeekInvited(true);
+        }}
+        onHoverEnd={() => setPeekInvited(false)}
+        // Told upward as well as kept here: this ref only lives as long as the
+        // component, and the guarantee that the peeking tab stays on screen has
+        // to outlast any remount.
         onAnimationComplete={() => {
           peekEntranceDone.current = true;
+          onPeekLanded?.();
         }}
         style={{
           position: 'fixed',
@@ -1980,32 +2205,57 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false }) {
   );
 }
 
+/** How much of the onboarding cta's scatter the view tabs take.
+ *
+ *  Less, because these are chrome rather than a closing flourish: the cta is met
+ *  once at the end of a sequence, while a cursor crosses INDEX / EXPLORE on the
+ *  way to everything else in the bar. At full strength the pair twitched as the
+ *  pointer passed over them, which is the difference between a label coming
+ *  loose and a nav bar that can't sit still. */
+const NAV_SCATTER_STRENGTH = 0.6;
+
 function ToggleButton({ active, onClick, children, style }) {
+  const [hovered, setHovered] = useState(false);
   return (
-    <button
+    <motion.button
       onClick={(e) => {
         onClick?.(e);
       }}
+      // Motion's hover pair rather than mouseenter / :hover, because it is
+      // pointer-aware: a tap on a phone fires neither, so the letters can't be
+      // left scattered by a touch that never "leaves."
+      onHoverStart={() => setHovered(true)}
+      onHoverEnd={() => setHovered(false)}
+      // The label is a span per glyph below, which a screen reader would
+      // otherwise spell out a letter at a time.
+      aria-label={children}
       style={{
         background: 'none',
         border: 'none',
         padding: '2px 4px',
         ...ARCHIVE_NAV_TEXT,
         ...ARCHIVE_LINK_UNDERLINE,
-        opacity: active ? 1 : 0.5,
+        // The lift rides the same state as the scatter rather than being
+        // written onto the node, so a re-render under the cursor can't drop it
+        // back to the resting value.
+        opacity: active ? 1 : hovered ? 0.8 : 0.5,
         cursor: 'pointer',
         transition: `opacity 0.2s ${HOVER_EASE}`,
         ...style,
       }}
-      onMouseEnter={(e) => {
-        if (!active) e.currentTarget.style.opacity = 0.8;
-      }}
-      onMouseLeave={(e) => {
-        if (!active) e.currentTarget.style.opacity = 0.5;
-      }}
     >
-      {children}
-    </button>
+      {/* The dotted rule is painted on the button, so it stays one line under
+          the word while the glyphs come loose above it.
+
+          The tab you are already on doesn't scatter: hover on this pair has
+          always meant "you can go here" — it is why the opacity lift skips the
+          active tab too — and the current view is not somewhere to go. */}
+      <ScatterLabel
+        text={children}
+        scattered={hovered && !active}
+        strength={NAV_SCATTER_STRENGTH}
+      />
+    </motion.button>
   );
 }
 
@@ -2509,6 +2759,38 @@ const gridChipStyle = (active) => ({
 const MOBILE_FILTER_FILL = 'rgba(31, 30, 28, 0.72)';
 const MOBILE_FILTER_FILL_HOVER = 'rgba(31, 30, 28, 0.86)';
 
+/* ── SEARCH FIELD ICON ──────────────────────────────────────────────────
+ * A magnifier set just left of the placeholder, drawn as a background image
+ * because an <input> can't hold a child. It stays put once there's a query in
+ * the field: it marks what the field IS, so having it leave with the placeholder
+ * would turn it into decoration on empty state.
+ *
+ * The glyph is inline SVG rather than a font glyph (⌕ is missing from the mono
+ * stack and lands as a box) or a component, matching how the native clear ✕ is
+ * replaced in .grid-search-input's stylesheet below.
+ *
+ * It rides the placeholder's own alpha at rest, so nothing in an untouched field
+ * is brighter than anything else in it — the whole control reads as one unlit
+ * object until you're in it.
+ *
+ * MUST be spread into an inline style, and any fill declared alongside it MUST be
+ * `backgroundColor`, not the `background` shorthand: inline wins over the class,
+ * and the shorthand would blank the image back out (the same trap documented in
+ * linkUnderline.js).
+ * ────────────────────────────────────────────────────────────────────── */
+const SEARCH_ICON_PX = 13;
+/** px between the glyph and the text that follows it. */
+const SEARCH_ICON_GAP = 8;
+const searchIconStyle = (inset) => ({
+  backgroundImage:
+    "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23CFCAB7' stroke-opacity='0.4' stroke-width='1.5' stroke-linecap='round'%3E%3Ccircle cx='6.75' cy='6.75' r='4.25'/%3E%3Cpath d='M10.1 10.1 L13.6 13.6'/%3E%3C/svg%3E\")",
+  backgroundRepeat: 'no-repeat',
+  backgroundPosition: `left ${inset}px center`,
+  backgroundSize: `${SEARCH_ICON_PX}px ${SEARCH_ICON_PX}px`,
+  // The glyph occupies the padding, so the text has to start clear of both.
+  paddingLeft: inset + SEARCH_ICON_PX + SEARCH_ICON_GAP,
+});
+
 /** Embedded facet menu trigger that sits beside the search field, squared off to
     match it — they share a row, and a pill next to that dashed rectangle read as
     a control borrowed from somewhere else. The lighter fill is what still tells
@@ -2685,6 +2967,18 @@ const railPoseAt = (geom, label, order) => {
 };
 const FILTER_SIDEBAR_ENTER_DELAY = ARCHIVE_NAV_CHROME_DELAY_GRID + 0.15;
 const FILTER_SIDEBAR_ENTER_STAGGER = 0.1;
+/**
+ * The search field's outline is drawn rather than faded (see TracedOutline), on
+ * the rail's own first beat. Long enough at a 470px perimeter to read as a line
+ * travelling the box, short enough to be closed before the second accordion has
+ * finished arriving under it — the trace is the top of one arrival, not a
+ * flourish the rest of the rail waits on.
+ */
+const SEARCH_OUTLINE_TRACE_DURATION = 0.62;
+/** The glyph and placeholder come up just behind the front of the trace, so the
+    field reads as a box being drawn and then filled rather than a label with a
+    line appearing around it. */
+const SEARCH_FIELD_INK_DELAY = 0.18;
 /** Last sidebar row (search + 2 accordions + copyright) lands, then ABOUT peeks in. */
 const ABOUT_PEEK_ENTER_DELAY =
   FILTER_SIDEBAR_ENTER_DELAY + 3 * FILTER_SIDEBAR_ENTER_STAGGER + 0.5;
@@ -4551,6 +4845,15 @@ function GridView({
         }
         .grid-search-input::placeholder { color: rgba(207,202,183,0.4); }
         .grid-search-input:focus { border-color: rgba(207,202,183,0.5); }
+        /* The rail's search field wears a traced outline instead of a border, so
+           the ink it is drawn in lives on the wrapper and reaches the stroke as
+           currentColor. Which also means the field brightening under the caret
+           is one colour on one element, rather than the four sides of a border. */
+        .grid-search-field {
+          color: rgba(207,202,183,0.3);
+          transition: color 0.2s ${HOVER_EASE};
+        }
+        .grid-search-field:focus-within { color: rgba(207,202,183,0.5); }
         /* The native search "clear" (✕) renders as a near-invisible dark glyph
            on this dark input — replace it with a white ✕ drawn via inline SVG
            (WebKit/Chromium only; this is where the type=search button lives). */
@@ -4808,10 +5111,11 @@ function GridView({
                 // Semi-translucent charcoal — same fill as the facet tabs beside
                 // it, so notes can show through as the grid scrolls under the
                 // bar. Dashed hairline + square corners are the desktop rail's.
-                background: MOBILE_FILTER_FILL,
+                backgroundColor: MOBILE_FILTER_FILL,
                 border: '1px dashed rgba(207,202,183,0.3)',
                 borderRadius: 0,
                 padding: '9px 12px',
+                ...searchIconStyle(12),
                 color: '#CFCAB7',
                 fontFamily: 'var(--font-mono)',
                 fontSize: 13,
@@ -4859,31 +5163,59 @@ function GridView({
             overflowX: 'hidden',
           }}
         >
-          <motion.input
-            className="grid-search-input"
-            type="search"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="SEARCH CONFESSIONS..."
-            aria-label="Search note transcripts"
-            initial={sidebarItemInitial}
-            animate={{ opacity: 1, x: 0 }}
-            transition={{ duration: reduceMotion ? 0 : 0.5, ease, delay: sidebarEnterDelay }}
-            style={{
-              flex: '0 0 auto',
-              width: '100%',
-              background: 'transparent',
-              border: '1px dashed rgba(207,202,183,0.3)',
-              borderRadius: 0,
-              padding: '9px 16px',
-              color: '#CFCAB7',
-              fontFamily: 'var(--font-mono)',
-              fontSize: 13,
-              letterSpacing: '0.04em',
-              outline: 'none',
-              transition: `border-color 0.2s ${HOVER_EASE}`,
-            }}
-          />
+          {/* The dashes round the field are a traced SVG outline, drawn in place
+              on the rail's first beat — so this row alone arrives without the
+              slide the rest of the rail has, and the field is standing at its
+              final position from the first frame. The wrapper is what the
+              outline is measured against and what carries the ink colour it
+              follows; it is a flex box because an <input> is inline, and the
+              descender space under an inline child would have pushed the
+              accordions a few px down the rail. */}
+          <div
+            className="grid-search-field"
+            style={{ position: 'relative', display: 'flex', flex: '0 0 auto', width: '100%' }}
+          >
+            <motion.input
+              className="grid-search-input"
+              type="search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              // "SEARCH CONFESSIONS..." needed 175px inside a 200px rail that only
+              // offers 166 — the ellipsis was already being clipped before the
+              // magnifier took another 21px for itself, which is the kind of thing
+              // that reads as a rendering bug rather than as a truncated string.
+              placeholder="SEARCH NOTES"
+              aria-label="Search note transcripts"
+              initial={sidebarSkipEnter ? false : { opacity: 0 }}
+              animate={{ opacity: 1 }}
+              transition={{
+                duration: reduceMotion ? 0 : 0.5,
+                ease,
+                delay: sidebarEnterDelay + (sidebarSkipEnter ? 0 : SEARCH_FIELD_INK_DELAY),
+              }}
+              style={{
+                width: '100%',
+                backgroundColor: 'transparent',
+                // Transparent, and only here to hold the 1px the box has always
+                // been inset by: the dashes themselves are the traced outline
+                // laid over this edge.
+                border: '1px solid transparent',
+                borderRadius: 0,
+                padding: '9px 16px',
+                ...searchIconStyle(16),
+                color: '#CFCAB7',
+                fontFamily: 'var(--font-mono)',
+                fontSize: 13,
+                letterSpacing: '0.04em',
+                outline: 'none',
+              }}
+            />
+            <TracedOutline
+              play={!sidebarSkipEnter}
+              delay={sidebarEnterDelay}
+              duration={SEARCH_OUTLINE_TRACE_DURATION}
+            />
+          </div>
 
           {[
             { id: 'category', label: 'Category' },
@@ -4939,13 +5271,14 @@ function GridView({
                   <span
                     aria-hidden="true"
                     style={{
-                      fontSize: 9,
-                      opacity: 0.7,
-                      transform: isOpen ? 'none' : 'rotate(-90deg)',
+                      fontSize: 12,
+                      lineHeight: 1,
+                      opacity: 0.85,
+                      transform: isOpen ? 'rotate(90deg)' : 'none',
                       transition: 'transform 0.18s ease',
                     }}
                   >
-                    ▼
+                    {'>'}
                   </span>
                 </button>
 
@@ -5506,7 +5839,14 @@ function Lightbox({ confession, onClose, onPrev, onNext, onExplore }) {
     ['THEME', themeValue, 'theme'],
   ];
 
-  return (
+  // Portalled to the body, not left inside GridView. The view root is
+  // `position: absolute; z-index: 1`, which makes it a stacking context — so
+  // whatever this sheet asked for only ever outranked GridView's own children,
+  // and the archive's top edge wash (z 150, a sibling of the view) painted
+  // straight over it. The metadata block lands at y≈58, where that gradient is
+  // still ~0.54 black: the DATE / LOCATION rows were being scrimmed, not
+  // under-coloured. On the body the layer means what it says.
+  return createPortal(
     <AnimatePresence>
       {open && (
         <motion.div
@@ -5517,7 +5857,11 @@ function Lightbox({ confession, onClose, onPrev, onNext, onExplore }) {
           style={{
             position: 'fixed',
             inset: 0,
-            zIndex: 1000,
+            // The same layer the EXPLORE tab rides, so a note is lit identically
+            // whichever way you reached it. Deliberately UNDER the nav chrome
+            // (z 200) — the bar fades to 0.22 while this is open, which only
+            // reads as receding if it's still painting on top.
+            zIndex: NOTE_SURFACE_Z,
             // Dark veil over the (already desaturated + softened) grid so the
             // focused note preview pops. `isolation` scopes the film-grain's
             // mix-blend to this layer.
@@ -5806,7 +6150,8 @@ function Lightbox({ confession, onClose, onPrev, onNext, onExplore }) {
           )}
         </motion.div>
       )}
-    </AnimatePresence>
+    </AnimatePresence>,
+    document.body
   );
 }
 
@@ -6988,9 +7333,13 @@ function ArchivePage({ confessionQuery, initialEmotion = null, initialView = 'th
   }, []);
   // Grid fly-in runs once per session; returning from dial → grid stays settled.
   const gridEntranceDoneRef = useRef(false);
-  // Bumped whenever the index replays its entrance, to remount the About drawer
-  // so its peek slide plays again alongside the rail.
-  const [aboutPeekReplay, setAboutPeekReplay] = useState(0);
+  // The drawer's peek is a once-per-session arrival, and this is what says so.
+  // The index replays its own entrance every time you come back from EXPLORE, and
+  // the drawer used to be remounted to slide in alongside it — which took the
+  // ABOUT tab off the screen for the length of the entrance delay (measured at
+  // 1.83s) on a page that had it a moment earlier. The tab is the only way into
+  // the section from the index, so once it has landed it stays landed.
+  const aboutPeekIsSpent = useRef(false);
   const compactNav = useArchiveNavCompact();
   const reduceMotion = useReducedMotion();
 
@@ -7224,9 +7573,10 @@ function ArchivePage({ confessionQuery, initialEmotion = null, initialView = 'th
       // uncovered: the EXPLORE tab clears itself off the screen first (see the
       // storyboard in NoteOpenView), so there is nothing behind it to reveal
       // and an index that cut in fully formed would land on an empty frame.
+      // The index rebuilds itself, but the About drawer does not go with it — see
+      // `aboutPeekIsSpent`.
       if (next === 'grid' && view === 'explore') {
         gridEntranceDoneRef.current = false;
-        setAboutPeekReplay((n) => n + 1);
       }
       if (next !== 'explore') cameByFlight.current = false;
       // Mid-flight, clicking the tab we are already flying to changes nothing;
@@ -7376,8 +7726,8 @@ function ArchivePage({ confessionQuery, initialEmotion = null, initialView = 'th
     >
       {/* Edge washes stay under the About drawer (z 1001) so the open panel
           covers them. Nav chrome still elevates above both when About is open. */}
-      <ArchiveEdgeGradientWash edge="top" zIndex={150} />
-      <ArchiveEdgeGradientWash edge="bottom" zIndex={150} />
+      <ArchiveEdgeGradientWash edge="top" zIndex={ARCHIVE_EDGE_WASH_Z} />
+      <ArchiveEdgeGradientWash edge="bottom" zIndex={ARCHIVE_EDGE_WASH_Z} />
       {/* Top chrome. Wordmark stays above the About drawer (close target); INDEX /
           EXPLORE sink under the backdrop while About is open. Recedes while the
           grid Lightbox is open. */}
@@ -7397,24 +7747,25 @@ function ArchivePage({ confessionQuery, initialEmotion = null, initialView = 'th
           onAboutClose={() => setAboutOpen(false)}
         />
       </motion.div>
-      {/* Keyed on the replay counter: coming back from EXPLORE the index builds
-          itself again, and a remount is what lets the drawer park off the edge
-          and slide in with it rather than animating out of its peek first. */}
+      {/* Deliberately unkeyed, and deliberately outside the view swap below: the
+          drawer belongs to the archive rather than to either view, so crossing
+          between INDEX and EXPLORE leaves the peeking ABOUT tab where it is. */}
       <AboutModal
-        key={`about-${aboutPeekReplay}`}
         open={aboutOpen}
         onOpen={() => setAboutOpen(true)}
         onClose={() => setAboutOpen(false)}
-        skipPeekEntrance={reduceMotion || view !== 'grid'}
+        skipPeekEntrance={reduceMotion || view !== 'grid' || aboutPeekIsSpent.current}
+        onPeekLanded={() => {
+          aboutPeekIsSpent.current = true;
+        }}
       />
 
-      {/* Everything the About drawer opens over. Wrapped rather than filtered
-          per view so all of them recede identically, and so the nav chrome
-          (rendered above, and the only way back out) stays crisp and clickable.
-          `inset: 0` because the views inside position themselves against the
-          page box, and a filter makes this the containing block for the fixed
-          ones — same geometry, so they land where they always did. */}
-      <div style={{ position: 'absolute', inset: 0, ...recede(aboutOpen) }}>
+      {/* Everything the About drawer opens over. No recede here — the drawer's
+          own backdrop (`rgba(8, 8, 10, 0.55)`) is the dim, and the index
+          categories / grid should read through it at full strength. Nav chrome
+          stays above (rendered outside this box) so INDEX / EXPLORE and the
+          wordmark close target stay crisp. */}
+      <div style={{ position: 'absolute', inset: 0 }}>
         <AnimatePresence mode="wait">
           {view === 'theme' ? (
             <ThemeView

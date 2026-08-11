@@ -9,7 +9,7 @@ import {
 } from './noise.jsx';
 import { TRANSCRIPTION_TEXT } from './text';
 import { BASELINE_PROBE_STYLE, useTextDissolve } from './textDissolve';
-import { INK } from './colors';
+import { ACCENT, INK, accentA } from './colors';
 import { formatCategoryLabel } from './themes';
 import { useNoteSound } from './sounds';
 import { CURSOR_FLOAT, cursorOffset, floatAngles } from './cursorFloat';
@@ -3305,7 +3305,10 @@ const st = {
     letterSpacing: '0.14em',
     lineHeight: 1.5,
     textTransform: 'uppercase',
-    color: 'rgba(207,202,183,0.45)',
+    // The accent rather than the ink: at 10px with this much tracking the labels
+    // read as chrome, and the ink alpha that suited larger copy sank them into
+    // the page. Held just under the value so the pair still reads label → value.
+    color: accentA(0.8),
     whiteSpace: 'nowrap',
   },
   sideMetaValue: {
@@ -3313,7 +3316,7 @@ const st = {
     fontSize: 10,
     letterSpacing: '0.04em',
     lineHeight: 1.5,
-    color: 'rgba(207,202,183,0.8)',
+    color: ACCENT,
     whiteSpace: 'nowrap',
   },
   indexTable: {

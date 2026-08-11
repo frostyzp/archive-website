@@ -154,6 +154,18 @@ const pageFadeExit = (staged) =>
 // note lift-off pixel-aligned automatically.
 export const TILE_PADDING = 26;
 
+/**
+ * The layer a full-note surface rides inside the archive: clear of the fixed edge
+ * washes (z 150) so nothing black is laid over the note's own type, and under the
+ * nav chrome (z 200), which still owns whatever it overlaps. The About drawer's
+ * closed peek (z 180) also stays on top, so the way out of a note is never buried.
+ *
+ * EXPORTED because the index Lightbox is the other surface that puts metadata and
+ * a transcript in the washed band, and the two have to be lit the same — a note
+ * shouldn't get dimmer for being reached from the grid instead of the tab.
+ */
+export const NOTE_SURFACE_Z = 160;
+
 // The morph bridge wears the SAME paper-warp + grain the grid tiles use, so the
 // lifted image is pixel-identical to the note the visitor just clicked (rather
 // than a clean copy that "pops" on lift-off). Its own filter id so it can't
@@ -166,24 +178,46 @@ const BRIDGE_FILTER = `url(#${BRIDGE_FILTER_ID})`;
 // Matches App.jsx's ARCHIVE_NAV_COMPACT_MQ so chrome + layout switch together.
 const MOBILE_MQ = '(max-width: 760px)';
 
+/**
+ * Width at which the top keyboard legend still has room to be there.
+ *
+ * The legend is centred in the viewport; the archive nav bar is anchored to the
+ * left and its EXPLORE tab ends at a fixed x (~431px, the wordmark plus the two
+ * view tabs). So the gap between them closes at half the rate the window does,
+ * and the two touch at about 1096px — measured, not guessed: see
+ * scripts/probe-explore-navhint.mjs. This holds ~27px of air at the breakpoint
+ * rather than cutting it at the exact collision, since a legend one hair off the
+ * nav reads as broken layout just as much as one overlapping it.
+ *
+ * Below this the legend is dropped rather than moved or shrunk. It is a hint —
+ * arrow / A / D / W / S are handled on a window listener and keep working — so on
+ * a narrow desktop the honest trade is to give the top edge back to the nav.
+ */
+const NAV_HINT_MQ = '(min-width: 1150px)';
+
 /** Grain filter ids for mobile navigation glyphs (note chevrons + category arrows). */
 const MOBILE_NAV_GRAIN_ID = 'explore-mobile-arrow-grain';
 const CATEGORY_NAV_GRAIN_ID = 'explore-mobile-category-grain';
 
-/** True on phone-width viewports; live-updates on resize/rotate. */
-function useIsMobile() {
-  const [mobile, setMobile] = useState(
-    () => typeof window !== 'undefined' && window.matchMedia(MOBILE_MQ).matches
+/** Tracks a media query; live-updates on resize/rotate. */
+function useMediaQuery(query) {
+  const [matches, setMatches] = useState(
+    () => typeof window !== 'undefined' && window.matchMedia(query).matches
   );
   useEffect(() => {
     if (typeof window === 'undefined') return undefined;
-    const mq = window.matchMedia(MOBILE_MQ);
-    const onChange = () => setMobile(mq.matches);
+    const mq = window.matchMedia(query);
+    const onChange = () => setMatches(mq.matches);
     onChange();
     mq.addEventListener('change', onChange);
     return () => mq.removeEventListener('change', onChange);
-  }, []);
-  return mobile;
+  }, [query]);
+  return matches;
+}
+
+/** True on phone-width viewports. */
+function useIsMobile() {
+  return useMediaQuery(MOBILE_MQ);
 }
 
 /** Letterbox `aspect` (w/h) inside `box`, centered — the on-screen pixel box of
@@ -724,6 +758,7 @@ export default function NoteOpenView({
 }) {
   const reduceMotion = useReducedMotion();
   const isMobile = useIsMobile();
+  const roomForNavHint = useMediaQuery(NAV_HINT_MQ);
 
   // What the stack browses, and in what order.
   //
@@ -1130,9 +1165,12 @@ export default function NoteOpenView({
       exit={pageFadeExit(stagedExit)}
       transition={{ duration: reduceMotion ? 0 : 0.3, ease: EASE_OUT }}
       // As a tab, sit beneath the app's fixed nav chrome (z 200) so the
-      // INDEX · EXPLORE · DIAL · ABOUT bar stays visible + clickable on top; as
-      // an overlay it covers everything (z 800).
-      style={standalone ? { ...st.root, zIndex: 1 } : st.root}
+      // INDEX · EXPLORE · DIAL · ABOUT bar stays visible + clickable on top —
+      // but above the archive's edge washes (z 150), which were painting up to
+      // 0.42 of black over the DATE / LOCATION block (it sits at y≈110, inside
+      // the top wash) and over the tail of the transcript at the bottom. As an
+      // overlay it covers everything (z 800) and already cleared them.
+      style={standalone ? { ...st.root, zIndex: NOTE_SURFACE_Z } : st.root}
     >
       {/* The dark gradient + grain backdrop. During a morph it starts transparent
           and veils in a beat later, so the clicked note lifts off while the index
@@ -1364,8 +1402,11 @@ export default function NoteOpenView({
               LEFT / RIGHT (← / →) note-step pair. Same guide the dial page shows;
               here EXIT returns to the index. Pinned to the top of the view (the
               dial-page variant sits above its note area, which would be off-screen
-              over this full-screen stage — so it's flowed into a top-centred wrap). */}
-          {!isMobile && (
+              over this full-screen stage — so it's flowed into a top-centred wrap).
+
+              Dropped on narrow desktops, where the centred legend runs into the
+              nav bar's INDEX / EXPLORE — see NAV_HINT_MQ. */}
+          {!isMobile && roomForNavHint && (
             <motion.div
               initial={reduceMotion ? false : { opacity: 0 }}
               animate={{ opacity: 1 }}
@@ -1821,9 +1862,10 @@ const st = {
   // The active note's "n / total" position within its category, pinned to the
   // bottom of the screen (relocated out from under the transcript). Above both
   // things that darken that strip: this view's edge vignette (z 5) and the
-  // archive's bottom edge wash (z 150), which it clears by being portaled to
-  // <body> on the EXPLORE tab — see where it's rendered. Under the nav chrome
-  // (z 200), which still owns anything it overlaps.
+  // archive's bottom edge wash (z 150) — it clears the wash by being portaled to
+  // <body> on the EXPLORE tab (see where it's rendered), which the view root now
+  // does for its own contents too, so the portal is belt-and-braces rather than
+  // the only thing holding the counter up. Under the nav chrome (z 200).
   // `fixed` rather than `absolute` so the geometry is the same either side of
   // that portal: the root it used to sit in is itself a fixed inset-0 box.
   dCounterWrap: {

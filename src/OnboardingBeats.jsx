@@ -5,6 +5,7 @@ import { PAGE_BG, PAGE_GRADIENT } from './NoiseGradient';
 import { TunableGrainBackground } from './noise';
 import AsciiWall from './AsciiWall';
 import BodyKicker from './BodyKicker';
+import PrintMargin, { BOOTH_CAPTION } from './PrintMargin';
 import WordmarkDraw from './WordmarkDraw';
 import {
   BODY_LINE,
@@ -130,15 +131,41 @@ const bodyFontPx = (vw) =>
 /** How much room the copy has to be given below the pile at this width. */
 const copySlotH = (vw) => Math.round(bodyFontPx(vw) * COPY.perFontPx) + COPY.tailPx;
 
+/* How long a beat holds before its line starts writing itself.
+ *
+ * A beat is a photograph and a sentence about it, and the two used to arrive
+ * together: the note was still in the air while its first words were already
+ * fading up, so the eye had to choose between watching the paper land and
+ * reading. The copy waits out the throw instead — the note is down and looked
+ * at, and then the line begins — which is also what gives each beat a moment of
+ * stillness at its head rather than running one beat's words into the next
+ * beat's arrival.
+ *
+ * Everything a beat hangs off its own words carries the same wait, so the order
+ * inside a beat is unchanged: only the whole thing has moved later.
+ *
+ * Nothing branches on reduced motion for this. Every reveal downstream already
+ * resolves its own delay to zero there, so the hold simply doesn't exist on that
+ * path — which is right, because a second of waiting for an animation that isn't
+ * going to play is a second of a screen that looks stuck. */
+const COPY_HOLD_S = 1;
+
 const DEAL = {
   flyS: 0.62, //   s — offstage → resting place
   fadeS: 0.4, //   s — leaving the stage (stepping backwards)
   dimS: 0.4, //    s — the pile behind shading back
   dimGap: 0.04, // s — beat of stillness after the landing before it does
-  // A note arrives tilted this much further than it comes to rest at, in the
-  // direction it flew in from, and turns square as it lands.
+  // A note arrives tilted this much further than it comes to rest at, leaning
+  // the way it drifted, and turns square as it lands.
   turnDeg: 14,
-  turnS: 0.78, // s — longer than the travel, so the turn outlasts the slide
+  turnS: 0.78, // s — longer than the travel, so the turn outlasts the climb
+  /* Stage units of sideways drift in the throw, alternating side by side down
+     the pile. The rise is the whole gesture, but a set of prints that all came
+     straight up by the same amount moved as one sheet — the pile only reads as
+     a handful of separate photographs if each one arrives on its own line. Kept
+     to a fraction of the climb (~7% of it on a laptop) so it is a lean in the
+     paper's flight and not a slide with a rise attached. */
+  driftX: 90,
 };
 
 /** Depth shading by how far back a photograph now sits. */
@@ -222,7 +249,13 @@ const SWIPE = {
   thresholdPx: 26, // accumulated travel before a gesture counts
   quietMs: 300, //   silence that separates one flick from the next
   notchPx: 44, //    a full mouse notch starts a gesture on its own
-  graceMs: 900, //   after a step: input is dead, and none of it is banked
+  /* After a step: input is dead, and none of it is banked. Set past the head of
+     a beat rather than to a round number of its own — at 900ms a reader swiping
+     twice in quick succession could land on a beat and leave it again while it
+     was still holding, so the note flew in, nothing was said, and the next one
+     followed. The window now runs a couple of words into the cascade, which is
+     the least that reads as having been shown the line at all. */
+  graceMs: COPY_HOLD_S * 1000 + 250,
   touchPx: 46, //    finger travel that counts as a swipe
 };
 
@@ -235,6 +268,7 @@ const BOOTH = {
   alt: 'A hand-painted "Confession Box — everyone has an AI secret" sign staked in Dolores Park.',
   // Held at the size it always was while the notes grew past it.
   widthMul: 0.98,
+  caption: BOOTH_CAPTION,
 };
 
 const PHOTOS = [
@@ -247,24 +281,93 @@ const PHOTOS = [
   })),
 ];
 
-/* Pressing ENTER clears the pile before the archive opens, in two movements.
-   The booth goes first and only fades, where it lies — it is the photograph that
-   opened the telling, and the frame the confessions were collected in, so it is
-   put down rather than thrown. Then the confessions leave, each along the line it
-   was dealt on and in the order it arrived, shrinking slightly as they go: the
-   story unmakes itself and hands the screen over rather than being cut away
-   from. */
+/* The way out clears the pile before the archive opens, and every part of it
+   starts on the frame the gesture is recognised on. Nothing waits: a swipe
+   answered by half a second of a pile holding still reads as a swipe that missed,
+   and the reader's own hand is what the movement has to look like it came from.
+
+   The booth only fades, where it lies — it is the photograph that opened the
+   telling, and the frame the confessions were collected in, so it is put down
+   rather than thrown. It goes at the same moment as the rest and not in front of
+   them: sending it first and queueing the notes behind it buys an order of
+   departure that by this beat is under three other photographs, at the price of
+   the half second in which the visible pile does nothing. The notes leave over
+   the top of it, up and out along the line from the middle of the pile through
+   where each one lies, in the order they arrived, shrinking slightly as they go:
+   the story unmakes itself and hands the screen over rather than being cut away
+   from.
+
+   They deliberately do not go back down the way they came up. The rise belongs
+   to the swipe that deals a note, so running it backwards reads as the story
+   being taken back off the reader — which is exactly right for swiping BACK a
+   beat, and exactly wrong here, where the pile is clearing to let the archive
+   through. Opening outward is the pile getting out of the way. */
 const DISPERSE = {
   firstFadeS: 0.44, // s — the booth, fading in place
-  firstGapS: 0.12, //  s — a beat of stillness before the notes follow
-  /* When each note goes, in s after the booth has cleared — 560ms, 660ms and
-     740ms after the click. Written out rather than a single interval because the
-     interval tightens: 100ms, then 80ms. An even step made three departures read
-     as a metronome; closing the gap makes them read as one movement gathering
-     pace, which is also what stops the last note holding the screen on its own. */
+  /* When each note goes, in s after the gesture: at once, then 100ms and 180ms.
+     Written out rather than as a single interval because the interval tightens:
+     100ms, then 80ms. An even step made three departures read as a metronome;
+     closing the gap makes them read as one movement gathering pace, which is also
+     what stops the last note holding the screen on its own. The first entry is
+     zero and has to stay zero — it is the thing that makes the pile answer the
+     hand rather than answer a timer. */
   queueS: [0, 0.1, 0.18],
   flyS: 0.92, //       s — a note's own way off the stage
+  /* s — the point in that flight where the note is off the screen. It is over the
+     top edge inside the first third of the flight and spends the rest of the
+     duration travelling where nobody can see it, so anything that is meant to
+     follow the exit hangs off this rather than off flyS — the same way
+     DEAL.landedS stands in front of the entrance's own travel. Off flyS the
+     archive arrived to most of a second of a screen that was already empty.
+   *
+     Measured at 1440×900, each note is across the edge 283–339ms into its own
+     flight, so this stands where it did when the fan pointed outward — but it now
+     stands there accurately. Radially, the widest note left sideways and took
+     ~488ms of its flight to do it, and this constant was reading the hand-off
+     nearly 200ms early. Tilting the fan up sends all three at the nearest edge
+     instead, which is the one it was always describing. */
+  clearedS: 0.3,
   travel: 1500, //     stage units — clears any viewport once scaled
+  /* How far the outward fan is tilted up, in units of the outward direction
+     itself. Purely radial, two of the three notes leave downwards: they lie below
+     the middle of the pile, so "away from the centre" points at the bottom of the
+     screen, and the one lying dead centre and 8 units under it goes straight down.
+     A print that falls while its neighbours climb reads as dropped rather than
+     let go of, and it falls back into the edge the reader has just watched all
+     three of them come up out of.
+   *
+   * Added to the direction, which is then renormalised, rather than every note
+   * being given one shared upward path. The spread is what makes the pile come
+   * apart into separate photographs instead of leaving as a single sheet, and it
+   * survives this as three different climbing angles drawn from the same resting
+   * places — the fan is tilted, not collapsed.
+   *
+   * Anything past 1 clears the steepest downward line there is, which is a note
+   * lying directly below the centre; the margin above 1 is what turns "not
+   * falling" into "climbing". At this setting the three leave at roughly 26° left
+   * of vertical, straight up, and 35° right of it. */
+  lift: 1.7,
+  /* The front print's fade, and how long after its flight starts it begins.
+     Everything behind it keeps the trailing fade below: 70% of the flight,
+     starting 30% in.
+   *
+     That trailing fade was written for prints that spend most of their flight on
+     screen, and the front one doesn't. It goes last, at 180ms, and is over the top
+     edge 270–340ms into its own flight — which is where the trailing fade has only
+     just started, so the card left the frame at full strength and did all of its
+     fading where nobody could see it. It read as the top card being slid off
+     rather than let go of.
+   *
+     So it starts almost at once and takes about a third of the flight, reaching
+     nothing at ~290ms — inside the window where it crosses the edge, so the whole
+     dissolve happens on screen and the sliver of travel left afterwards is
+     already invisible. Not shorter than this: under ~200ms the card stops reading
+     as dissolving and starts reading as switched off, and a print that blinks out
+     while the two behind it are still coasting looks deleted rather than dealt
+     away. Not zero delay either — a print has to be seen to move before it is
+     seen to go, or the fade reads as the thing the gesture did. */
+  frontFadeS: 0.26,
+  frontFadeLeadS: 0.03,
   /* deg of tumble on the way out. A note is off the screen inside the first
      third of its flight, so only that much of this is ever seen — which is why
      it takes a number this big to read as a hand having thrown the note rather
@@ -293,21 +396,18 @@ const DISPERSE = {
    so the bend costs the flight none of its pacing (see dispersePose). */
 const easeExitAt = cubicBezier(...EASE_EXIT);
 
-/** When note `n` of the queue leaves, s after the click. */
-const disperseDelay = (n) =>
-  DISPERSE.firstFadeS +
-  DISPERSE.firstGapS +
-  DISPERSE.queueS[Math.min(n, DISPERSE.queueS.length - 1)];
+/** When note `n` of the queue leaves, s after the gesture. */
+const disperseDelay = (n) => DISPERSE.queueS[Math.min(n, DISPERSE.queueS.length - 1)];
 
-/** The whole exit, click to last note gone. */
+/** The exit as the reader sees it: gesture to the last note off the screen. */
 const DISPERSE_MS =
-  (disperseDelay(PHOTOS.length - 2) + DISPERSE.flyS + DISPERSE.holdS) * 1000;
+  (disperseDelay(PHOTOS.length - 2) + DISPERSE.clearedS + DISPERSE.holdS) * 1000;
 
 /**
- * Where a note goes when the pile clears: out along the line from the middle of
- * the stage through where it was dealt, so the group opens up rather than sliding
- * off as a block — bowed off that line as it goes (see arcKeyframes) and
- * tumbling the same way it bends. `order` is its place in the deal.
+ * Where a note goes when the pile clears: up and out along the line from the
+ * middle of the stage through where it was dealt, so the group opens up rather
+ * than sliding off as a block — bowed off that line as it goes (see arcKeyframes)
+ * and tumbling the same way it bends. `order` is its place in the deal.
  *
  * Order 0 is the booth, and it doesn't travel — see DISPERSE.
  */
@@ -319,12 +419,22 @@ function dispersePose({ x, y, rotate, scale, order }) {
     };
   }
 
-  // The notes count their own queue, starting once the booth has gone.
+  // The notes count their own queue, the booth going alongside them rather than
+  // ahead of them.
   const delay = disperseDelay(order - 1);
+  // The print on top of the pile — dealt last, leaving last, and the one the
+  // reader is actually looking at. It fades on its own schedule.
+  const front = order === PHOTOS.length - 1;
+  // Outward (radial) from the middle of the pile, tilted up (see DISPERSE.lift),
+  // and the side the note tumbles toward — which stays with where the note lies
+  // rather than with where it is now headed, so the tumble and the arc still read
+  // off the arrangement the reader is looking at.
   const len = Math.hypot(x, y) || 1;
-  // Outward (radial) direction, and the side the note tumbles toward.
-  const ux = x / len;
-  const uy = y / len;
+  const tiltX = x / len;
+  const tiltY = y / len - DISPERSE.lift;
+  const tilt = Math.hypot(tiltX, tiltY) || 1;
+  const ux = tiltX / tilt;
+  const uy = tiltY / tilt;
   const side = Math.sign(x || 1);
   const endX = x + ux * DISPERSE.travel;
   const endY = y + uy * DISPERSE.travel;
@@ -349,12 +459,18 @@ function dispersePose({ x, y, rotate, scale, order }) {
       x: { duration: DISPERSE.flyS, delay, ease: 'linear', times },
       y: { duration: DISPERSE.flyS, delay, ease: 'linear', times },
       // The fade trails the movement so a note is seen to leave rather than to
-      // vanish on its way.
-      opacity: {
-        duration: DISPERSE.flyS * 0.7,
-        ease: EASE_EXIT,
-        delay: delay + DISPERSE.flyS * 0.3,
-      },
+      // vanish on its way — except on the front print, which goes sooner.
+      opacity: front
+        ? {
+            duration: DISPERSE.frontFadeS,
+            ease: EASE_EXIT,
+            delay: delay + DISPERSE.frontFadeLeadS,
+          }
+        : {
+            duration: DISPERSE.flyS * 0.7,
+            ease: EASE_EXIT,
+            delay: delay + DISPERSE.flyS * 0.3,
+          },
     },
   };
 }
@@ -420,7 +536,10 @@ const BEATS = [
     // The last beat is the one the reader is asked to act on, so it arrives
     // slower than the ones before it: a wider gap between the words and a
     // longer fade on each, which lets the sentence land rather than appear.
-    word: { staggerS: 0.16, durS: 1.15 },
+    // Cut back with the others (was 0.16 / 1.15, a 3.5s sentence) but still held
+    // a step behind them, since the relationship is what carries the emphasis,
+    // not the absolute pace.
+    word: { staggerS: 0.1, durS: 0.7 },
     enter: true,
   },
 ];
@@ -431,15 +550,26 @@ const LAST = BEATS.length - 1;
 const dealtCount = (beat) => Math.min(PHOTOS.length, beat);
 
 /**
- * How far out a note waits, in stage units: past the edge of the window by a
- * whole card, so it is entirely off the page whatever the window size and reads
- * as coming from outside the site rather than from just past the frame.
+ * How far BELOW its resting place a note waits, in stage units: past the bottom
+ * of the window by a whole card, so it is entirely off the page whatever the
+ * window size and reads as coming from outside the site rather than from just
+ * past the frame.
  *
- * Measured rather than fixed because the stage is scaled to fit — a constant
- * would sit outside a phone and inside a wide desktop, where the note would
- * simply be waiting on screen for its beat.
+ * The prints come up from under the screen because that is the way the reader's
+ * own hand moves: a swipe up is what deals the next one, so the paper travels
+ * with the thumb that threw it. Notes used to fly in from the left and right
+ * edges, which was a handsome throw but a throw from nowhere in particular —
+ * the gesture and the picture were moving on different axes.
+ *
+ * Measured against the WINDOW's height and against where the stage actually
+ * sits, not against the card's own height: the pile is anchored high enough on
+ * the screen to leave the copy its slot, so half of a card below a low-sitting
+ * note is still well inside the frame and the note would be seen waiting in the
+ * bottom of the page for its beat. Measured rather than fixed for the same
+ * reason the horizontal one was — the stage is scaled to fit, so a constant
+ * clears a phone and sits on screen on a wide desktop.
  */
-const offstageX = (vw, fit) => vw / 2 / fit + CARD.w;
+const offstageY = (vh, stageTop, fit) => (vh - stageTop) / fit - PILE.h / 2 + CARD.h;
 
 /**
  * Photograph `i` waits offstage until beat `i + 1`, flies in, and stays.
@@ -452,13 +582,19 @@ function dealPose({ index, beat, reduceMotion, offstage }) {
   const rest = DEAL_SLOTS[index];
   const dealt = index < dealtCount(beat);
   const depth = Math.max(0, dealtCount(beat) - 1 - index);
+  // The side this one leans in from, and the way its tilt unwinds with it.
   const from = index % 2 === 0 ? -1 : 1;
 
   if (!dealt) {
     return {
       animate: {
-        x: reduceMotion ? rest.x : from * offstage,
-        y: reduceMotion ? rest.y : -40,
+        // Waiting under the screen, a little to one side of the place it is
+        // going, so the climb is what carries it and the drift only shapes the
+        // line it climbs on. Offset from its resting place rather than from the
+        // middle of the stage, so every note has the same distance to cover and
+        // the pile's own scatter isn't paid for twice.
+        x: reduceMotion ? rest.x : rest.x + from * DEAL.driftX,
+        y: reduceMotion ? rest.y : rest.y + offstage,
         rotate: reduceMotion ? rest.rotate : rest.rotate + from * DEAL.turnDeg,
         scale: 0.92,
         opacity: 0,
@@ -525,18 +661,25 @@ function PilePhoto({ photo, index, beat, leaving, reduceMotion, offstage }) {
         willChange: 'transform, opacity, filter',
       }}
     >
-      <img
-        src={photo.src}
-        alt={photo.alt}
-        draggable={false}
-        style={{
-          width: '100%',
-          height: 'auto',
-          flex: 'none',
-          display: 'block',
-          userSelect: 'none',
-        }}
-      />
+      <div style={{ position: 'relative', width: '100%', flex: 'none' }}>
+        {/* Inside the card rather than under it, so the margin takes the pile's
+            tilt, its flight and its place in the stack without being given any
+            of them separately — and so it cannot outlive the print it belongs to
+            when the pile scatters. Nothing sits under the pile, so its depth is
+            left unreserved and it simply hangs. */}
+        {photo.caption ? <PrintMargin frameWidth={width}>{photo.caption}</PrintMargin> : null}
+        <img
+          src={photo.src}
+          alt={photo.alt}
+          draggable={false}
+          style={{
+            width: '100%',
+            height: 'auto',
+            display: 'block',
+            userSelect: 'none',
+          }}
+        />
+      </div>
     </motion.div>
   );
 }
@@ -552,11 +695,27 @@ export default function OnboardingBeats({
   const [heroQuestionRevealed, setHeroQuestionRevealed] = useState(reduce);
   const [beat, setBeat] = useState(0);
   const [leaving, setLeaving] = useState(false);
+  /* Whether the way out is open yet — see the effect that arms it, down by
+     enterDelayS, where the reason it isn't open from the first frame lives. */
+  const [exitArmed, setExitArmed] = useState(false);
 
-  /* ENTER scatters the pile first and opens the archive after — the piece
+  /* The way out scatters the pile first and opens the archive after — the piece
      clears its own screen rather than being cut off mid-sentence. Reduced
-     motion has nothing to watch, so it goes straight through. */
+     motion has nothing to watch, so it goes straight through, on the same frame
+     as the gesture: a reader who has asked for less movement should not be held
+     on the last beat waiting out an animation that isn't going to play.
+   *
+   * Every way out arrives here — the swipe, the wheel, the forward keys, the
+   * click — and on the closing beat two of them can land in the same tick, since
+   * the space bar both activates the focused control and reads as a step
+   * forward. The pile can only be scattered once and the archive can only be
+   * opened once, so the first caller wins and the rest are dropped. On a ref
+   * rather than on `leaving`, which is a render behind and would let a pair of
+   * events in one tick both through. */
+  const leftRef = useRef(false);
   const leave = useCallback(() => {
+    if (leftRef.current) return;
+    leftRef.current = true;
     if (reduce) {
       onEnter();
       return;
@@ -564,6 +723,13 @@ export default function OnboardingBeats({
     setLeaving(true);
   }, [onEnter, reduce]);
 
+  /* The archive is asked for once the prints are off the screen rather than once
+     their flights have finished — see DISPERSE.clearedS. The two overlap on
+     purpose: the notes are still formally in the air, out past the edges, while
+     the grid begins to fly in, so the hand-off is one movement instead of an exit
+     followed by a wait followed by an entrance. Waiting for the flights to end
+     spent most of a second on an empty screen, and cutting before the notes have
+     cleared takes the pile away mid-throw. */
   useEffect(() => {
     if (!leaving) return undefined;
     const id = setTimeout(onEnter, DISPERSE_MS);
@@ -593,9 +759,28 @@ export default function OnboardingBeats({
     return () => clearTimeout(id);
   }, [loading, reduce, skipEntrance]);
 
-  const step = useCallback((dir) => {
-    setBeat((b) => Math.min(LAST, Math.max(0, b + dir)));
-  }, []);
+  /* Forward off the end of the story is the way into the archive, not a beat
+     that isn't there. The piece is already listening for the gesture on three
+     inputs, so the exit is that same listener reaching its end rather than a
+     second set of handlers bolted on beside them — which is also why a swipe, a
+     trackpad flick, a forward key and the ENTER control all leave by one path
+     and get the archive's entrance choreography identically.
+   *
+   * The last beat still holds its ground until `exitArmed`. The grace window is
+   * shorter than the closing beat's own cascade, so a reader arriving on two
+   * quick swipes would otherwise be thrown out of the piece before its final
+   * sentence had finished writing itself — a forward gesture there does nothing,
+   * exactly as it did when there was nowhere further to go. */
+  const step = useCallback(
+    (dir) => {
+      if (dir > 0 && beat === LAST) {
+        if (exitArmed) leave();
+        return;
+      }
+      setBeat((b) => Math.min(LAST, Math.max(0, b + dir)));
+    },
+    [beat, exitArmed, leave]
+  );
 
   // The listeners below are bound once and read through refs, so they act on
   // the current beat rather than whichever render created them.
@@ -716,7 +901,10 @@ export default function OnboardingBeats({
     fit: 1,
     stageTop: 0,
     slotH: copySlotH(1200),
-    offstage: offstageX(1200, 1),
+    // A laptop's worth of screen, until the first measurement lands: the notes
+    // are only ever asked to be off the bottom of it, and being too far under
+    // one costs a frame of a beat nobody has swiped to yet.
+    offstage: offstageY(900, 0, 1),
   });
   useEffect(() => {
     const measure = () => {
@@ -748,11 +936,14 @@ export default function OnboardingBeats({
          way the worst-case copy still fits, so no beat can run off the bottom. */
       const centred = (vh - pileH) / 2;
       const lowest = vh - total - COPY.bottomAirPx;
+      const stageTop = Math.max(24, Math.min(centred, lowest));
       setBox({
         fit,
         slotH,
-        stageTop: Math.max(24, Math.min(centred, lowest)),
-        offstage: offstageX(vw, fit),
+        stageTop,
+        // Where the notes wait is a consequence of where the pile ends up, so
+        // it is taken from the same measurement rather than guessed alongside it.
+        offstage: offstageY(vh, stageTop, fit),
       });
     };
     measure();
@@ -768,13 +959,37 @@ export default function OnboardingBeats({
   /* The way out is hung off the end of the words rather than a fixed wait, so
      slowing a beat's cascade carries the button with it instead of leaving it to
      arrive over the top of a sentence still being written. It lands as the last
-     word starts its own fade. */
+     word starts its own fade — counted from where the words actually begin, so
+     the beat's own hold is in front of it too. */
   const word = current.word ?? WORD_DISPLAY;
   const enterDelayS = useMemo(() => {
     if (!current.text) return undefined;
     const words = current.text.split(/\s+/).filter(Boolean).length;
-    return Math.max(0.5, (words - 1) * word.staggerS);
+    return COPY_HOLD_S + Math.max(0.5, (words - 1) * word.staggerS);
   }, [current.text, word.staggerS]);
+
+  /* The gesture out and the arrow that offers it open at the same instant, off
+     the one number, because they are the same thing said twice: a swipe that
+     works before there is an arrow to take it from is a hidden exit, and an
+     arrow that is there before the swipe answers is a promise the page breaks.
+   *
+   * Disarmed again on the way back, so returning to the closing beat re-earns
+   * the exit rather than inheriting it. Reduced motion has no cascade to wait
+   * out — every reveal downstream resolves its delay to zero there, and holding
+   * the way out shut for two seconds of an animation that isn't going to play is
+   * a screen that looks stuck — so it is open from the first frame. */
+  useEffect(() => {
+    if (beat !== LAST) {
+      setExitArmed(false);
+      return undefined;
+    }
+    if (reduce || !enterDelayS) {
+      setExitArmed(true);
+      return undefined;
+    }
+    const id = setTimeout(() => setExitArmed(true), enterDelayS * 1000);
+    return () => clearTimeout(id);
+  }, [beat, enterDelayS, reduce]);
 
   return (
     <div
@@ -1039,12 +1254,14 @@ export default function OnboardingBeats({
               <div key={current.id}>
                 {/* Nothing here scrolls, so the reveals take the beat's arrival
                     as their cue rather than an intersection that a fixed screen
-                    can never report. */}
+                    can never report — and then wait out the throw (COPY_HOLD_S)
+                    before the line starts writing itself. */}
                 <RevealWords
                   text={current.text}
                   as="h2"
                   cfg={word}
                   start
+                  delayStart={COPY_HOLD_S}
                   style={{
                     maxWidth: 620,
                     fontFamily: SERIF,
@@ -1058,6 +1275,7 @@ export default function OnboardingBeats({
                 {current.kicker && (
                   <BodyKicker
                     start
+                    delayS={COPY_HOLD_S}
                     style={{
                       marginTop: 'clamp(10px, 2vh, 22px)',
                       maxWidth: 620,
@@ -1072,7 +1290,28 @@ export default function OnboardingBeats({
                 )}
                 {current.enter && (
                   <div style={{ marginTop: 'clamp(10px, 2vh, 22px)' }}>
-                    <EnterButton onClick={leave} start delayS={enterDelayS} />
+                    {/* The hero's scroll cue, come back for the last beat, and
+                        standing where the words used to. The page opens by asking
+                        for this gesture and closes by asking for it again — the
+                        same arrow, so the second ask is recognised rather than
+                        learned, and the last thing the reader is asked to do is
+                        the first thing they were taught. It rides inside the
+                        control, so the arrow is also what a pointer or a keyboard
+                        presses and every way out lands in one place.
+                      *
+                      * Shown off `exitArmed` rather than a delay of its own: the
+                      * arrow is the visible half of the exit being open. */}
+                    <EnterButton
+                      onClick={leave}
+                      start
+                      delayS={enterDelayS}
+                      // Riding up rather than down: the swipe this beat waits
+                      // for goes up, and so does every photograph on the pile
+                      // behind it. An arrow falling under a stack of prints
+                      // that just climbed asks for the opposite of what the
+                      // page answers.
+                      cue={<ScrollCue show={exitArmed} rise />}
+                    />
                   </div>
                 )}
               </div>

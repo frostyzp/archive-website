@@ -452,13 +452,14 @@ export default function CategoryDialLab() {
             <span
               aria-hidden="true"
               style={{
-                fontSize: 9,
-                opacity: 0.7,
-                transform: stage >= STAGE.open ? 'none' : 'rotate(-90deg)',
+                fontSize: 12,
+                lineHeight: 1,
+                opacity: 0.85,
+                transform: stage >= STAGE.open ? 'rotate(90deg)' : 'none',
                 transition: 'transform 0.18s ease',
               }}
             >
-              ▼
+              {'>'}
             </span>
           </button>
 
@@ -578,13 +579,14 @@ export default function CategoryDialLab() {
             <span
               aria-hidden="true"
               style={{
-                fontSize: 9,
-                opacity: 0.7,
-                transform: locOpen ? 'none' : 'rotate(-90deg)',
+                fontSize: 12,
+                lineHeight: 1,
+                opacity: 0.85,
+                transform: locOpen ? 'rotate(90deg)' : 'none',
                 transition: 'transform 0.18s ease',
               }}
             >
-              ▼
+              {'>'}
             </span>
           </button>
           <motion.div

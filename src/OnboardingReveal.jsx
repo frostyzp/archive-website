@@ -1,4 +1,13 @@
-import { createElement, Fragment, useEffect, useId, useMemo, useRef, useState } from 'react';
+import {
+  createElement,
+  Fragment,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import {
   AnimatePresence,
   motion,
@@ -13,6 +22,8 @@ import { useDialKit } from 'dialkit';
 import { INK, inkA } from './colors';
 import { PAGE_BG, PAGE_GRADIENT } from './NoiseGradient';
 import { LINK_UNDERLINE } from './linkUnderline';
+import { ScatterLabel } from './letterScatter';
+import PrintMargin, { BOOTH_CAPTION, printMarginDepth } from './PrintMargin';
 import {
   CARD_FILTER_ID,
   CardNoiseFilterDefs,
@@ -82,10 +93,17 @@ const WORD = {
   durS: 0.62, //       per-word fade-in duration
 };
 
-/** Bigger, slower cascade for the emphasized display fragments. */
+/** Bigger, slower cascade for the emphasized display fragments.
+ *
+ *  Still slower than WORD above, but no longer at the pace it was: at 0.11 / 0.9
+ *  a fifteen-word beat took 2.4s to finish arriving, which is a long time to hold
+ *  a reader on a sentence they have already finished reading — the first words are
+ *  legible almost immediately, so the tail was time spent waiting rather than
+ *  time spent reading. A third off both numbers keeps the word-by-word cascade
+ *  legible as a cascade while getting the beat out of its own way. */
 const WORD_DISPLAY = {
-  staggerS: 0.11,
-  durS: 0.9,
+  staggerS: 0.07,
+  durS: 0.55,
 };
 
 /**
@@ -291,8 +309,8 @@ const HERO_QUESTION = {
   // The question arrives a word at a time, picking up where the title's own
   // reveal leaves off. `fadeS` is what ONE word takes, not the sentence — the
   // line as a whole runs for the last word's delay plus that.
-  staggerS: 0.07,
-  fadeS: 0.65,
+  staggerS: 0.045,
+  fadeS: 0.42,
   arrowDelayS: 0.25, // beat after the question lands before the scroll cue fades in
 };
 
@@ -1018,7 +1036,7 @@ function HeroTitleDraw({ hold = false, onRevealComplete, reduceMotion = false })
 }
 
 const INTRO_LINE =
-  'We asked strangers to write a confession about their relationship with AI — artificial intelligence.';
+  'We invited strangers to write a confession about their relationship with artificial intelligence (A.I.)';
 // Left hanging on purpose — BodyKicker finishes the sentence with the three
 // verbs, each set at its own angle. Line breaks are authored, not wrapped, so
 // the rag matches the Figma comp at every viewport width.
@@ -1032,9 +1050,9 @@ const FRAGMENT_LINE = ['And even', 'substituting our', 'human relationships…']
 );
 const FINAL_QUESTION = [
   'Every note is a real story',
-  'from a real person',
-  'about living with',
-  'this new technology',
+  'from a real person about living',
+  'with this new technology.',
+  'Explore the stories.',
 ].join('\n');
 
 // The three notes the intro walks through. Hand-picked, so the ids are authored
@@ -1481,13 +1499,34 @@ const BOOTH_SLIDE = {
 /** The confession-booth still that opens the intro — the Dolores Park
  *  "Confession Box" sign. Centered, sliding in from the left with a slight tilt
  *  (setting up the alternation with the first note, which arrives from the
- *  right). The asset already carries its own white border + tilt on a black
- *  field, so the corners melt into the near-black page and no extra frame is
- *  needed. */
+ *  right). The asset already carries its own white border on a black field, so
+ *  the corners melt into the near-black page and no extra frame is needed.
+ *
+ *  It carries the same caption margin the onboarding pile gives it. The slide is
+ *  hung on the box around the print rather than on the print, so the margin goes
+ *  with it — and the margin's angle comes off the file, not off this instance, so
+ *  it holds here where the photograph comes to rest square just as it does in the
+ *  pile where the photograph comes to rest turned.
+ *
+ *  The print's own width is measured rather than derived: it is a percentage of a
+ *  clamped column, and the margin needs a number to set type against and a depth
+ *  for the column to keep clear. Without that room the strip hangs into the
+ *  intro line below, which at a short window is only ~54px away. */
 function IntroBoothStill({ width }) {
   const ref = useRef(null);
+  const printRef = useRef(null);
   const inView = useInView(ref, IN_VIEW);
   const reduce = useReducedMotion();
+  const [printW, setPrintW] = useState(0);
+  useLayoutEffect(() => {
+    const el = printRef.current;
+    if (!el) return undefined;
+    const read = () => setPrintW(el.offsetWidth);
+    read();
+    const ro = new ResizeObserver(read);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
   return (
     <div
       ref={ref}
@@ -1496,18 +1535,25 @@ function IntroBoothStill({ width }) {
         maxWidth: '100%',
         display: 'flex',
         justifyContent: 'center',
+        paddingBottom: printMarginDepth(printW),
       }}
     >
-      <motion.img
-        src="/intro-booth-park.png"
-        alt="A hand-painted “Confession Box — everyone has an AI secret” sign staked in Dolores Park."
-        draggable={false}
-        loading="eager"
+      <motion.div
+        ref={printRef}
         initial={reduce ? false : { opacity: 0, x: -BOOTH_SLIDE.x, rotate: -BOOTH_SLIDE.rotate }}
         animate={inView ? { opacity: 1, x: 0, rotate: 0 } : undefined}
         transition={{ duration: reduce ? 0 : BOOTH_SLIDE.durS, ease }}
-        style={{ flex: '0 0 auto', width: '56%', height: 'auto', display: 'block' }}
-      />
+        style={{ position: 'relative', flex: '0 0 auto', width: '56%' }}
+      >
+        {printW ? <PrintMargin frameWidth={printW}>{BOOTH_CAPTION}</PrintMargin> : null}
+        <img
+          src="/intro-booth-park.png"
+          alt="A hand-painted “Confession Box — everyone has an AI secret” sign staked in Dolores Park."
+          draggable={false}
+          loading="eager"
+          style={{ width: '100%', height: 'auto', display: 'block' }}
+        />
+      </motion.div>
     </div>
   );
 }
@@ -2225,9 +2271,21 @@ const FRAGMENT_STYLE = {
 const SCROLL_CUE = {
   fadeS: 0.9,
   noiseStrength: 0.45, // fraction of hero-title grain (lower = subtler)
+  bobPx: 9, //           how far the arrow rides on its loop
 };
 
-function ScrollCue({ show = false }) {
+/**
+ * `rise` sends that loop upward instead of down. The bob is the cue's whole
+ * instruction — a reader takes the direction of the gesture from which way the
+ * arrow moves, not from which way it points — so on a page that is scrolled it
+ * falls, and where the same arrow stands for a swipe that carries you forward it
+ * climbs, alongside the photographs that arrive the same way.
+ *
+ * The glyph is left as it is on both. It is the one mark the piece opens and
+ * closes with, and it is recognised by being the same mark; turning it over
+ * makes the second ask a new thing to read rather than the first one again.
+ */
+function ScrollCue({ show = false, rise = false }) {
   const reduce = useReducedMotion();
   const [gone, setGone] = useState(false);
   const filterId = `scroll-cue-noise-${useId().replace(/:/g, '')}`;
@@ -2250,7 +2308,9 @@ function ScrollCue({ show = false }) {
     >
       <HeroNoiseFilter id={filterId} reduceMotion={reduce} strength={SCROLL_CUE.noiseStrength} />
       <motion.span
-        animate={reduce ? undefined : { y: [0, 9, 0] }}
+        animate={
+          reduce ? undefined : { y: [0, rise ? -SCROLL_CUE.bobPx : SCROLL_CUE.bobPx, 0] }
+        }
         transition={{ duration: 1.6, repeat: Infinity, ease: 'easeInOut' }}
         style={{
           display: 'inline-block',
@@ -2293,41 +2353,103 @@ export {
   ease,
 };
 
-/** Final ENTER cta — mono, all-caps, matching the archive's EXPLORE button. */
+/** The cta's label, as authored — CSS puts it in caps. */
+const ENTER_LABEL = 'Enter the archive';
+
+/** Final ENTER cta — one control in two shapes: the tracked-out mono phrase that
+ *  matches the archive's EXPLORE button, or, where the telling gives the reader a
+ *  gesture, that gesture's arrow in place of the words. */
 // `delayS` lets a caller hang the button off the end of the words above it
 // rather than the shared default, which is set for the scrolled telling.
-function EnterButton({ onClick, start, delayS = 0.5 }) {
+// `cue` is the affordance that stands in for the label — see where it renders.
+function EnterButton({ onClick, start, delayS = 0.5, cue = null }) {
   const ref = useRef(null);
   const scrolledInto = useInView(ref, { once: true, margin: '0px 0px -10% 0px' });
   const inView = start === undefined ? scrolledInto : start;
   const reduce = useReducedMotion();
+  const [scattered, setScattered] = useState(false);
   return (
     <motion.button
       ref={ref}
       className="onboarding-cta"
       onClick={onClick}
+      // Motion's hover pair rather than a :hover rule, because it is pointer-
+      // aware: a tap on a phone fires neither, so the letters can't be left
+      // stranded mid-scatter by a touch that never "leaves."
+      onHoverStart={() => setScattered(true)}
+      onHoverEnd={() => setScattered(false)}
+      // The only thing that names this control when it wears the arrow: the
+      // arrow is decorative and hidden from assistive tech, so without this the
+      // button would announce as nothing at all. It is also what the lettered
+      // shape needs, since that label is split into a span per glyph, which a
+      // screen reader would otherwise spell out a letter at a time with the word
+      // breaks gone. In caps for both, because Chrome's name computation applies
+      // text-transform and this is the string the whole label announced.
+      aria-label={ENTER_LABEL.toUpperCase()}
       initial={reduce ? false : { opacity: 0 }}
       animate={inView ? { opacity: 1 } : undefined}
       transition={{ duration: reduce ? 0 : 0.7, ease, delay: reduce ? 0 : delayS }}
       style={{
-        // The label is 214px of tracked-out mono against a column of
-        // min(74vw, 660px), so with 40px either side it broke over two lines
-        // below ~400px wide. It is one phrase and reads as one line: held
+        // The phrase is 179px of tracked-out mono against a column of
+        // min(74vw, 660px), so with 40px either side it broke over two lines on
+        // the narrowest phones. It is one phrase and reads as one line: held
         // together here, with the side padding giving way on a narrow screen so
-        // the button shrinks rather than running off it.
-        padding: '17px clamp(18px, 5vw, 40px)',
+        // the button shrinks rather than running off it. The arrow keeps that
+        // same horizontal padding, tightening only the vertical: the box is
+        // invisible either way, and a control a thumb has to find is worth the
+        // width.
+        padding: cue ? '14px clamp(18px, 5vw, 40px)' : '17px clamp(18px, 5vw, 40px)',
         whiteSpace: 'nowrap',
         background: 'transparent',
         border: 'none',
         borderRadius: 999,
         cursor: 'pointer',
         fontFamily: MONO,
-        fontSize: 15,
-        letterSpacing: '0.24em',
-        textTransform: 'uppercase',
+        ...(cue
+          ? {
+              // A glyph is not a phrase, and nothing about one guarantees a
+              // target a finger can land on. Floored here rather than inferred
+              // from the arrow's own size, which belongs to the cue rather than
+              // to this control and is free to change without taking the hit
+              // area with it.
+              minWidth: 44,
+              minHeight: 44,
+            }
+          : {
+              // Set to the sticky SKIP INTRO in the corner. The two are the same
+              // kind of thing — the mono, tracked-out way out of the piece — and
+              // at 15px this one was a size the page used nowhere else.
+              //
+              // Type for the words, so it is set only when there are words.
+              // Inherited onto a 48px glyph, 0.24em of tracking becomes 11.5px of
+              // air off the arrow's right-hand side, and a lone arrow then sits
+              // visibly left of the centre it was laid out on.
+              fontSize: 12.5,
+              letterSpacing: '0.24em',
+              textTransform: 'uppercase',
+            }),
       }}
     >
-      <span style={ONBOARDING_LINK_UNDERLINE}>Enter the archive</span>
+      {/* The cue or the phrase, never both. Where the reader is handed a gesture,
+          the arrow IS the way out and the words were the thing it replaces —
+          naming the destination underneath it only says twice what one glyph and
+          the beat above it already say. The arrow therefore sits inside the
+          control rather than beside it: it is what a reader takes the gesture
+          from, so it has to be part of the thing you can press and not a picture
+          of a control standing next to the real one. The dotted rule goes with
+          the words, since a rule under a glyph is a line under nothing.
+        *
+        * A scrolled telling has no arrow to offer — its gesture is the page —
+        * and keeps the phrase. Either shape is the same button with the same
+        * name, so a click, a keypress and a swipe all land in the archive. */}
+      {cue ?? (
+        /* The rule rides the wrapper, so it stays one line drawn across the whole
+           phrase while the glyphs come loose above it — the rule is what marks
+           this as the way out of the page, and it should not go with them. Full
+           strength: this is the last thing on the page and it is only met once,
+           unlike the archive's tabs, which wear the quiet setting. */
+        <ScatterLabel text={ENTER_LABEL} scattered={scattered} style={ONBOARDING_LINK_UNDERLINE} />
+      )}
     </motion.button>
   );
 }

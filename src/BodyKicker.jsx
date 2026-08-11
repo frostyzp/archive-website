@@ -41,16 +41,37 @@ const TIMING = {
 const MONO = 'var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace)';
 
 /* The three verbs that finish the sentence. `tilt` is the resting angle in
-   degrees; `align` places the line in the column and `nudgeX` shifts it off
-   center so the block reads as scattered rather than stacked. */
+   degrees; `offX` is where the line sits across the block, −1 to 1, and `spread`
+   is how far off centre that is allowed to carry it.
+ *
+ * Every line hangs off the block's CENTRE and is walked out from there, which is
+ * what makes the scatter a single tunable thing. The lines used to be anchored to
+ * the column's edges instead — one flex-start, one flex-end, one centred — and at
+ * 620px that left ~370px of empty block between the end of "communicate" and the
+ * start of "work": three unrelated fragments in the corners of a wide box rather
+ * than one strewn group. Nothing about that arrangement could be tightened, since
+ * an edge anchor has no dial on it; the old per-line nudge was no help either,
+ * being a percentage of the WORD's own width, so it moved the short verbs least
+ * and the whole block barely at all.
+ *
+ * The offsets stay deliberately uneven, and the middle line is the one thrown
+ * furthest: evening them out, or ordering them, immediately reads as a set of
+ * three rather than as type someone put down by hand.
+ *
+ * `spread` has a floor as well as a ceiling. The verbs' type is viewport-clamped
+ * and the block is not, so a phone sets "communicate" at 37% of the block's width
+ * against 28% on a desktop — pull the lines much closer than this and the long
+ * verb's tail arrives underneath the start of "work" at 390px while still looking
+ * loose at 1440. */
 const VERBS = {
   riseY: 20, //        px each verb rises from
   entryTiltMul: 2.1, // entrance angle as a multiple of the resting tilt
+  spread: 16.5, //     % of the block a verb sits off centre at offX ±1
   spring: { type: 'spring', stiffness: 180, damping: 18, mass: 1 },
   items: [
-    { text: 'communicate', tilt: -3.4, align: 'flex-start', nudgeX: '1%' },
-    { text: 'work', tilt: -11, align: 'flex-end', nudgeX: '-9%' },
-    { text: 'think', tilt: 1.6, align: 'center', nudgeX: '-6%' },
+    { text: 'communicate', tilt: -3.4, offX: -0.8 },
+    { text: 'work', tilt: -11, offX: 1 },
+    { text: 'think', tilt: 1.6, offX: -0.45 },
   ],
 };
 
@@ -121,21 +142,25 @@ const NEURONS = {
 /* Where the motifs sit. Positions are percentages of the kicker block, so the
    marks track the type at any viewport width.
 
-   They RING the verbs rather than sitting under them, which is possible because
-   each verb is pushed to one side: "communicate" runs left, so the noise gathers
-   to its right; "work" runs right, so the noise gathers to its left; "think" is
-   centred and short, leaving both gutters open. Nothing hangs further left than
-   ~-4%, and nothing crosses the right edge — the page has no overflow-x guard, so
-   a mark reaching past the block would pull a horizontal scrollbar on a phone.
+   They RING the verbs rather than sitting under them. The verbs are bundled about
+   the block's centre (see VERBS), so the ring is the two side columns, the strip
+   above the first line, and the space under the last. Positions are set against the
+   three word boxes, measured off a real render: at 1440 the type holds x 23–51% /
+   61–72% / 37–48%, and at 390 it spreads to 18–55% / 59–74% / 36–49%, since the
+   verbs' type is clamped while the block keeps shrinking. Marks therefore clear the type in x
+   rather than in y — a verb is ~40px tall against marks of up to 51px, so a mark
+   can't clear one vertically without climbing into the body line above.
 
-   Every position is set against the three word boxes, measured off a real render:
-   "communicate" holds x 0–23% / y -4–38%, "work" x 90–100% / y 28–72%, "think"
-   x 45–54% / y 66–101%. That diagonal is what the ring is drawn around, and it is
-   also the constraint — a verb is ~40px tall against marks of up to 51px, so a
-   mark can't clear one vertically without climbing into the body line above. Hence
-   the side gutters, roughly two marks to a verb, grouped below by which verb they
-   belong to. It is also why the two-row motifs are scaled down here: at full size
-   the right gutter only has the height for two of them, and the third ended up
+   The noise is deliberately NOT bundled with the type. It is the thing creeping in
+   AROUND the words, so it keeps the whole block and a little past it — the outer
+   marks reach ~-4% and ~112%, and that overhang is bounded by the page rather than
+   by taste: the copy column is 74vw, so even on a 320px screen there is ~40px of
+   page either side of the block and the outermost mark still lands ~12px inside
+   the viewport. The page has no overflow-x guard, so a mark reaching further than
+   that would pull a horizontal scrollbar on a phone.
+
+   The two-row motifs are scaled down here for the same reason as ever: at full
+   size a side column only has the height for two of them, and the third ended up
    either sitting on the type or trailing off the bottom of the screen.
 
    Motifs repeat, so each instance carries a `phase` (ms into the loop it starts
@@ -149,19 +174,24 @@ const MARKS = {
   alpha: 0.45, //  dim enough to read as marginalia, not as copy
   size: 'clamp(12px, 2vw, 17px)',
   items: [
-    // ── off "communicate"'s right shoulder, and on round to the right gutter ──
-    { id: 'c-spark', motif: SPARK, top: '-16%', left: '26%', tilt: -5, phase: 0, delay: 0 },
+    /* ── the two wires strung above "communicate" ──
+       Both of them cross the first verb's own column, which only works because
+       they are ABOVE its ink rather than beside it; the top-left corner is the one
+       place a mark can do that, and it is why the mark there is a one-line motif.
+       A two-row one had to hang out to -13% to clear the verb's start on a phone,
+       which put it 55px adrift of the block on a desktop and clipped its left
+       glyph off the screen at 390. */
+    { id: 'l-spark', motif: SPARK, top: '-16%', left: '-4%', tilt: 4, scale: 0.85, dim: 0.75, phase: 540, delay: 0.24 },
+    { id: 'c-spark', motif: SPARK, top: '-16%', left: '31%', tilt: -5, phase: 0, delay: 0 },
+    // ── off "communicate"'s right shoulder, then on down the right column ──
     { id: 'c-cells', motif: NEURONS, top: '-14%', left: '62%', tilt: 3, scale: 0.8, dim: 0.8, phase: 380, delay: 0.18 },
-    // ── inboard of "work", and its far-left gutter ──
-    { id: 'w-blocks', motif: BLOCKS, top: '36%', left: '62%', tilt: 0, scale: 0.8, phase: 0, delay: 0.06 },
-    { id: 'w-spark', motif: SPARK, top: '40%', left: '-2%', tilt: 4, scale: 0.85, dim: 0.75, phase: 540, delay: 0.24 },
-    // ── down the inside, between "communicate" and "think" ──
-    { id: 't-cells', motif: NEURONS, top: '44%', left: '25%', tilt: 0, scale: 0.85, phase: 0, delay: 0.1 },
-    // ── "think"'s two open gutters ──
-    { id: 't-blocks', motif: BLOCKS, top: '74%', left: '1%', tilt: -3, scale: 0.8, dim: 0.75, phase: 300, delay: 0.3 },
-    { id: 't-spark', motif: SPARK, top: '92%', left: '60%', tilt: -6, scale: 0.9, dim: 0.85, phase: 220, delay: 0.14 },
-    // ── and back up under "work", closing the ring ──
-    { id: 'b-cells', motif: NEURONS, top: '78%', left: '78%', tilt: 2, scale: 0.7, dim: 0.7, phase: 660, delay: 0.36 },
+    { id: 'w-blocks', motif: BLOCKS, top: '36%', left: '80%', tilt: 0, scale: 0.7, phase: 0, delay: 0.06 },
+    // ── the left column, level with "work" and then below "think" ──
+    { id: 'l-cells', motif: NEURONS, top: '36%', left: '-2%', tilt: 0, scale: 0.65, phase: 0, delay: 0.1 },
+    { id: 't-blocks', motif: BLOCKS, top: '74%', left: '-4%', tilt: -3, scale: 0.8, dim: 0.75, phase: 300, delay: 0.3 },
+    // ── and along the bottom, closing the ring under "think" and "work" ──
+    { id: 't-spark', motif: SPARK, top: '92%', left: '53%', tilt: -6, scale: 0.9, dim: 0.85, phase: 220, delay: 0.14 },
+    { id: 'b-cells', motif: NEURONS, top: '84%', left: '84%', tilt: 2, scale: 0.7, dim: 0.7, phase: 660, delay: 0.36 },
   ],
 };
 
@@ -176,8 +206,14 @@ const IN_VIEW = { once: true, margin: '0px 0px -24% 0px' };
  */
 /* `start` overrides the scroll trigger for pages that don't scroll: on the beat
    telling of the onboarding, the whole thing sits in one fixed screen, where
-   nothing ever "comes into view" and the arriving beat is the cue instead. */
-export default function BodyKicker({ style, start }) {
+   nothing ever "comes into view" and the arriving beat is the cue instead.
+
+   Every time in the storyboard above is measured from the body line beginning to
+   dissolve in, so a caller whose line is held back has to hold these back with
+   it — `delayS` shifts the whole schedule rather than only the first verb, since
+   what matters is the shape of the sequence and not where it starts. Without it
+   the verbs finished a sentence that hadn't been written yet. */
+export default function BodyKicker({ style, start, delayS = 0 }) {
   const ref = useRef(null);
   const scrolledInto = useInView(ref, IN_VIEW);
   const inView = start === undefined ? scrolledInto : start;
@@ -194,6 +230,7 @@ export default function BodyKicker({ style, start }) {
       riseY: [VERBS.riseY, 0, 80, 1],
       entryTiltMul: [VERBS.entryTiltMul, 0, 5, 0.1],
       tiltScale: [1, 0, 3, 0.05],
+      spread: [VERBS.spread, 0, 40, 0.5],
       typeS: [MARKS.typeS, 0, 0.2, 0.002],
       frameMs: [MARKS.frameMs, 30, 400, 10],
       markAlpha: [MARKS.alpha, 0.1, 1, 0.05],
@@ -221,10 +258,10 @@ export default function BodyKicker({ style, start }) {
       dials.firstVerb + dials.verbStagger * 2,
       dials.asciiType,
       dials.asciiIdle,
-    ];
+    ].map((ms) => ms + delayS * 1000);
     const timers = at.map((ms, i) => window.setTimeout(() => setStage(i + 1), ms));
     return () => timers.forEach(clearTimeout);
-  }, [inView, reduce, replay, dials.firstVerb, dials.verbStagger, dials.asciiType, dials.asciiIdle]);
+  }, [inView, reduce, replay, delayS, dials.firstVerb, dials.verbStagger, dials.asciiType, dials.asciiIdle]);
 
   // One clock drives all three motifs. Deliberately coarse — ascii should step,
   // not glide, and re-rendering the marks at display rate buys nothing.
@@ -255,18 +292,26 @@ export default function BodyKicker({ style, start }) {
         return (
           <motion.div
             key={verb.text}
-            style={{ alignSelf: verb.align, transformOrigin: '50% 60%' }}
+            /* The offset is `left` rather than a transform: it resolves against
+               the BLOCK's width, so the scatter holds its proportions from a
+               desktop down to a phone, and it leaves the transform entirely to
+               the entrance — the rise and the untilt still turn the line about
+               its own centre. */
+            style={{
+              alignSelf: 'center',
+              position: 'relative',
+              left: `${verb.offX * dials.spread}%`,
+              transformOrigin: '50% 60%',
+            }}
             initial={{
               opacity: 0,
               y: dials.riseY,
               rotate: tilt * dials.entryTiltMul,
-              x: verb.nudgeX,
             }}
             animate={{
               opacity: on ? 1 : 0,
               y: on ? 0 : dials.riseY,
               rotate: on ? tilt : tilt * dials.entryTiltMul,
-              x: verb.nudgeX,
             }}
             transition={reduce ? { duration: 0.3 } : VERBS.spring}
           >
