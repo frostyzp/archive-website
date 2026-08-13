@@ -18,6 +18,7 @@ import { NOISE_GRADIENT } from './NoiseGradient';
 import { NoiseDisplaceFilter } from './NoiseDisplaceFilter';
 import { HorizontalConfessionStack, VerticalConfessionStack, DialNavHint, NavGrainFilter } from './SideDial';
 import { themeStats, sortConfessionsByEmotions, formatCategoryLabel } from './themes';
+import { ACCENT, INK, inkA } from './colors';
 import { LINK_UNDERLINE } from './linkUnderline';
 
 /* ─────────────────────────────────────────────────────────
@@ -737,6 +738,54 @@ function MobileThemeStepper({ label, onStep, reduceMotion, delay = 0 }) {
 
 /* ── Note-open view ────────────────────────────── */
 
+/* ─── FIRST LOOK AT EXPLORE ────────────────────────────────────────────
+ * The first time this tab is opened in a page session, one line sits in the
+ * middle of the frame and the carousel waits behind it. Clicking anywhere sends
+ * the line away and brings the notes up.
+ *
+ * Explore is the view whose controls announce themselves least. The notes answer
+ * to a horizontal swipe and the wheel on the left changes which pile you are
+ * swiping through, and neither says so. Arriving straight into a settled
+ * carousel the likely reading is "a big picture with some type on it" — you read
+ * the centred note and leave, never learning the other piles are there.
+ *
+ * What is held back is only the notes. The wheel, the backdrop and the chrome
+ * all arrive as usual: the line talks about themes, so the themes should be on
+ * screen while it is read, and on desktop the first visit usually arrives on the
+ * category flight from the index — the words fly out of the grid rail and land
+ * in the wheel — which has to be allowed to finish landing somewhere. That is
+ * also why the line waits on `dialHidden` rather than appearing on mount; it
+ * would otherwise fade up over the flight it is interrupting.
+ *
+ * "Session" is the page session, not the browser's. It has to be a module-level
+ * flag: the grid and this view swap inside an AnimatePresence with mode="wait",
+ * so going back to the index unmounts the whole thing, and a ref inside the
+ * component would forget every time and show the line on every visit. It resets
+ * on reload, which is also the only thing that makes it possible to work on. */
+let exploreIntroSpent = false;
+
+const EXPLORE_INTRO = {
+  fadeInS: 0.55,
+  fadeOutS: 0.3,
+  // Enough to clear the view's own 0.3s fade up from black, so the line arrives
+  // into a frame that has settled rather than racing it.
+  holdS: 0.34,
+  // The notes' own fade once the line is gone. Slower than the bridge fade this
+  // layer otherwise runs (BRIDGE_FADE_S) because nothing is chasing it here —
+  // that value is quick because it has a flying image to catch, and at 0.3s a
+  // carousel appearing from nothing reads as a cut.
+  notesFadeS: 0.62,
+  // Held near the width the line naturally breaks at two lines, which is the
+  // shape it was written for; wider and it runs to one long ribbon.
+  maxWidth: 540,
+  // The cue under the sentence. Far enough down to read as a footnote to the
+  // line rather than a third line of it, and arriving a beat later for the same
+  // reason — landing together, the two look like one paragraph in two faces.
+  cueGapPx: 22,
+  cueHoldS: 0.22,
+  cueFadeS: 0.4,
+};
+
 export default function NoteOpenView({
   confession,
   confessions,
@@ -823,6 +872,19 @@ export default function NoteOpenView({
   // the same note the stack centers on). Skipped on mobile: the vertical
   // carousel's cards aren't `[data-card]`, and a phone entrance reads better as
   // a straight reveal than a cross-axis flight.
+  // ── First look ──────────────────────────────────────────
+  // Decided once, at mount, so nothing that happens later can bring the line
+  // back mid-visit. See EXPLORE_INTRO.
+  const [introOpen, setIntroOpen] = useState(() => standalone && !exploreIntroSpent);
+  // Whether THIS mount opened behind the line, which is what decides how the
+  // notes come up — a first look hands them a slower fade of their own, every
+  // other arrival keeps the bridge's.
+  const introWasShown = useRef(introOpen);
+  const dismissIntro = useCallback(() => {
+    exploreIntroSpent = true;
+    setIntroOpen(false);
+  }, []);
+
   const wantMorph =
     !reduceMotion && !isMobile && !!originRect && !!confession?.image && seedIndex >= 0;
   const [phase, setPhase] = useState(wantMorph ? 'morph' : 'done'); // 'morph' | 'done'
@@ -1200,8 +1262,11 @@ export default function NoteOpenView({
           the still-opaque bridge; the bridge dissolves into it only once it's fully
           opaque (no crossfade dip — see the hand-off logic above). */}
       <motion.div
-        initial={{ opacity: wantMorph ? 0 : 1 }}
-        animate={{ opacity: revealed ? 1 : 0 }}
+        // Held at nothing behind a first look, and started there rather than
+        // faded there — at opacity 1 the stack would paint for a frame before
+        // being taken away again.
+        initial={{ opacity: wantMorph || introOpen ? 0 : 1 }}
+        animate={{ opacity: revealed && !introOpen ? 1 : 0 }}
         // First thing to go on the way back to the index — the frame empties
         // from the middle out.
         exit={
@@ -1209,15 +1274,25 @@ export default function NoteOpenView({
             ? { opacity: 0, transition: { duration: EXPLORE_EXIT.notes, ease: EASE_OUT } }
             : undefined
         }
-        transition={{ duration: BRIDGE_FADE_S, ease: EASE_OUT }}
-        style={{ ...st.stageArea, pointerEvents: revealed ? 'auto' : 'none' }}
+        transition={{
+          duration: introWasShown.current ? EXPLORE_INTRO.notesFadeS : BRIDGE_FADE_S,
+          ease: EASE_OUT,
+        }}
+        style={{
+          ...st.stageArea,
+          pointerEvents: revealed && !introOpen ? 'auto' : 'none',
+        }}
       >
         {isMobile ? (
           <VerticalConfessionStack
             confessions={themed}
             activeIndex={activeIndex}
             onActiveChange={setActiveIndex}
-            mountEntrance={!reduceMotion}
+            // Behind a first look the cards' own staggered wave is spent while
+            // nobody can see it, and Framer reads `initial` once, so it cannot
+            // be replayed on dismissal. They settle immediately instead and the
+            // wrapper's fade above is the whole entrance.
+            mountEntrance={!reduceMotion && !introOpen}
             entranceDelay={reduceMotion ? 0 : 0.08}
             metaBlockCrossfade
             transcriptInstantWords
@@ -1227,7 +1302,7 @@ export default function NoteOpenView({
             confessions={themed}
             activeIndex={activeIndex}
             onActiveChange={setActiveIndex}
-            mountEntrance={!reduceMotion && !wantMorph}
+            mountEntrance={!reduceMotion && !wantMorph && !introOpen}
             entranceDelay={reduceMotion ? 0 : 0.08}
             showInlineCounter={false}
             // The full-screen note view leans harder on the centred note — drop
@@ -1244,6 +1319,90 @@ export default function NoteOpenView({
           slide toward: left/right on desktop's horizontal strip, top/bottom on
           the mobile vertical carousel (matching where prev/next peek). */}
       <div aria-hidden="true" style={isMobile ? st.edgeVignetteV : st.edgeVignette} />
+
+      {/* First look — see EXPLORE_INTRO. Waits on the flight landing, so it
+          doesn't fade up over the categories still travelling to the wheel.
+          The whole surface is the target rather than a button inside it: there
+          is nothing else to hit at this point, and a small control in the middle
+          of an empty frame invites reading the line as a dialog. */}
+      <AnimatePresence>
+        {introOpen && !dialHidden && (
+          <motion.button
+            key="explore-intro"
+            type="button"
+            onClick={dismissIntro}
+            aria-label="Start exploring"
+            initial={reduceMotion ? false : { opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{
+              opacity: 0,
+              transition: { duration: reduceMotion ? 0 : EXPLORE_INTRO.fadeOutS, ease: EASE_OUT },
+            }}
+            transition={{
+              duration: reduceMotion ? 0 : EXPLORE_INTRO.fadeInS,
+              ease: EASE_OUT,
+              delay: reduceMotion ? 0 : EXPLORE_INTRO.holdS,
+            }}
+            style={{
+              position: 'absolute',
+              inset: 0,
+              zIndex: 60,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              padding: '0 32px',
+              appearance: 'none',
+              background: 'none',
+              border: 0,
+              cursor: 'pointer',
+              textAlign: 'center',
+            }}
+          >
+            <span
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                gap: EXPLORE_INTRO.cueGapPx,
+                maxWidth: EXPLORE_INTRO.maxWidth,
+              }}
+            >
+              <span
+                style={{
+                  fontFamily: SERIF,
+                  fontSize: 'clamp(20px, 2.3vw, 27px)',
+                  lineHeight: 1.34,
+                  letterSpacing: '-0.01em',
+                  color: INK,
+                }}
+              >
+                {`Swipe through curated stacks to explore ${emotions.length} themes from the archive.`}
+              </span>
+              <motion.span
+                initial={reduceMotion ? false : { opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{
+                  duration: reduceMotion ? 0 : EXPLORE_INTRO.cueFadeS,
+                  ease: EASE_OUT,
+                  // On top of the surface's own hold, so this counts from the
+                  // sentence landing rather than from the view opening.
+                  delay: reduceMotion ? 0 : EXPLORE_INTRO.holdS + EXPLORE_INTRO.cueHoldS,
+                }}
+                style={{
+                  fontFamily: MONO,
+                  fontSize: 11,
+                  letterSpacing: '0.16em',
+                  textTransform: 'uppercase',
+                  lineHeight: 1.5,
+                  color: inkA(0.45),
+                }}
+              >
+                Click anywhere to continue
+              </motion.span>
+            </span>
+          </motion.button>
+        )}
+      </AnimatePresence>
 
       {/* Theme context washes in once the entrance has landed. Desktop shows the
           left rotary wheel; mobile hides it (no room beside the full-width note)
@@ -1309,7 +1468,9 @@ export default function NoteOpenView({
               carries the page fade itself since the root's exit can no longer
               reach it. As the grid-click overlay the root is already above the
               wash, so that path stays exactly where it was. */}
-          {!isMobile && total > 1
+          {/* Held back with the notes it counts — a position out of a total,
+              over an empty frame, is a number about nothing. */}
+          {!isMobile && total > 1 && !introOpen
             ? (() => {
                 const counter = (
                   <motion.div
@@ -1476,6 +1637,7 @@ export default function NoteOpenView({
 }
 
 const MONO = 'var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace)';
+const SERIF = "var(--font-primary, 'Faktory', Georgia, serif)";
 
 /* Phone explore chrome, measured up from the screen edge: the note counter, with
    the category stepper directly above it. Held well clear of the bottom so
@@ -1738,7 +1900,13 @@ const st = {
     fontFamily: MONO,
     fontSize: WHEEL.labelFont,
     lineHeight: 1,
-    color: '#e2e2e2',
+    // Every label on the wheel is the accent; the arc's own opacity ramp is what
+    // separates the active one from its neighbours, so this doesn't need a
+    // second colour for the lit slot. Sat above INK rather than on it because
+    // the wheel is the one piece of type the eye is meant to track while it
+    // spins — see DIAL_POSE in App.jsx, which has to carry the same value or
+    // the words change colour halfway through the flight to the rail.
+    color: ACCENT,
     whiteSpace: 'nowrap',
     // Categories render all-caps to match the dial + wordmark style elsewhere.
     textTransform: 'uppercase',

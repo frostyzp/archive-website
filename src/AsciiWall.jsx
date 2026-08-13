@@ -52,6 +52,18 @@ const WALL = {
   wordFadeS: 0.85, //    per-word fade-in duration
   wordSpreadS: 2.4, //   window over which word delays are scattered
   fadeSpeedJitter: 0.35, // ± fraction on each word's duration
+  /* Leaving, the field empties the same way it filled — word by word on
+     shuffled delays — rather than dropping out as one sheet. It had been going
+     with the hero on a single opacity, which made a wall built out of hundreds
+     of separate murmurs vanish like a lid closing over them.
+   *
+     Quicker than the way in, and deliberately so. Arriving, the field is the
+     thing being watched and can take its time; leaving, it is getting out of the
+     way of a beat that has already started, and the same 2.4s spread would still
+     be clearing while the notes were landing. Roughly half the entrance is
+     enough to read as scattered without holding the page. */
+  outFadeS: 0.45, //     per-word fade-out duration
+  outSpreadS: 0.9, //    window over which the exits are scattered
   // Beat between the hero title starting to reveal and the field behind it
   // starting to write, so the two read as one gesture that begins at the title.
   startDelayS: 0.4,
@@ -207,8 +219,12 @@ const EDGE_FADE = `linear-gradient(to bottom, #000 ${WALL.fadeFrom * 100}%, tran
  * until then. It can't key off scrolling into view the way a mid-page beat would
  * — it opens the page already in view, and the loader means "in view" and "the
  * hero has started" are seconds apart.
+ *
+ * `leaving` is the hero being left behind. The field empties on its own clock
+ * rather than inside the hero's fade, which is why it is no longer a child of
+ * it — see the HERO block in OnboardingBeats.
  */
-export default function AsciiWall({ start = true }) {
+export default function AsciiWall({ start = true, leaving = false }) {
   const hostRef = useRef(null);
   const probeRef = useRef(null);
   const reduce = useReducedMotion();
@@ -231,9 +247,21 @@ export default function AsciiWall({ start = true }) {
       delay: [WALL.startDelayS, 0, 3, 0.05],
       fade: [WALL.wordFadeS, 0.1, 3, 0.05],
       spread: [WALL.wordSpreadS, 0, 6, 0.1],
+      outFade: [WALL.outFadeS, 0.05, 2, 0.05],
+      outSpread: [WALL.outSpreadS, 0, 4, 0.05],
     },
   });
   const { type: typeCfg, holes: holeCfg, reveal } = config;
+
+  /* Whether the field has been left at least once, which decides how it comes
+     BACK. On the way in the first time it has the page to itself and can bloom
+     over the full spread; returning to the hero it is answering a swipe, and
+     replaying that same slow scatter reads as the page rebuilding itself rather
+     than as the hero coming back. So a return runs on the exit's quicker clock. */
+  const [everLeft, setEverLeft] = useState(false);
+  useEffect(() => {
+    if (leaving) setEverLeft(true);
+  }, [leaving]);
 
   // Pull the corpus on mount rather than when the beat comes into view: the
   // reader has the whole intro to scroll through first, so the sheet has landed
@@ -354,24 +382,54 @@ export default function AsciiWall({ start = true }) {
     );
   }, [lines, holeCfg.seed, reveal.delay, reveal.spread, reveal.fade]);
 
-  // Spaces stay bare text; every glyph-run is a span so it can fade in on its
-  // own clock. Dimmed words keep their softer ink via colour (opacity animates
-  // 0→1 either way).
-  const renderRow = (row, timings) =>
+  /* The same idea on the way out, but rolled separately so the field does not
+     empty in the order it filled. Reusing the entrance's delays would have the
+     first words in be the first words out, which over a whole wall reads as a
+     wave crossing it — and the wall's whole character is that it has no
+     direction. A fresh shuffle keeps it scattered both ways. */
+  const outTiming = useMemo(() => {
+    const rand = rng(Math.round(holeCfg.seed) * 419 + 29);
+    let first = Infinity;
+    const rows = lines.map((row) =>
+      row.map(({ t }) => {
+        if (t[0] === ' ') return null;
+        const offset = rand() * reveal.outSpread;
+        const dur = Math.max(
+          0.05,
+          reveal.outFade * (1 + (rand() * 2 - 1) * WALL.fadeSpeedJitter)
+        );
+        if (offset < first) first = offset;
+        return { offset, dur };
+      })
+    );
+    if (!Number.isFinite(first)) first = 0;
+    return rows.map((row) =>
+      row.map((t) => (t ? { delay: t.offset - first, dur: t.dur } : null))
+    );
+  }, [lines, holeCfg.seed, reveal.outSpread, reveal.outFade]);
+
+  // Spaces stay bare text; every glyph-run is a span so it can fade on its own
+  // clock. Dimmed words keep their softer ink via colour (opacity animates
+  // between 0 and 1 either way).
+  const renderRow = (row, inTimings, outTimings) =>
     row.map(({ t, level }, i) => {
       if (t[0] === ' ') return t;
-      const timing = timings?.[i];
+      // Returning rides the exit's clock rather than the entrance's — see
+      // `everLeft`.
+      const timing = leaving || everLeft ? outTimings?.[i] : inTimings?.[i];
       const style = {
         ...(level < 1 ? { color: inkA(typeCfg.alpha * level) } : null),
       };
       if (reduce) {
+        // No animation to hide behind, and the field is no longer inside the
+        // hero's own fade, so leaving has to actually take it off the screen.
         return (
-          <span key={i} style={style}>
+          <span key={i} style={{ ...style, opacity: leaving ? 0 : 1 }}>
             {t}
           </span>
         );
       }
-      if (!start || !timing) {
+      if ((!start && !leaving) || !timing) {
         return (
           <span key={i} style={{ ...style, opacity: 0 }}>
             {t}
@@ -383,7 +441,9 @@ export default function AsciiWall({ start = true }) {
           key={i}
           style={{
             ...style,
-            animation: `ascii-wall-word ${timing.dur}s ease-out ${timing.delay}s both`,
+            animation: leaving
+              ? `ascii-wall-word-out ${timing.dur}s ease-in ${timing.delay}s both`
+              : `ascii-wall-word ${timing.dur}s ease-out ${timing.delay}s both`,
           }}
         >
           {t}
@@ -412,12 +472,15 @@ export default function AsciiWall({ start = true }) {
         ...type,
       }}
     >
-      <style>{'@keyframes ascii-wall-word{from{opacity:0}to{opacity:1}}'}</style>
+      <style>
+        {'@keyframes ascii-wall-word{from{opacity:0}to{opacity:1}}' +
+          '@keyframes ascii-wall-word-out{from{opacity:1}to{opacity:0}}'}
+      </style>
       <span ref={probeRef} style={{ ...type, position: 'absolute', visibility: 'hidden' }}>
         {PROBE}
       </span>
       {lines.map((line, i) => (
-        <div key={i}>{renderRow(line, wordTiming[i])}</div>
+        <div key={i}>{renderRow(line, wordTiming[i], outTiming[i])}</div>
       ))}
     </div>
   );

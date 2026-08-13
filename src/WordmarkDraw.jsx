@@ -120,6 +120,65 @@ function transitionSeconds(t) {
   return t?.duration ?? t?.visualDuration ?? DRAW.strokeS;
 }
 
+/** One axis of a CSS cubic-bezier, with the endpoints fixed at 0 and 1. */
+function cubicAxis(a1, a2, s) {
+  const c = 3 * a1;
+  const b = 3 * (a2 - a1) - c;
+  const a = 1 - c - b;
+  return ((a * s + b) * s + c) * s;
+}
+
+/**
+ * When a run following `curve` has got `u` of the way through it.
+ *
+ * The curve is an easing, so it answers the other question: given a moment,
+ * how far along are we. What a schedule needs is the reverse — this stroke is
+ * the 12th of 31, so when does it land — and an easing has no closed-form
+ * inverse, hence the bisection. Thirty-two halvings is far past the precision a
+ * millisecond needs.
+ *
+ * Getting this backwards is the easy mistake, and it is silent: applying an
+ * ease-out to the schedule directly spaces the strokes out at the START and
+ * bunches them at the end, which is an accelerating hand — the exact opposite of
+ * the curve it was named after.
+ */
+function easeInverse(u, [x1, y1, x2, y2]) {
+  if (u <= 0) return 0;
+  if (u >= 1) return 1;
+  let lo = 0;
+  let hi = 1;
+  let s = u;
+  for (let i = 0; i < 32; i++) {
+    s = (lo + hi) / 2;
+    if (cubicAxis(y1, y2, s) < u) lo = s;
+    else hi = s;
+  }
+  return cubicAxis(x1, x2, s);
+}
+
+/**
+ * Where a stroke sits in the run, given how far through the strokes it is.
+ *
+ * With no curve this is the flat schedule the hero writes on: every stroke a
+ * fixed beat after the one before, the pen crossing the line at one speed. Given
+ * one, the same strokes are redistributed to follow it, so the run decelerates
+ * the way that curve says. It is not made longer by this — the last stroke still
+ * lands where it did, and what changes is the spacing on the way there.
+ *
+ * `headroom` is how much of the curve gets used, and it exists because a curve
+ * that arrives at 1 arrives FLAT, which is a vertical inverse: read whole, this
+ * one leaves the final stroke hanging 317ms after the one before it, alone,
+ * long enough to read as a dropped frame rather than as a finish. Stopping short
+ * of that corner and stretching what is left over the whole run keeps the shape
+ * — the pen still leaves fast and settles hard — without the last stroke falling
+ * off the end of it. At 0.82 the closing gap is ~70ms against ~10ms at the
+ * start, which is a settle you can see and not a stall.
+ */
+function settleShape(u, curve, headroom) {
+  if (!curve) return u;
+  return easeInverse(u * headroom, curve) / easeInverse(headroom, curve);
+}
+
 /** The 31 `d` strings, fetched once and shared. Kept out of the bundle — the
  *  art is ~1.6MB of path data and has no business in a JS chunk. */
 let dCache = null;
@@ -188,6 +247,36 @@ function WordmarkGrain({ id, reduceMotion, cfg }) {
 
 const IN_VIEW = { once: true, margin: '0px 0px -24% 0px' };
 
+/* The same hand, writing at the pace of something arriving in the corner of a
+   page rather than of a hero being introduced. Only the clock changes: stroke
+   order, routes, easing and grain are the hero's, so the two read as one mark
+   written twice rather than as two different marks.
+ *
+   `speed` scales every part of the timeline together — the beat before the pen
+   lands, the gap between strokes, and how long a stroke takes. Scaling only the
+   stagger would run the pen faster across the line while each stroke still took
+   its full time, which stops reading as handwriting and starts reading as the
+   strokes being dealt out. At this factor the ~2.3s hero run lands in ~0.85s:
+   fast enough to be over before the eye leaves the top-left corner, slow enough
+   that you can still see it being written.
+ *
+   The grain stops crawling. At hero size its 5fps seed hop is a brush edge
+   breathing; at 26px it is a logo that will not sit still, and it would go on
+   repainting the top chrome for as long as the archive is open. Held at one
+   frame it is still the same texture, just no longer animated. */
+const NAV_WRITE = {
+  speed: 0.37,
+  grainFps: 0,
+  /* The shape of the whole run, and of each stroke inside it: the mark is
+     written along this curve rather than at one steady rate, so the hand leaves
+     fast and settles into the last letters. The hero stays flat — this is the
+     nav's own finish. */
+  ease: [0.08, 0.82, 0.17, 1],
+  /* How much of that curve the schedule reads before it is rescaled to fill the
+     run — see `settleShape`. */
+  settleHeadroom: 0.82,
+};
+
 export default function WordmarkDraw({ hold = false, onRevealComplete, reduceMotion = false }) {
   const [replay, setReplay] = useState(0);
   const dials = useDialKit(
@@ -239,8 +328,57 @@ export default function WordmarkDraw({ hold = false, onRevealComplete, reduceMot
   );
 }
 
+/**
+ * The write-on at a fixed pixel height, for the nav's wordmark — no DialKit
+ * panel, since this is not the hero and should not claim the hero's controls.
+ *
+ * `startDelayS` is spent before the first stroke rather than by holding the
+ * component: the run gates on `hold`, and a hold released by a timer would have
+ * to be threaded through state. The existing `firstStroke` beat is already
+ * exactly this, so the wait is just added to it.
+ *
+ * The path data is the same 1.6MB fetch the hero makes, and the same
+ * module-level cache — which is the reason this is only ever asked for on the
+ * way in from the intro, where the hero has already paid for it. Reaching the
+ * archive any other way shows the baked PNG and fetches nothing.
+ */
+export function WordmarkDrawInline({
+  heightPx,
+  startDelayS = 0,
+  speed = NAV_WRITE.speed,
+  onRevealComplete,
+}) {
+  const config = useMemo(
+    () => ({
+      size: { maxVw: DRAW.maxVw, maxVh: DRAW.maxVh },
+      write: {
+        firstStroke: startDelayS * 1000 + TIMING.firstStroke * speed,
+        stagger: DRAW.stagger * speed,
+        stroke: { type: 'easing', duration: DRAW.strokeS * speed, ease: NAV_WRITE.ease },
+        lengthBias: DRAW.lengthBias,
+        settleEase: NAV_WRITE.ease,
+        settleHeadroom: NAV_WRITE.settleHeadroom,
+      },
+      look: { fill: DRAW.fill, pad: DRAW.pad },
+      scrub: { hold: false, at: 0 },
+      grain: { ...GRAIN, on: true, fps: NAV_WRITE.grainFps },
+    }),
+    [startDelayS, speed]
+  );
+
+  return (
+    <WordmarkDrawRun
+      hold={false}
+      onRevealComplete={onRevealComplete}
+      reduceMotion={false}
+      config={config}
+      heightPx={heightPx}
+    />
+  );
+}
+
 /** One write-on. Remounted to replay. */
-function WordmarkDrawRun({ hold, onRevealComplete, reduceMotion, config }) {
+function WordmarkDrawRun({ hold, onRevealComplete, reduceMotion, config, heightPx }) {
   const hostRef = useRef(null);
   const inView = useInView(hostRef, IN_VIEW);
   const prefersReduce = useReducedMotion();
@@ -283,7 +421,14 @@ function WordmarkDrawRun({ hold, onRevealComplete, reduceMotion, config }) {
   const { startsAt, durations, totalMs } = useMemo(() => {
     if (!strokes.length) return { startsAt: [], durations: [], totalMs: 0 };
     const mean = strokes.reduce((sum, s) => sum + s.line.len, 0) / strokes.length;
-    const starts = strokes.map((s, n) => write.firstStroke + n * write.stagger);
+    const last = Math.max(1, strokes.length - 1);
+    const span = last * write.stagger;
+    const starts = strokes.map((s, n) =>
+      Math.round(
+        write.firstStroke +
+          span * settleShape(n / last, write.settleEase, write.settleHeadroom ?? 1)
+      )
+    );
     const spans = strokes.map(
       (s) => baseMs * (1 - write.lengthBias + write.lengthBias * (s.line.len / mean))
     );
@@ -294,7 +439,15 @@ function WordmarkDrawRun({ hold, onRevealComplete, reduceMotion, config }) {
       // long stroke can still be drawing after a later short one has landed.
       totalMs: Math.max(...starts.map((t, n) => t + spans[n])),
     };
-  }, [strokes, write.firstStroke, write.stagger, write.lengthBias, baseMs]);
+  }, [
+    strokes,
+    write.firstStroke,
+    write.stagger,
+    write.lengthBias,
+    write.settleEase,
+    write.settleHeadroom,
+    baseMs,
+  ]);
 
   const doneRef = useRef(onRevealComplete);
   doneRef.current = onRevealComplete;
@@ -306,15 +459,26 @@ function WordmarkDrawRun({ hold, onRevealComplete, reduceMotion, config }) {
     return () => clearTimeout(t);
   }, [run, reduce, totalMs, scrub.hold]);
 
-  const wrapStyle = {
-    position: 'relative',
-    display: 'block',
-    // Bounded on every axis so the lockup can't overflow a short viewport or
-    // reach the bezels of a narrow one. Not `margin: auto` — an over-wide block
-    // resolves that to zero and hangs off the right; the beat's
-    // `align-items: center` already centers it.
-    width: `min(${DRAW.maxPhoneVw}vw, max(${size.maxVw}vw, 300px), calc(${size.maxVh}vh * ${ASPECT}))`,
-  };
+  /* Given a height, the lockup is that tall and as wide as its own aspect makes
+     it — which is what lets this stand in for the baked PNG in the nav without
+     moving anything: the art and the PNG are the same 5.40 shape, so at a shared
+     height they occupy the same box to the pixel. */
+  const wrapStyle = heightPx
+    ? {
+        position: 'relative',
+        display: 'block',
+        height: heightPx,
+        width: heightPx * ASPECT,
+      }
+    : {
+        position: 'relative',
+        display: 'block',
+        // Bounded on every axis so the lockup can't overflow a short viewport or
+        // reach the bezels of a narrow one. Not `margin: auto` — an over-wide
+        // block resolves that to zero and hangs off the right; the beat's
+        // `align-items: center` already centers it.
+        width: `min(${DRAW.maxPhoneVw}vw, max(${size.maxVw}vw, 300px), calc(${size.maxVh}vh * ${ASPECT}))`,
+      };
 
   // Nothing to draw with — show the flat art rather than an empty hero.
   if (failed) {

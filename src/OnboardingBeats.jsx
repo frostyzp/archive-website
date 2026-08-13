@@ -154,7 +154,25 @@ const DEAL = {
   flyS: 0.62, //   s — offstage → resting place
   fadeS: 0.4, //   s — leaving the stage (stepping backwards)
   dimS: 0.4, //    s — the pile behind shading back
-  dimGap: 0.04, // s — beat of stillness after the landing before it does
+  /* s — how far before the new note lands the pile starts giving way to it.
+   *
+   * This used to be a gap on the other side of the landing: the note came to
+   * rest, everything held still for a beat, and only then did the pile behind
+   * shade back. Two events in sequence, and the second one looked like a
+   * correction — as if the shading had been forgotten and applied late.
+   *
+   * Overlapping them makes it one event instead. The pile is already going dark
+   * while the note is still coming down, so the arrival is what causes the dim
+   * rather than something that follows it, and the note lands into a space that
+   * has already been made for it.
+   *
+   * Worth knowing that the dim is all but over by the time the note is down,
+   * even though it is nominally the longer of the two. `dimS` is eased out, so
+   * most of the brightness is gone in the first third of it: measured, the pile
+   * is 97% shaded at the moment of landing and only trails off afterwards. So
+   * this number is really setting how much of the fall the pile reacts during,
+   * not how much of the dim is left to see when it stops. */
+  dimLeadS: 0.2,
   // A note arrives tilted this much further than it comes to rest at, leaning
   // the way it drifted, and turns square as it lands.
   turnDeg: 14,
@@ -171,9 +189,34 @@ const DEAL = {
 /** Depth shading by how far back a photograph now sits. */
 const DEPTH_DIM = [0, 0.28, 0.48, 0.62];
 
+/* How much of that fraction is actually taken out of the card's brightness.
+ *
+ * At 0.55 the pile bottomed out at two thirds lit, which is not far enough to be
+ * read as depth: every card was still plainly lit, so the pile looked like four
+ * photographs of slightly different exposures rather than one on top of three
+ * others. Light falling off is what says a card is underneath, and it has to
+ * fall off hard — the front card is the only one being read, and the ones behind
+ * it are there to be counted, not to be read. This puts the pile at 1.0 on top
+ * and then 0.62, 0.35 and 0.16 going back: the second card shows its handwriting
+ * only as texture, the third is paper without writing, and the fourth is an edge
+ * and a shadow.
+ *
+ * There is a ceiling on this number and it is closer than it looks. The dim is
+ * subtracted from full brightness, so the deepest card hits pure black at
+ * 1 / 0.62 ≈ 1.61 and any more than that clips a card that has already gone as
+ * dark as it can — the pile would keep losing its middle while the back stayed
+ * put. Somewhere under that is as far as this ramp goes without being rebuilt as
+ * a multiplicative one.
+ *
+ * Taken out of brightness rather than opacity on purpose. Fading the back cards
+ * would let the page's own grain show through them and they would stop being
+ * objects; darkening keeps them opaque paper that happens to be out of the
+ * light. */
+const DEPTH_DIM_FALLOFF = 1.35;
+
 /** Paper shadow + depth shading, as one filter so it can be animated whole. */
 const cardFilter = (dim) =>
-  `drop-shadow(0 16px 34px rgba(0,0,0,0.5)) brightness(${1 - dim * 0.55})`;
+  `drop-shadow(0 16px 34px rgba(0,0,0,0.5)) brightness(${1 - dim * DEPTH_DIM_FALLOFF})`;
 
 /* Resting places: notes landing on top of one another, a little askew each time
  * — a pile on a table, not a hand fanned out. The tilts are hand-set and the
@@ -303,7 +346,22 @@ const PHOTOS = [
    beat, and exactly wrong here, where the pile is clearing to let the archive
    through. Opening outward is the pile getting out of the way. */
 const DISPERSE = {
-  firstFadeS: 0.44, // s — the booth, fading in place
+  /* s — the booth, fading in place rather than travelling.
+   *
+   * Short, and shorter than it looks like it needs to be, because it is the only
+   * thing in the exit that does not move. The notes are gone from the eye long
+   * before their flights end — each one is across the screen edge inside the
+   * first third of its 0.92s — so a booth still fading on its own clock is left
+   * sitting in the middle of an emptying screen, and what had been the bottom of
+   * a pile reads as a photograph that was forgotten. At 0.44 it was still faintly
+   * there while the last note was clearing.
+   *
+   * It also has an ease-out on it, which front-loads the fade and then trails:
+   * most of the opacity goes in the first third of whatever this is set to, and
+   * the rest is a tail at low alpha. That tail is the part that was being seen,
+   * so the number that matters is not when this ends but when it stops being
+   * legible — which is now well inside the first note's departure. */
+  firstFadeS: 0.22,
   /* When each note goes, in s after the gesture: at once, then 100ms and 180ms.
      Written out rather than as a single interval because the interval tightens:
      100ms, then 80ms. An even step made three departures read as a metronome;
@@ -628,7 +686,11 @@ function dealPose({ index, beat, reduceMotion, offstage }) {
           rotate: { duration: DEAL.turnS, ease: EASE_TURN },
           opacity: { duration: 0.24, ease: EASE_OUT },
           filter: behind
-            ? { duration: DEAL.dimS, ease: EASE_OUT, delay: DEAL.flyS + DEAL.dimGap }
+            ? {
+                duration: DEAL.dimS,
+                ease: EASE_OUT,
+                delay: Math.max(0, DEAL.flyS - DEAL.dimLeadS),
+              }
             : { duration: 0.24, ease: EASE_OUT },
           zIndex: { duration: 0 },
         },
@@ -1138,7 +1200,20 @@ export default function OnboardingBeats({
       >
         {/* HERO — the wordmark over the ascii confession field. Laid over the
             whole screen rather than in the column, so the pile below can hold
-            its place while the hero fades off it. */}
+            its place while the hero fades off it.
+         *
+            The field is a sibling of the fading group rather than inside it. A
+            parent's opacity takes everything under it at one rate, so while the
+            wall lived in there it could only ever leave as a single sheet — the
+            per-word exit it now runs would have been flattened by the group's
+            own fade on top of it. `zIndex: 0` is what keeps this box a stacking
+            context now that it is not always mid-fade, so the field's `-1` still
+            resolves against the hero rather than against the whole page. */}
+        <div style={{ position: 'absolute', inset: 0, zIndex: 0, pointerEvents: 'none' }}>
+          {/* The same gate the title takes, so the field starts writing a beat
+              after the title starts revealing rather than on its own clock. */}
+          <AsciiWall start={!loading && titleGate} leaving={beat !== 0} />
+        </div>
         <motion.div
           initial={false}
           animate={{ opacity: beat === 0 ? 1 : 0 }}
@@ -1158,9 +1233,6 @@ export default function OnboardingBeats({
           }}
           aria-hidden={beat !== 0}
         >
-          {/* The same gate the title takes, so the field starts writing a beat
-              after the title starts revealing rather than on its own clock. */}
-          <AsciiWall start={!loading && titleGate} />
           <WordmarkDraw
             hold={loading || !titleGate}
             reduceMotion={reduce}

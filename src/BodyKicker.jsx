@@ -194,6 +194,17 @@ const MARKS = {
   ],
 };
 
+/* The marks are off while the verbs are being looked at on their own.
+ *
+ * A switch rather than a deletion, and deliberately the only thing that moves:
+ * the motifs, their ring of positions and the schedule that types them on are
+ * all still live below, so turning this back to `true` restores the sequence
+ * exactly as it was tuned. Stages 4 and 5 still fire on the clock — nothing
+ * reads them while this is false, and leaving them alone keeps the storyboard
+ * above honest about the order rather than describing a schedule that has been
+ * quietly cut short. */
+const SHOW_MARKS = false;
+
 const IN_VIEW = { once: true, margin: '0px 0px -24% 0px' };
 
 /**
@@ -265,7 +276,7 @@ export default function BodyKicker({ style, start, delayS = 0 }) {
   // not glide, and re-rendering the marks at display rate buys nothing.
   const [elapsed, setElapsed] = useState(0);
   useEffect(() => {
-    if (stage < 5 || reduce || !dials.frameMs) return undefined;
+    if (!SHOW_MARKS || stage < 5 || reduce || !dials.frameMs) return undefined;
     const started = performance.now();
     const id = window.setInterval(() => setElapsed(performance.now() - started), dials.frameMs);
     return () => clearInterval(id);
@@ -317,7 +328,7 @@ export default function BodyKicker({ style, start, delayS = 0 }) {
       })}
 
       {/* Marks sit outside the flow so they can hang off the block's edges. */}
-      {MARKS.items.map((mark) => {
+      {SHOW_MARKS && MARKS.items.map((mark) => {
         const on = stage >= 4;
         // Glyphs type on in one continuous run across the mark's lines.
         let n = 0;

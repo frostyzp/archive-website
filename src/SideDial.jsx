@@ -9,9 +9,8 @@ import {
 } from './noise.jsx';
 import { TRANSCRIPTION_TEXT } from './text';
 import { BASELINE_PROBE_STYLE, useTextDissolve } from './textDissolve';
-import { ACCENT, INK, accentA } from './colors';
+import { ACCENT, INK, INK_ON_GRAIN, accentA } from './colors';
 import { formatCategoryLabel } from './themes';
-import { useNoteSound } from './sounds';
 import { CURSOR_FLOAT, cursorOffset, floatAngles } from './cursorFloat';
 
 export const EMOTIONS = [
@@ -1059,7 +1058,7 @@ const dialNavHintStyles = {
     letterSpacing: '0.16em',
     lineHeight: 1,
     textTransform: 'uppercase',
-    color: 'rgba(255, 255, 255, 0.96)',
+    color: INK_ON_GRAIN,
     paddingLeft: 1,
   },
   key: {
@@ -1087,14 +1086,13 @@ const dialNavHintStyles = {
   },
   keyGlyph: {
     // ESC / ← / → / ↑ / ↓ as plain Courier glyphs so the legend reads as
-    // monospaced text rather than drawn icons. White rather than the parchment
-    // parchment cream used elsewhere, and near-opaque, since the grain filter
-    // (see NAV_GRAIN) eats these small edges and costs perceived brightness.
+    // monospaced text rather than drawn icons. Off the INK ladder on purpose —
+    // see INK_ON_GRAIN for why type this fine can't wear the parchment.
     fontFamily: COURIER,
     fontSize: 12,
     letterSpacing: '0.04em',
     lineHeight: 1,
-    color: 'rgba(255, 255, 255, 0.96)',
+    color: INK_ON_GRAIN,
   },
   keyGlyphArrow: {
     // Stepped up off the ESC size: a lone arrow sitting in the same key box
@@ -1145,7 +1143,6 @@ export function HorizontalConfessionStack({
 }) {
   const scrollRef = useRef(null);
   const reduceMotion = useReducedMotion();
-  const playNote = useNoteSound();
   // Active card wrapper — anchors the crossfading meta overlay above the note.
   const [metaAnchorEl, setMetaAnchorEl] = useState(null);
   const inactive = useInactiveCardParams();
@@ -1353,8 +1350,6 @@ export function HorizontalConfessionStack({
   };
 
   const setActiveFromClick = (i) => {
-    // Post-it "peel" when a note is clicked to focus in the coverflow.
-    playNote();
     activeIndexSourceRef.current = 'external';
     onActiveChange(i);
   };

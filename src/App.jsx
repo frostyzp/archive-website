@@ -12,6 +12,7 @@ import {
 import { createPortal } from 'react-dom';
 import {
   animate,
+  cubicBezier,
   motion,
   AnimatePresence,
   useReducedMotion,
@@ -47,8 +48,9 @@ import {
   CardNoiseFilterDefs,
   useInactiveCardParams,
 } from './noise';
-import { INK, inkA } from './colors';
+import { ACCENT, INK, inkA } from './colors';
 import { PaperTextureLayer, usePaperStockDials } from './PaperTexture';
+import { WordmarkDrawInline } from './WordmarkDraw';
 import { LINK_UNDERLINE, LINK_UNDERLINE_CSS, linkUnderlineRaised } from './linkUnderline';
 import { TracedOutline } from './TracedOutline';
 import { subscribeToKit } from './kit';
@@ -66,7 +68,6 @@ import {
   GRID_IMAGE_FILTER,
   NoiseDisplaceFilter,
 } from './NoiseDisplaceFilter';
-import { useNoteSound } from './sounds';
 import CubeScene from './CubeScene';
 import { CURSOR_FLOAT, cursorOffset, floatAngles } from './cursorFloat';
 const ease = [0.22, 1, 0.36, 1];
@@ -249,6 +250,23 @@ const GRID_TILE_DURATION = 0.55;
 /** First handful of tiles — not the full wall stagger. */
 const GRID_NAV_VISIBLE_STAGGER = 0.32;
 const ARCHIVE_NAV_CHROME_DELAY_GRID = GRID_NAV_VISIBLE_STAGGER + GRID_TILE_DURATION;
+/**
+ * The same two readings for the rise (see GRID_RISE), which deals its wall out
+ * at a little over half the edge entrance's pace and holds each tile in the air
+ * slightly longer. The chrome waits on the same thing in both: not the whole
+ * cascade, but the handful of tiles that establishes it — so both numbers are
+ * the edge entrance's own, restated at the rise's stagger and duration. Roughly
+ * four and a third tiles of cascade, and the same two thirds of a flight that
+ * GRID_TILE_DURATION takes off GRID_ENTRANCE.duration.
+ *
+ * Literals rather than arithmetic over GRID_RISE, which is declared with the
+ * rest of the entrance a few thousand lines down and would still be in its
+ * temporal dead zone here. Re-derive them by hand if the rise is retuned.
+ */
+const GRID_RISE_TILE_DURATION = 0.56;
+const GRID_RISE_NAV_VISIBLE_STAGGER = 0.18;
+const ARCHIVE_NAV_CHROME_DELAY_GRID_RISE =
+  GRID_RISE_NAV_VISIBLE_STAGGER + GRID_RISE_TILE_DURATION;
 
 /** Archive nav chrome — the GRID / DIAL toggle and ABOUT. bodySmall metrics but
  *  set in Courier New (--font-mono), rendered white. Per-button active/hover
@@ -309,7 +327,15 @@ function ArchiveEdgeGradientWash({ edge = 'top', zIndex = ARCHIVE_EDGE_WASH_Z })
  *  out the same size — the old 48px block was two ~20px lines. Sizing the new
  *  one to match that block instead would have put a 260px mark in the corner.
  */
-function WordmarkLogo({ onReturnToIntro, onClick, ariaLabel, title, logoHeight = 26 }) {
+function WordmarkLogo({
+  onReturnToIntro,
+  onClick,
+  ariaLabel,
+  title,
+  logoHeight = 26,
+  writeOn = false,
+  writeOnDelayS = 0,
+}) {
   return (
     <button
       type="button"
@@ -335,12 +361,24 @@ function WordmarkLogo({ onReturnToIntro, onClick, ariaLabel, title, logoHeight =
         e.currentTarget.style.opacity = '0.92';
       }}
     >
-      <img
-        src="/wordmark-line-96.png"
-        alt="What We Tell AI"
-        draggable={false}
-        style={{ height: logoHeight, width: 'auto', display: 'block' }}
-      />
+      {/* Arriving from the intro, the mark is written rather than placed — the
+          same hand that drew it on the hero a moment ago, at the pace of
+          something taking its seat in the corner. It stays as the vector
+          afterwards instead of swapping back to the PNG: the two are the same
+          5.40 lockup at the same height, but they are not the same pixels, and
+          a swap on the last frame of a write-on is exactly where a tone shift
+          would be seen. Every other way into the archive gets the PNG and never
+          fetches the art. */}
+      {writeOn ? (
+        <WordmarkDrawInline heightPx={logoHeight} startDelayS={writeOnDelayS} />
+      ) : (
+        <img
+          src="/wordmark-line-96.png"
+          alt="What We Tell AI"
+          draggable={false}
+          style={{ height: logoHeight, width: 'auto', display: 'block' }}
+        />
+      )}
     </button>
   );
 }
@@ -363,14 +401,22 @@ function ArchiveNavBar({
   onAboutOpen,
   onAboutClose,
   zIndex = 200,
+  wordmarkWriteOn = false,
 }) {
-  const wordmarkProps = aboutOpen
-    ? {
-        onClick: onAboutClose,
-        ariaLabel: 'What We Tell AI — close about',
-        title: 'Close about',
-      }
-    : { onReturnToIntro };
+  const wordmarkProps = {
+    ...(aboutOpen
+      ? {
+          onClick: onAboutClose,
+          ariaLabel: 'What We Tell AI — close about',
+          title: 'Close about',
+        }
+      : { onReturnToIntro }),
+    writeOn: wordmarkWriteOn,
+    // The bar itself is still fading up at this point, and a mark written
+    // underneath an invisible parent is a mark that was never written. So the
+    // pen waits for the chrome it is being drawn into.
+    writeOnDelayS: entranceDelay,
+  };
 
   const handleAboutClick = aboutOpen ? onAboutClose : onAboutOpen;
   const handleViewChange = (v) => {
@@ -889,6 +935,14 @@ const ABOUT_DRAWER = {
   hoverNudgeS: 0.7,
   slideS: 0.48,
   fadeS: 0.22,
+  /* s — the archive's own INDEX / EXPLORE tabs clearing off as About takes over.
+     Deliberately much shorter than the drawer's slide: the bar is handing the
+     top of the page over, and it has to have finished doing so before the thing
+     it is handing over to has arrived, or the two read as sharing the space
+     rather than replacing each other. Dimming them was what this used to be,
+     which left the archive's destinations legible underneath a panel that had
+     already become the destination. */
+  navFadeS: 0.14,
   // Between the tabs that only exist once the drawer is open, as they drop in
   // one after the next. They wait out the slide first: the drawer should arrive
   // as one object and then show what else is filed in it, rather than growing
@@ -1348,30 +1402,6 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false, onPeekLan
     >
       {[
         {
-          key: 'contact',
-          label: 'Contact',
-          value: (
-            <div style={creditCardStackStyle}>
-              <a
-                className="about-contact-link"
-                href="https://www.instagram.com/whatwetellai"
-                target="_blank"
-                rel="noopener noreferrer"
-                style={creditCardValueStyle}
-              >
-                Instagram
-              </a>
-              <a
-                className="about-contact-link"
-                href="mailto:hello@whatwetellai.com"
-                style={creditCardValueStyle}
-              >
-                Email
-              </a>
-            </div>
-          ),
-        },
-        {
           key: 'lead',
           label: 'Project Lead',
           value: (
@@ -1412,7 +1442,7 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false, onPeekLan
           ),
           last: true,
         },
-      ].map((row) => (
+      ].map((row, i) => (
         <div
           key={row.key}
           style={{
@@ -1420,7 +1450,10 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false, onPeekLan
             gridTemplateColumns: 'minmax(0, 1fr) auto',
             gap: '10px 18px',
             alignItems: 'start',
-            padding: row.key === 'contact' ? '0 0 12px' : '12px 0',
+            // The first row opens flush: its top padding would otherwise stack
+            // on the card's own margin and leave the band looking deeper than
+            // the ones under it.
+            padding: i === 0 ? '0 0 12px' : '12px 0',
             borderBottom: row.last ? 'none' : `1px solid ${inkA(0.18)}`,
           }}
         >
@@ -1632,6 +1665,116 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false, onPeekLan
     </div>
   );
 
+  /* Contact — the same slab as the mailing list above it, so the foot of the
+   * column reads as two cards laid down rather than one card and a stray row.
+   *
+   * It used to be the first band of the credits list, a CONTACT label with the
+   * two links stacked opposite it. That shape can't survive being put in a slab:
+   * the card wants a title across its head the way the mailing list has one, and
+   * a title saying CONTACT directly above a row also labelled CONTACT is the
+   * same word twice. So the label becomes the card's head, and the links get the
+   * body to themselves.
+   *
+   * Head is mono rather than the mailing list's body type. That card's title is
+   * a piece of writing — you read "Mailing List" as a phrase — where this one is
+   * naming the object it sits on, and set in the body face it read as a heading
+   * for a section that never arrives.
+   *
+   * The links are label-and-value rows like the credits beneath them, not the
+   * bare stack they were. Alone in a slab, two right-aligned words left the card
+   * mostly empty and had nothing holding them to the left edge; giving each its
+   * handle puts the information that was hiding in the href on the page, which
+   * is what a contact card is for. */
+  const contactCardBlock = () => (
+    <div
+      className="about-contact-card"
+      style={{
+        // The same step the mailing list takes off the copy above it. Tighter
+        // than that and the two slabs pinch on the left, where their opposite
+        // leans bring the near corners together — the gap you set here is the
+        // one at the wide end, not the one that decides whether they touch.
+        marginTop: 22,
+        marginInline: -cardBleedX,
+        padding: compact ? '16px 16px 14px' : '17px 18px 15px',
+        background: ABOUT_DRAWER.cardBg,
+        border: `1px dashed ${inkA(0.22)}`,
+        borderRadius: 8,
+        // Leaned the opposite way to the mailing list. At the same angle the two
+        // slabs read as one mis-cut block; against each other they read as two
+        // cards that were put down separately.
+        transform: `rotate(${-ABOUT_DRAWER.cardTilt}deg)`,
+      }}
+    >
+      <div
+        style={{
+          paddingBottom: 9,
+          borderBottom: `1px solid ${inkA(0.18)}`,
+        }}
+      >
+        <p
+          style={{
+            margin: 0,
+            // Set exactly as the mailing list's title is — same face, same
+            // size expression, same leading and ink — so the two card heads
+            // are one treatment rather than two that happen to agree today.
+            fontFamily: BODY_FONT,
+            fontSize: bodySize + 5,
+            lineHeight: 1.15,
+            color: BODY_COLOR,
+          }}
+        >
+          Contact Card
+        </p>
+      </div>
+      {[
+        {
+          key: 'instagram',
+          label: 'Instagram',
+          value: '@whatwetellai',
+          href: 'https://www.instagram.com/whatwetellai',
+          external: true,
+        },
+        {
+          key: 'email',
+          label: 'Email',
+          value: 'hello@whatwetellai.com',
+          href: 'mailto:hello@whatwetellai.com',
+          last: true,
+        },
+      ].map((row) => (
+        <div
+          key={row.key}
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'minmax(0, auto) 1fr',
+            gap: '10px 18px',
+            alignItems: 'baseline',
+            padding: row.last ? '12px 0 0' : '12px 0',
+            borderBottom: row.last ? 'none' : `1px solid ${inkA(0.18)}`,
+          }}
+        >
+          <span style={creditCardLabelStyle}>{row.label}</span>
+          <a
+            className="about-contact-link"
+            href={row.href}
+            {...(row.external ? { target: '_blank', rel: 'noopener noreferrer' } : {})}
+            style={{
+              ...creditCardValueStyle,
+              // The handles carry punctuation and run long, so they keep their
+              // case and sit tighter than the label opposite them — at the
+              // rows' tracking an uppercased address reaches the label.
+              textTransform: 'none',
+              letterSpacing: '0.04em',
+              overflowWrap: 'anywhere',
+            }}
+          >
+            {row.value}
+          </a>
+        </div>
+      ))}
+    </div>
+  );
+
   // Tab → panel body. About carries mailing + credits; the other two are just
   // their reading blocks. Swapped with a fade rather than scrolled.
   const sectionBody = {
@@ -1639,6 +1782,7 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false, onPeekLan
       <>
         {sectionAbout}
         {mailingListBlock()}
+        {contactCardBlock()}
         {footerBlock}
       </>
     ),
@@ -1887,10 +2031,16 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false, onPeekLan
           // Only on the way in. Closing runs them all out at once: a drawer
           // being put away shouldn't leave its tabs hanging in the air behind
           // it, one at a time, after the thing they belong to has gone.
+          //
+          // Counted from when the panel actually starts moving, not from the
+          // click: the drawer now sits out the nav's fade first, and these
+          // would otherwise land while it was still on its way in.
           const arriveDelay =
             reduceMotion || !open || n === 0
               ? 0
-              : ABOUT_DRAWER.slideS + (n - 1) * ABOUT_DRAWER.tabInStepS;
+              : ABOUT_DRAWER.navFadeS +
+                ABOUT_DRAWER.slideS +
+                (n - 1) * ABOUT_DRAWER.tabInStepS;
           const arrive = {
             duration: reduceMotion ? 0 : ABOUT_DRAWER.fadeS,
             ease: easeOut,
@@ -2209,6 +2359,8 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false, onPeekLan
             transition={{
               duration: reduceMotion ? ABOUT_DRAWER.fadeS : ABOUT_DRAWER.sheetRiseS,
               ease: easeOut,
+              // Behind the bar clearing itself off, same as the desktop drawer.
+              delay: reduceMotion ? 0 : ABOUT_DRAWER.navFadeS,
             }}
             style={{
               position: 'fixed',
@@ -2284,10 +2436,24 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false, onPeekLan
         }}
         // The entrance delay belongs to the mount animation alone; a click has to
         // be answered at once, even one that lands mid-wait.
+        //
+        // Opening is the exception, and it is a short one. The drawer holds for
+        // exactly as long as the archive's INDEX / EXPLORE pair takes to fade,
+        // so the bar has emptied before the panel starts across it rather than
+        // the two moving at once. Without the hold there is no order to see: the
+        // slide's ease-out puts the drawer more than half way in while the tabs
+        // are still legible underneath it. The wait is short enough to read as
+        // the click landing, not as the click being ignored.
         transition={{
           duration: reduceMotion ? 0 : ABOUT_DRAWER.slideS,
           ease: easeOut,
-          delay: open || peekEntranceDone.current ? 0 : ABOUT_PEEK_ENTER_DELAY,
+          delay: open
+            ? reduceMotion
+              ? 0
+              : ABOUT_DRAWER.navFadeS
+            : peekEntranceDone.current
+              ? 0
+              : ABOUT_PEEK_ENTER_DELAY,
           // Leaning out is a slower thing than the drawer's own slide, and both
           // are the same property, so the lean brings its own clock for as long
           // as it lasts. Framer takes a named value's transition whole rather
@@ -2814,14 +2980,28 @@ function NavSlash() {
  * view and the bar shows two active tabs.
  */
 function ViewTabs({ view, onChange, aboutOpen = false }) {
+  const reduceMotion = useReducedMotion();
   return (
-    <div
+    <motion.div
+      /* Out fast on the way in, and back on the drawer's own slide on the way
+         out. The asymmetry is the point: leaving, the tabs are getting out of
+         the way of something arriving and should be gone before it lands, while
+         returning they are what the page comes back to and should not beat the
+         drawer off the screen to say so. */
+      animate={{ opacity: aboutOpen ? 0 : 1 }}
+      transition={{
+        duration: reduceMotion ? 0 : aboutOpen ? ABOUT_DRAWER.navFadeS : ABOUT_DRAWER.slideS,
+        ease,
+      }}
       style={{
         display: 'flex',
         flexDirection: 'row',
         alignItems: 'center',
         gap: 2,
-        pointerEvents: 'auto',
+        // Nothing to click once they have gone, so a pointer that lands where a
+        // tab used to be falls through to the page rather than switching views
+        // behind the panel.
+        pointerEvents: aboutOpen ? 'none' : 'auto',
       }}
     >
       <IndexMenu view={view} onChange={onChange} aboutOpen={aboutOpen} />
@@ -2829,7 +3009,7 @@ function ViewTabs({ view, onChange, aboutOpen = false }) {
       <ExploreMenu view={view} onChange={onChange} aboutOpen={aboutOpen} />
       {/* EXPERIMENT + CUBE tabs hidden for now — the views still exist and stay
           reachable via ?view=experiment / ?view=cube. */}
-    </div>
+    </motion.div>
   );
 }
 
@@ -3037,7 +3217,9 @@ const DEPARTURE = {
 // renders every word at the dial's own font size, so the rail end is that size
 // scaled down rather than a second font.
 const RAIL_POSE = { scale: 12 / WHEEL.labelFont, track: '0.1em' };
-const DIAL_POSE = { scale: 1, track: '0em', color: '#e2e2e2' };
+// Colour has to match `st.word` in NoteOpenView, since the overlay hands the
+// words back to the real dial at the end of the flight.
+const DIAL_POSE = { scale: 1, track: '0em', color: ACCENT };
 // Rows further from the arc's centre set off fractionally later, so the fan
 // opens and closes outward instead of every word moving as one block.
 const FLIGHT_STAGGER_S = 0.025;
@@ -3092,6 +3274,10 @@ const railPoseAt = (geom, label, order) => {
   };
 };
 const FILTER_SIDEBAR_ENTER_DELAY = ARCHIVE_NAV_CHROME_DELAY_GRID + 0.15;
+/* The rail hangs off the nav chrome rather than off the tiles, so it inherits
+   whichever reading of the entrance is running and keeps the same beat's gap
+   behind it. */
+const FILTER_SIDEBAR_ENTER_DELAY_RISE = ARCHIVE_NAV_CHROME_DELAY_GRID_RISE + 0.15;
 const FILTER_SIDEBAR_ENTER_STAGGER = 0.1;
 /**
  * The search field's outline is drawn rather than faded (see TracedOutline), on
@@ -3558,17 +3744,40 @@ function WallView({ confessions, sidebarInset = SIDEBAR_WIDTH, onExplore }) {
 /* ─────────────────────────────────────────────────────────
  * GRID ENTRANCE STORYBOARD  (index — note tiles)
  *
- * Only tiles on screen at mount animate; tiles below the fold
- * render in place. Each tile flies home from whichever viewport
- * edge is nearest to it (shortest path), ease-out, staggered.
+ * Two readings of one flight. Both measure every tile that is on
+ * screen at mount, park it away from its cell before the browser
+ * paints, and fly it home in the same row-by-row cascade. What
+ * changes between them is where "away" is — and therefore what the
+ * arrival is saying. Tiles below the fold sit still in both.
  *
- *  measuring   measure each tile, choose its nearest edge
+ *   EDGE   every way into the index but one. Each tile comes home
+ *          from whichever viewport edge is nearest to it (shortest
+ *          path): the archive assembling itself out of all four
+ *          sides of the room.
+ *
+ *   RISE   the onboarding's closing beat handing over, and nothing
+ *          else. Every tile launches from one point low and in the
+ *          middle of the screen, at roughly the size of the prints
+ *          the reader has just been looking at, and shrinks into
+ *          its cell along a bowed route: the pile of paper resolving
+ *          into the archive rather than a second wave of paper
+ *          arriving moments after the first one left. Geometry and
+ *          reasoning in GRID_RISE; tuned on GridHandoffLab.
+ *
+ *  measuring   measure each tile; find its nearest edge, or its
+ *      ↓       place along its own route out of the low middle
  *      ↓       (runs pre-paint, so nothing flashes at rest first)
- *   parked     tiles parked just off their nearest edge (hidden),
- *      ↓        pre-tilted a few degrees toward their travel direction
- *   flying     +80ms · fly to home, ease-out, 75ms stagger (row-by-row;
- *      ↓                columns alternate per row — see gridColumnOrder),
- *      ↓                each tile untilts (rotate → 0) as it settles
+ *   parked     EDGE · just off the nearest edge, pre-tilted a few
+ *      ↓              degrees toward its travel direction
+ *      ↓       RISE · on its route out of the low middle, at launch
+ *      ↓              size, leaning toward the side it is bound for,
+ *      ↓              and held invisible — a tile that big is inside
+ *      ↓              the frame well before its turn comes
+ *   flying     +80ms · fly home, ease-out, staggered row by row
+ *      ↓              (columns alternate per row — see
+ *      ↓              gridColumnOrder), untilting as it settles.
+ *      ↓              EDGE steps 75ms at a time; RISE deals faster,
+ *      ↓              and also unwinds its launch scale on the way.
  *  settled     native scrolling restored
  * ───────────────────────────────────────────────────────── */
 const GRID_ENTRANCE = {
@@ -3578,6 +3787,103 @@ const GRID_ENTRANCE = {
   ease: [0.17, 0.84, 0.44, 1], // ease-out (cubic-bezier): quick launch, gentle settle
   offscreenPad: 64, // px past the nearest edge so a tile parks fully hidden
   rotate: 8, // deg — parked tilt (signed by travel dir); unwinds to 0 on landing
+};
+
+/* ── The rise ──────────────────────────────────────────────
+ *
+ * Where the wall comes from when the story hands over to it, and
+ * why each number is the number it is. Everything here was settled
+ * on the bench in GridHandoffLab, which carries the longer argument
+ * and the candidates this beat one; these are its dialled defaults.
+ *
+ * The ease is deliberately GRID_ENTRANCE's own. A candidate has to
+ * be judged on where the tiles come from, not on a curve change
+ * smuggled in beside it — and having survived that, the two modes
+ * are legibly the same flight read two ways rather than two
+ * animations that happen to share a grid.
+ * ───────────────────────────────────────────────────────── */
+const GRID_RISE = {
+  /* Where the wall comes from, as fractions of the viewport, so the origin can
+     sit off dead centre without being retuned per screen size.
+
+     y is below the bottom edge rather than on it, and far enough below that a
+     parked tile is wholly off the screen — half a tile's height clear of the
+     line, plus the tenth of the route `spread` gives back. On the edge exactly,
+     a tile has half of itself above the line before it has moved, so the first
+     frame is a huddle of notes stacked along the bottom, which reads as a drawer
+     being opened and, worse, as a SECOND pile appearing moments after the first
+     one left.
+   *
+     This was 1.08 while the wall launched at print size, where the tiles were so
+     much larger than their cells that they were inside the frame at rest whatever
+     the origin, and an opacity gate held each one dark until its own moment. At
+     the tile's own size that gate is unnecessary, and this is what replaces it:
+     nothing is hidden, because nothing is in frame to hide. Every tile crosses
+     the bottom edge already travelling and the origin is inferred from the paths
+     rather than seen. */
+  originX: 0.5,
+  originY: 1.4,
+  /* How far along its own route a tile starts, 0 being the shared point exactly.
+
+     Tight, so the origin stays a point rather than becoming a mouth: past about
+     0.3 the bottom row leaves from noticeably outside the middle and the single
+     source stops being the thing you read. */
+  spread: 0.1,
+  /* The same for the horizontal alone, so the sideways distance can be cut
+     without shortening the rise — which `spread` cannot do, since it pulls both
+     axes back toward the origin together and a wall that starts halfway up the
+     screen has stopped coming from under it. Read as a floor under `spread`
+     rather than instead of it, so 0 is simply off.
+
+     Half is as far as this can sensibly go: past here the tiles leave from
+     visibly under their own columns and the low middle stops being a source at
+     all, becoming a line the wall rises off. It is the point where the launch
+     still gathers toward the middle while no tile has much sideways travel left
+     to spend late in its flight, where the ease-out would make it read as a
+     slide into place after the flight had finished. */
+  spreadX: 0.5,
+  /* deg of tilt at launch, leaned toward the side the tile is heading for and
+     unwound on the way in. Enough to read as paper being turned rather than
+     slid: in single figures the tilt is lost under the travel. It has to unwind
+     completely before the tile lands — these are square cells in a lattice, and
+     any of it left over reads as the grid straightening itself up. */
+  rotate: 24,
+  /* s — one tile's whole journey. A touch longer than the edge entrance's 0.8,
+     because these tiles cross most of the screen instead of stepping in from
+     the nearest edge. */
+  durS: 0.82,
+  /* s between one tile leaving and the next. The edge entrance's 0.075 across a
+     screenful would spend well over a second dealing the wall out and turn it
+     into a queue; roughly half of that keeps the cascade countable while
+     letting the wall land as one movement. */
+  staggerS: 0.042,
+  /* How far the route bows off the straight line, as a share of the distance
+     the tile is covering. Proportional rather than absolute: a tile going to
+     the far corner and one going to the middle of the bottom row would
+     otherwise take the same sideways detour, and on the short one that detour
+     is most of the journey. Negative bows inward, across the middle, so a tile
+     leans toward the centre before swinging out to its cell.
+
+     Off. Every tile runs the straight line from the origin to its own cell.
+   *
+     The bow is displaced perpendicular to the route, and since a tile rising out
+     of the bottom middle is travelling nearly straight up, "perpendicular" is
+     nearly all horizontal — so on this geometry the dial does not buy an arc, it
+     buys sideways travel. Inward at -0.8 it bulged each route 209px off its own
+     line, 37% of that route's length, and had the tiles cover 300–420px sideways
+     to net 16–57px: they traded sides on the way up and crossed each other, at
+     print size by more than their own width. Outward in the low positives is
+     honest enough, but it is a curve nobody is looking for on a wall of square
+     cells. At zero the route keeps its pacing regardless — the easing lives in
+     the spacing of the sampled points, not in the shape of the path, so a
+     straight line is still a launch and a settle rather than a slide. */
+  bow: 0,
+  /* Points the bowed route is sampled into. Each hop between samples is
+     travelled at one rate, so too few and the tile is seen to change speed on
+     the sample boundaries; 32 is where the onboarding's own exit measured the
+     sampling as no longer being the thing you would notice, and this route is
+     shorter and slower than that one. */
+  samples: 32,
 };
 
 /* Per-row reveal order for the entrance stagger. Rows fly in top→bottom, but the
@@ -3593,8 +3899,79 @@ function gridColumnOrder(cols, parity) {
   return Array.from({ length: cols }, (_, i) => i);
 }
 
+/**
+ * A tile's bowed route back to its own cell, sampled into keyframes.
+ *
+ * Sampled rather than curved because there is no path to hand a transform: x
+ * and y animate independently, and any two single values describe a straight
+ * line between them however they are eased. Sampling at the EASED progress and
+ * then playing the samples back linearly (see the `times` the variant hands the
+ * transition) puts the easing in the spacing of the points rather than in the
+ * playback, which is what keeps the bend from costing the flight its pacing.
+ * The route ends at the tile's own transform identity, so the final term of the
+ * quadratic drops out.
+ */
+function gridRouteKeyframes({ sx, sy, cx, cy, easeFn }) {
+  const xs = [];
+  const ys = [];
+  const times = [];
+  for (let i = 0; i <= GRID_RISE.samples; i += 1) {
+    const t = i / GRID_RISE.samples;
+    const p = easeFn(t);
+    const q = 1 - p;
+    xs.push(q * q * sx + 2 * q * p * cx);
+    ys.push(q * q * sy + 2 * q * p * cy);
+    times.push(t);
+  }
+  return { xs, ys, times };
+}
+
+/**
+ * Where a tile leaves from on the rise, and the route it takes back.
+ *
+ * `tile` is the measured cell (its centre, in viewport coordinates); `origin`
+ * is the shared point low in the middle. The launch is part of the way along
+ * the straight line between them, with the two axes let out separately so the
+ * sideways distance can be pulled in without the tile starting its climb
+ * further up the screen (see GRID_RISE.spreadX). The tilt and the bow are both
+ * signed by the side of the origin the cell sits on, so a tile leans and sweeps
+ * toward the half of the wall it is bound for.
+ */
+function gridRiseLaunch({ tile, origin, order, easeFn }) {
+  const lx = origin.x + (tile.cx - origin.x) * Math.max(GRID_RISE.spread, GRID_RISE.spreadX);
+  const ly = origin.y + (tile.cy - origin.y) * GRID_RISE.spread;
+  const sx = lx - tile.cx;
+  const sy = ly - tile.cy;
+  const len = Math.hypot(sx, sy) || 1;
+  const side = Math.sign(tile.cx - origin.x || 1);
+  // The control point, displaced perpendicular to the route.
+  const ux = -sx / len;
+  const uy = -sy / len;
+  const cx = sx / 2 - uy * len * GRID_RISE.bow * side;
+  const cy = sy / 2 + ux * len * GRID_RISE.bow * side;
+  return {
+    ...gridRouteKeyframes({ sx, sy, cx, cy, easeFn }),
+    rot: side * GRID_RISE.rotate,
+    // The 80ms the edge entrance spends getting off its edge is, on this route,
+    // the beat the wall gives the prints: the closing beat asks for the archive
+    // while its own paper is still crossing the edges of the screen, and the
+    // wall arriving underneath that reads better than the two competing from
+    // the same frame.
+    delay: GRID_ENTRANCE.startDelay / 1000 + order * GRID_RISE.staggerS,
+  };
+}
+
 // Rest transform for tiles that don't participate (below the fold at mount).
 const GRID_TILE_REST = { x: 0, y: 0, rot: 0, delay: 0 };
+// The same, as a route: a degenerate two-point one that goes nowhere, so the
+// rise's variants can read `d` without checking whether the tile has a flight.
+const GRID_RISE_TILE_REST = {
+  xs: [0, 0],
+  ys: [0, 0],
+  times: [0, 1],
+  rot: 0,
+  delay: 0,
+};
 
 // Each target carries its own transition, so measuring→parked is instant
 // (no fly-out) while parked→flying eases in. `custom` = { x, y, rot, delay } per tile.
@@ -3607,6 +3984,50 @@ const gridTileVariants = {
     y: 0,
     rotate: 0,
     transition: { duration: GRID_ENTRANCE.duration, ease: GRID_ENTRANCE.ease, delay: d.delay },
+  }),
+  settled: { opacity: 1, x: 0, y: 0, rotate: 0, transition: { duration: 0 } },
+};
+
+/**
+ * The same four stages, flown the rise's way. `custom` = the route
+ * gridRiseLaunch built, { xs, ys, times, scale, rot, delay }.
+ *
+ * One thing the edge entrance has no use for: the route is keyframed rather than
+ * a single destination, and its x and y are played back linearly against the
+ * sampler's own `times` — the easing is already in the spacing of those points,
+ * and easing them again would bend the flight's pacing as well as its path.
+ *
+ * Otherwise this is the edge entrance's own set of stages, carrying the same
+ * properties. A tile travels and untilts; it does not change size and it does
+ * not fade. Both were tried — a launch at the closing beat's print size, three
+ * quarters of it, shrinking into the cell — and both put the emphasis on the
+ * tile becoming a tile rather than on the wall arriving, which is a different
+ * and smaller idea than the one the origin is telling. Nothing here is hidden
+ * either: the origin sits far enough under the bottom edge that a parked tile is
+ * wholly off screen, so opacity is left at rest and paper simply crosses the
+ * edge. See GRID_RISE.originY.
+ */
+const gridRiseTileVariants = {
+  measuring: { opacity: 0, x: 0, y: 0, rotate: 0, transition: { duration: 0 } },
+  parked: (d) => ({
+    opacity: 1,
+    x: d.xs[0],
+    y: d.ys[0],
+    rotate: d.rot,
+    transition: { duration: 0 },
+  }),
+  flying: (d) => ({
+    opacity: 1,
+    x: d.xs,
+    y: d.ys,
+    rotate: 0,
+    transition: {
+      duration: GRID_RISE.durS,
+      ease: GRID_ENTRANCE.ease,
+      delay: d.delay,
+      x: { duration: GRID_RISE.durS, delay: d.delay, ease: 'linear', times: d.times },
+      y: { duration: GRID_RISE.durS, delay: d.delay, ease: 'linear', times: d.times },
+    },
   }),
   settled: { opacity: 1, x: 0, y: 0, rotate: 0, transition: { duration: 0 } },
 };
@@ -4326,6 +4747,10 @@ function GridView({
   noteOpen = false,
   /** When true, skip the fly-in entrance (e.g. returning from dial → grid). */
   skipEntrance = false,
+  /** Which reading of the entrance this arrival gets — see the GRID ENTRANCE
+   *  STORYBOARD. 'rise' is the onboarding's closing beat handing over, and is
+   *  the only thing that ever asks for it; everything else is 'edge'. */
+  entranceMode = 'edge',
   onEntranceSettled,
   onExplore,
   /** Hands the parent a ref to each category label, so it can measure where
@@ -4343,7 +4768,6 @@ function GridView({
   const [selected, setSelected] = useState(null);
   const [query, setQuery] = useState('');
   const reduceMotion = useReducedMotion();
-  const playNote = useNoteSound();
   // Phone widths (≤760): the filter bar moves to the TOP and stacks (search
   // above the Category/Location tabs). On desktop it stays pinned to the
   // bottom with the search centred between the tabs.
@@ -4352,6 +4776,13 @@ function GridView({
   const hoverCapable = useHoverCapable();
   // Live grid column count (3 / 2 / 1) — positions the lattice hairlines.
   const gridCols = useGridColumns();
+  // Whether this arrival is the story handing over — see the GRID ENTRANCE
+  // STORYBOARD, and the entrance section further down where it is flown. Fixed
+  // on the frame the view mounted: the parent spends the rise the moment it has
+  // been flown (see ArchivePage), so the prop goes back to 'edge' underneath us,
+  // and the chrome that hangs off the entrance's clock must not be re-timed
+  // mid-flight to a flight that isn't the one in the air.
+  const rise = useRef(entranceMode === 'rise' && !reduceMotion && !skipEntrance).current;
   // Tiles whose image failed to load (file not yet on disk for that GlobalID).
   // We drop the whole tile rather than show a broken-image icon.
   const [failedIds, setFailedIds] = useState(() => new Set());
@@ -4398,7 +4829,11 @@ function GridView({
   const gridExit = leavingForDial
     ? { duration: DEPARTURE.gridFade, delay: DEPARTURE.gridHold, ease }
     : { duration: 0.4, ease };
-  const sidebarEnterDelay = sidebarSkipEnter ? 0 : FILTER_SIDEBAR_ENTER_DELAY;
+  const sidebarEnterDelay = sidebarSkipEnter
+    ? 0
+    : rise
+      ? FILTER_SIDEBAR_ENTER_DELAY_RISE
+      : FILTER_SIDEBAR_ENTER_DELAY;
   const sidebarStagger = sidebarSkipEnter ? 0 : FILTER_SIDEBAR_ENTER_STAGGER;
 
   const withImages = useMemo(
@@ -4469,8 +4904,10 @@ function GridView({
   }, [compact]);
 
   // ── Grid entrance — see GRID ENTRANCE STORYBOARD above. Measure every tile
-  //    that's on screen at mount, park it just off its nearest viewport edge,
-  //    then fly it home (ease-out, staggered). Tiles below the fold sit still.
+  //    that's on screen at mount, park it away from its cell — just off its
+  //    nearest viewport edge, or low in the middle of the screen at print size
+  //    if the story is handing over — then fly it home (ease-out, staggered).
+  //    Tiles below the fold sit still either way.
   const tileRefs = useRef(new Map());
   const offsetsRef = useRef(new Map());
   const flyCountRef = useRef(0);
@@ -4478,6 +4915,8 @@ function GridView({
   const [entranceStage, setEntranceStage] = useState(
     reduceMotion || skipEntrance ? 'settled' : 'measuring'
   );
+  const tileVariants = rise ? gridRiseTileVariants : gridTileVariants;
+  const tileRest = rise ? GRID_RISE_TILE_REST : GRID_TILE_REST;
 
   // ── Grid exit — see GRID EXIT / DISSOLVE STORYBOARD above. On note-open the
   //    tiles fade out rippling OUTWARD from the clicked one; we snapshot each
@@ -4516,6 +4955,9 @@ function GridView({
 
     // 1) Measure every on-screen tile + the park offset it flies in from (its
     //    nearest viewport edge). Below-the-fold tiles get no offset → in place.
+    //    The rise wants the same tiles and the same measurement; it makes
+    //    something else of it (see gridRiseLaunch), so the cell's own centre is
+    //    carried along too.
     const onscreen = [];
     visible.forEach((c) => {
       const el = tileRefs.current.get(c.id);
@@ -4534,7 +4976,16 @@ function GridView({
       else if (nearest === dBottom) y = vh - r.top + pad; // bottom → park below
       else if (nearest === dLeft) x = -(r.right + pad); // left → park to the left
       else x = vw - r.left + pad; // right → park to the right
-      onscreen.push({ id: c.id, top: r.top, left: r.left, height: r.height, x, y });
+      onscreen.push({
+        id: c.id,
+        top: r.top,
+        left: r.left,
+        height: r.height,
+        cx: r.left + r.width / 2,
+        cy: r.top + r.height / 2,
+        x,
+        y,
+      });
     });
 
     // 2) Cluster tiles into visual rows (those sharing a top), ordered top→down.
@@ -4550,7 +5001,12 @@ function GridView({
 
     // 3) Stagger row-by-row; within each row the columns reveal in a per-row
     //    order (see gridColumnOrder) so the entrance reads as a woven cascade
-    //    rather than a flat left→right sweep.
+    //    rather than a flat left→right sweep. The cascade is the half of the
+    //    entrance the rise did NOT change — same order, same rows, same woven
+    //    columns — so the reader is shown one thing done differently rather
+    //    than a different thing.
+    const origin = { x: vw * GRID_RISE.originX, y: vh * GRID_RISE.originY };
+    const easeFn = cubicBezier(...GRID_ENTRANCE.ease);
     const offsets = new Map();
     let order = 0;
     rows.forEach((row, rowIdx) => {
@@ -4558,15 +5014,19 @@ function GridView({
       gridColumnOrder(cols.length, rowIdx % 2).forEach((colIdx) => {
         const t = cols[colIdx];
         if (!t) return;
-        // Tilt is signed by travel direction so a tile swings in from its edge:
-        // side-entering tiles lean off their x, top/bottom off their y.
-        const dir = t.x !== 0 ? Math.sign(t.x) : t.y !== 0 ? Math.sign(t.y) : 1;
-        offsets.set(t.id, {
-          x: t.x,
-          y: t.y,
-          rot: dir * GRID_ENTRANCE.rotate,
-          delay: GRID_ENTRANCE.startDelay / 1000 + order * GRID_ENTRANCE.stagger,
-        });
+        if (rise) {
+          offsets.set(t.id, gridRiseLaunch({ tile: t, origin, order, easeFn }));
+        } else {
+          // Tilt is signed by travel direction so a tile swings in from its edge:
+          // side-entering tiles lean off their x, top/bottom off their y.
+          const dir = t.x !== 0 ? Math.sign(t.x) : t.y !== 0 ? Math.sign(t.y) : 1;
+          offsets.set(t.id, {
+            x: t.x,
+            y: t.y,
+            rot: dir * GRID_ENTRANCE.rotate,
+            delay: GRID_ENTRANCE.startDelay / 1000 + order * GRID_ENTRANCE.stagger,
+          });
+        }
         order += 1;
       });
     });
@@ -4575,7 +5035,7 @@ function GridView({
     flyCountRef.current = order;
     measuredRef.current = true;
     setEntranceStage(order > 0 ? 'parked' : 'settled');
-  }, [reduceMotion, entranceStage, visible]);
+  }, [reduceMotion, entranceStage, visible, rise]);
 
   // Parked (hidden, off its edge) → fly in on the next frame.
   useEffect(() => {
@@ -4592,15 +5052,17 @@ function GridView({
     if (entranceStage !== 'flying') return undefined;
     const total =
       GRID_ENTRANCE.startDelay +
-      Math.max(0, flyCountRef.current - 1) * GRID_ENTRANCE.stagger * 1000 +
-      GRID_ENTRANCE.duration * 1000 +
+      Math.max(0, flyCountRef.current - 1) *
+        (rise ? GRID_RISE.staggerS : GRID_ENTRANCE.stagger) *
+        1000 +
+      (rise ? GRID_RISE.durS : GRID_ENTRANCE.duration) * 1000 +
       120;
     const t = setTimeout(() => {
       setEntranceStage('settled');
       onEntranceSettled?.();
     }, total);
     return () => clearTimeout(t);
-  }, [entranceStage, onEntranceSettled]);
+  }, [entranceStage, onEntranceSettled, rise]);
 
   // First paint with nothing to fly (or skipEntrance) — mark entrance done.
   useEffect(() => {
@@ -4799,7 +5261,15 @@ function GridView({
   return (
     <motion.div
       key="grid-view"
-      initial={{ opacity: 0 }}
+      /* The view fades up on arrival — except on the rise, which is arriving
+         from a page that has just cleared itself. A 0.4s wash over the whole
+         view runs straight through the launch, so the first tiles off the origin
+         come up through it and read as materialising rather than travelling, and
+         the lattice they are flying into surfaces at the same time instead of
+         being drawn onto a sheet that is already there. The rise's own staging
+         is the entrance; it does not need to be introduced. Every other route in
+         keeps the wash: they cut from a view that was full of something else. */
+      initial={rise ? false : { opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0, transition: gridExit }}
       transition={{ duration: 0.4, ease }}
@@ -5012,7 +5482,7 @@ function GridView({
            .facet-checkbox-row below, so both surfaces brighten by one rule. */
         .facet-menu-item:hover { background: rgba(207,202,183,0.09) !important; }
         /* Desktop filter sidebar (search + Category/Location accordions). */
-        .facet-accordion-btn:hover { color: #EDE7D6; }
+        .facet-accordion-btn:hover { color: ${ACCENT}; }
         .facet-checkbox-row:hover { color: #CFCAB7 !important; }
         /* Only the unchecked box border brightens on hover — a checked one is
            already at full ink. !important because the box carries its resting
@@ -5649,7 +6119,7 @@ function GridView({
             >
               <span
                 style={{
-                  color: 'rgba(255,255,255,0.92)',
+                  color: INK,
                   // Equal digit advance, so the count doesn't wobble as it runs.
                   fontVariantNumeric: 'tabular-nums',
                 }}
@@ -5658,7 +6128,7 @@ function GridView({
               </span>
               {/* The noun follows the settled count, not the tweening one, so
                   it doesn't flicker to "Confession" while passing through 1. */}
-              <span style={{ color: 'rgba(255,255,255,0.92)' }}>
+              <span style={{ color: INK }}>
                 {` ${noteCount === 1 ? 'Confession' : 'Confessions'}`}
               </span>
             </motion.div>
@@ -5676,7 +6146,7 @@ function GridView({
             />
             <div className={`confession-grid${hoverArmed ? ' is-live' : ''}`}>
             {visible.map((c, i) => {
-              const d = offsetsRef.current.get(c.id) || GRID_TILE_REST;
+              const d = offsetsRef.current.get(c.id) || tileRest;
               // Once the entrance has settled, the tile's motion is owned by the
               // exit/dissolve (driven by noteOpen); before that the fly-in
               // variants run. exitDelay ripples the fade out from the clicked tile.
@@ -5696,7 +6166,7 @@ function GridView({
                   else m.delete(c.id);
                 }}
                 custom={d}
-                variants={gridTileVariants}
+                variants={tileVariants}
                 initial={false}
                 animate={
                   settled
@@ -5720,8 +6190,6 @@ function GridView({
                     : undefined
                 }
                 onClick={(e) => {
-                  // Post-it "peel" as the note opens.
-                  playNote();
                   // Mobile: always open the vertical note-scroll view — the note
                   // enlarges with its metadata and you swipe up/down through the
                   // rest (NoteOpenView → VerticalConfessionStack). It's handed
@@ -7509,7 +7977,15 @@ function ExperimentView({ confessions }) {
   );
 }
 
-function ArchivePage({ confessionQuery, initialEmotion = null, initialView = 'theme', onReturnToIntro }) {
+function ArchivePage({
+  confessionQuery,
+  initialEmotion = null,
+  initialView = 'theme',
+  /** Which reading of the grid entrance this arrival earns — see the GRID
+   *  ENTRANCE STORYBOARD. Only the onboarding hands over 'rise'. */
+  initialEntrance = 'edge',
+  onReturnToIntro,
+}) {
   // Live data from the published Google Sheet. Falls back to the bundled
   // sample data if the network call fails so the prototype still works
   // offline / behind a captive portal.
@@ -7570,6 +8046,19 @@ function ArchivePage({ confessionQuery, initialEmotion = null, initialView = 'th
   }, []);
   // Grid fly-in runs once per session; returning from dial → grid stays settled.
   const gridEntranceDoneRef = useRef(false);
+  /* Which entrance the index is owed, and it is owed the rise exactly once.
+     The rise is the closing beat's own sentence finishing — the paper the
+     reader was looking at becoming the archive — so it belongs to the arrival
+     from the story and to nothing else. Coming back from EXPLORE deliberately
+     replays the entrance (see requestView, which clears the flag above), and
+     that replay stays the edge fly-in: by then the pile is a memory rather than
+     the thing on screen, and a wall rising out of the bottom of the window
+     would be claiming a hand-over that isn't happening.
+
+     Spent when the flight lands rather than when it starts, so the loading gate
+     below — the archive can show ArchiveLoading for as long as the sheet takes
+     — cannot swallow it on the way past. */
+  const gridEntranceModeRef = useRef(initialEntrance);
   // The drawer's peek is a once-per-session arrival, and this is what says so.
   // The index replays its own entrance every time you come back from EXPLORE, and
   // the drawer used to be remounted to slide in alongside it — which took the
@@ -7857,7 +8346,9 @@ function ArchivePage({ confessionQuery, initialEmotion = null, initialView = 'th
     ? 0
     : view === 'theme'
       ? ARCHIVE_NAV_CHROME_DELAY_THEME
-      : ARCHIVE_NAV_CHROME_DELAY_GRID;
+      : gridEntranceModeRef.current === 'rise'
+        ? ARCHIVE_NAV_CHROME_DELAY_GRID_RISE
+        : ARCHIVE_NAV_CHROME_DELAY_GRID;
 
   // Dial size scales with the viewport so it has room to breathe on big
   // screens but doesn't dominate on small ones. The visible portion is half
@@ -7977,6 +8468,13 @@ function ArchivePage({ confessionQuery, initialEmotion = null, initialView = 'th
           compactNav={compactNav}
           entranceDelay={navChromeEntranceDelay}
           onReturnToIntro={onReturnToIntro}
+          // Read off the prop rather than the ref beside it: the ref is reset to
+          // 'edge' the moment the wall has dealt itself out, and a re-render
+          // after that would pull the vector out from under a write-on still in
+          // progress. This is the value the archive was mounted with, so it
+          // holds for as long as the archive does — one write-on per arrival,
+          // and none at all when INDEX and EXPLORE swap underneath it.
+          wordmarkWriteOn={initialEntrance === 'rise' && !reduceMotion}
           view={view}
           onViewChange={requestView}
           aboutOpen={aboutOpen}
@@ -8061,8 +8559,10 @@ function ArchivePage({ confessionQuery, initialEmotion = null, initialView = 'th
               noteOpen={!!openNote}
               onLightboxOpenChange={setGridLightboxOpen}
               skipEntrance={gridEntranceDoneRef.current}
+              entranceMode={gridEntranceModeRef.current}
               onEntranceSettled={() => {
                 gridEntranceDoneRef.current = true;
+                gridEntranceModeRef.current = 'edge';
               }}
               onExplore={handleExplore}
               registerCategoryLabel={registerCategoryLabel}
@@ -8130,6 +8630,12 @@ export default function App() {
   const [archiveView, setArchiveView] = useState(
     deepLinkArchive ? deepLinkView : 'grid'
   );
+  /* And which entrance it opens with. The onboarding is the only door that
+     hands over the rise, because the rise is a continuation of what is on
+     screen when it opens: a pile of prints low in the middle. A deep link opens
+     on an empty room and has nothing to continue, so it gets the edge fly-in —
+     as does every route that never passes through the story at all. */
+  const [archiveEntrance, setArchiveEntrance] = useState('edge');
   const confessionQuery = useConfessions();
 
   return (
@@ -8137,8 +8643,17 @@ export default function App() {
       {page === 'landing' && (
         <OnboardingBeats
           key="onboarding"
+          /* Both ways out of the piece arrive here — the closing beat's own
+             gesture, and the SKIP INTRO link that steps aside on that beat —
+             and both get the rise. They are the same door: whichever beat the
+             reader leaves from, they are leaving a pile of paper low in the
+             middle of the screen, which is the thing the rise continues. A skip
+             that landed on the edge fly-in would be telling the reader the
+             archive is somewhere else than where the story was, purely because
+             they were in a hurry. */
           onEnter={() => {
             setArchiveView('grid');
+            setArchiveEntrance('rise');
             setPage('archive');
           }}
         />
@@ -8149,6 +8664,7 @@ export default function App() {
           confessionQuery={confessionQuery}
           initialEmotion={null}
           initialView={archiveView}
+          initialEntrance={archiveEntrance}
           onReturnToIntro={() => {
             // Drop any deep-link `?view=` so the intro sits at a clean `/` (and a
             // reload won't bounce straight back into the archive).

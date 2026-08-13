@@ -8,6 +8,7 @@ import CategoryDialLab from './CategoryDialLab';
 import AboutCardsLab from './AboutCardsLab';
 import { AboutDrawerNavLab, AboutDrawerPeekLab } from './AboutDrawerLab';
 import OnboardingStackLab from './OnboardingStackLab';
+import GridHandoffLab from './GridHandoffLab';
 
 /* ─────────────────────────────────────────────────────────────────────
  * NOTE ENTRANCE LAB  —  /entrance
@@ -725,6 +726,7 @@ const TABS = [
   { id: 'about-drawer', label: 'About drawer', render: () => <AboutDrawerNavLab /> },
   { id: 'about-peek', label: 'About peek', render: () => <AboutDrawerPeekLab /> },
   { id: 'onboarding', label: 'Onboarding', render: () => <OnboardingStackLab /> },
+  { id: 'handoff', label: 'Grid hand-off', render: () => <GridHandoffLab /> },
 ];
 
 export default function NoteEntranceLab() {

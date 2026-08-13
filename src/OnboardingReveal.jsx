@@ -306,11 +306,21 @@ const HERO_DRAW = {
   drawEase: [0.45, 0.05, 0.55, 0.95], // near-linear so each letter reveals evenly
 };
 const HERO_QUESTION = {
-  // The question arrives a word at a time, picking up where the title's own
-  // reveal leaves off. `fadeS` is what ONE word takes, not the sentence — the
-  // line as a whole runs for the last word's delay plus that.
+  /* The question arrives a word at a time, picking up where the title's own
+     reveal leaves off. `fadeS` is what ONE word takes, not the sentence — the
+     line as a whole runs for the last word's delay plus that.
+   *
+     The two are set against each other rather than together. The stagger is what
+     makes the line read left to right, and it is short enough that a word is
+     still coming up while the next few are already on their way, so the sentence
+     arrives as one movement rather than as eleven. The fade is what each word
+     does on its own, and it is long — roughly double the stagger's whole run —
+     so no word ever snaps: at the shorter fade this had, the sentence was legible
+     almost as soon as it began and the cascade was over before the title above it
+     had settled. Lengthening the fade alone slows the arrival without slowing the
+     reading, since the words still start in the same order at the same rate. */
   staggerS: 0.045,
-  fadeS: 0.42,
+  fadeS: 0.85,
   arrowDelayS: 0.25, // beat after the question lands before the scroll cue fades in
 };
 
@@ -1041,7 +1051,7 @@ const INTRO_LINE =
 // verbs, each set at its own angle. Line breaks are authored, not wrapped, so
 // the rag matches the Figma comp at every viewport width.
 const BODY_LINE = [
-  'AI is entering into the most',
+  'A.I. is entering into the most',
   'personal aspects of our lives,',
   'changing how we',
 ].join('\n');
