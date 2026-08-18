@@ -1280,6 +1280,7 @@ export default function NoteOpenView({
         }}
         style={{
           ...st.stageArea,
+          ...(isMobile && standalone ? st.stageAreaDocked : null),
           pointerEvents: revealed && !introOpen ? 'auto' : 'none',
         }}
       >
@@ -1397,7 +1398,8 @@ export default function NoteOpenView({
                   color: inkA(0.45),
                 }}
               >
-                Click anywhere to continue
+                {/* Named for the gesture the reader actually has. */}
+                {isMobile ? 'Tap anywhere to continue' : 'Click anywhere to continue'}
               </motion.span>
             </span>
           </motion.button>
@@ -1424,7 +1426,29 @@ export default function NoteOpenView({
                two chevrons. Desktop is unaffected either way; its counter is
                rendered separately below. */
             standalone ? (
-              <>
+              /* The dock waits behind the first look with the notes, and comes
+                 up on the same clock when the line is dismissed. On the phone
+                 it is the one piece of chrome that would read as an answer to
+                 the sentence being shown — the line says there are themes to
+                 swipe through, and a live category label with a note count sits
+                 under it saying which theme you are already in.
+                 (Desktop keeps its wheel on screen throughout; there the line
+                 usually arrives on the category flight from the index, which
+                 has to be allowed to land somewhere. See EXPLORE_INTRO.)
+
+                 A wrapper, rather than gating each row: it fades the band as
+                 one, and being fixed at the viewport's own box it can carry an
+                 opacity below 1 without becoming a containing block that
+                 relocates what it holds. */
+              <motion.div
+                style={st.mDock}
+                initial={{ opacity: introOpen ? 0 : 1 }}
+                animate={{ opacity: introOpen ? 0 : 1 }}
+                transition={{
+                  duration: reduceMotion ? 0 : EXPLORE_INTRO.notesFadeS,
+                  ease: EASE_OUT,
+                }}
+              >
                 {emotions.length > 1 ? (
                   <MobileThemeStepper
                     label={activeLabel}
@@ -1439,7 +1463,7 @@ export default function NoteOpenView({
                   total={total}
                   reduceMotion={reduceMotion}
                 />
-              </>
+              </motion.div>
             ) : null
           ) : (
             <LeftThemeDial
@@ -1639,11 +1663,43 @@ export default function NoteOpenView({
 const MONO = 'var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace)';
 const SERIF = "var(--font-primary, 'Faktory', Georgia, serif)";
 
-/* Phone explore chrome, measured up from the screen edge: the note counter, with
-   the category stepper directly above it. Held well clear of the bottom so
-   neither sits under the scroll indicator or a phone's home bar. */
-const M_COUNTER_BOTTOM = 76;
-const M_STEPPER_GAP = 30; // counter line → stepper
+/* Phone explore chrome: the category stepper with the note counter under it,
+   held as one band across the bottom of the frame.
+
+   These were two independently fixed rows, each measured up from the screen
+   edge, floating over a note stage that ran the full height of the viewport.
+   That works until the viewport is short: the stage centres the note image and
+   hangs the transcript below it, so on a 720px-tall screen a three-line
+   transcript reaches y=591 and the stepper starts at 574, and the last line of
+   somebody's confession is read through a category label. Nothing about the two
+   rows knew the other existed, so the collision got worse the shorter the phone.
+
+   As one band with a declared height it can be laid out against, `M_DOCK_H` is
+   also what the stage above gives up (see `stageArea`) — the two are stacked
+   regions rather than overlapping layers, and the transcript runs out of room
+   instead of running underneath. */
+const M_DOCK = {
+  stepperH: 40, // the chevrons' hit target, which sets the row's height
+  gap: 12, // stepper row → counter line
+  counterH: 18,
+  // Air under the counter, clear of the scroll indicator and the home bar.
+  // Scaled rather than fixed: 76px is right on a tall phone and is what a tall
+  // phone still gets (9vh reaches it at 844), but on a 667px screen the same
+  // 76px is a tenth of the display spent on nothing, taken from the note above.
+  padBottom: 'clamp(28px, 9vh, 76px)',
+};
+const M_DOCK_H = `calc(${M_DOCK.stepperH + M_DOCK.gap + M_DOCK.counterH}px + ${M_DOCK.padBottom})`;
+
+/* The band the app's own chrome holds across the top of this tab — the wordmark
+   and the menu button, which sit outside this view and paint above it. Mirrors
+   App's ARCHIVE_NAV_CHROME_HEIGHT (40) at its top offset (~23), plus air.
+
+   The note stage is the middle of three bands: this at the top, the dock at the
+   bottom, and the note centred in what is left. Stated rather than left to luck,
+   because the metadata block rides above the note and had only 6px of daylight
+   under the wordmark on a tall phone — and on a short one, once the dock took
+   its share from the bottom, the block was centred straight up behind it. */
+const M_NAV_BAND = 72;
 
 /* Phone overlay chrome, top row. BACK and the ˄ (previous note) chevron share
    one line. The chevron used to sit on its own row below BACK, which spent a
@@ -1716,6 +1772,15 @@ const st = {
     inset: 0,
     zIndex: 1,
   },
+  // The phone's EXPLORE tab gives the top band to the app's chrome and the
+  // bottom one to the dock, and centres the note in what is left, rather than
+  // running under either. Only that view: the grid-tap overlay renders no dock,
+  // and on desktop the wheel is beside the note rather than below it, so both
+  // keep the full height.
+  stageAreaDocked: {
+    top: M_NAV_BAND,
+    bottom: M_DOCK_H,
+  },
   edgeVignette: {
     position: 'absolute',
     inset: 0,
@@ -1731,11 +1796,27 @@ const st = {
     inset: 0,
     zIndex: 5,
     pointerEvents: 'none',
-    // Very short fade (outer ~5%): darkens only the extreme top/bottom lip so
-    // the peeking prev/next notes stay legible — a longer fade swallows the
-    // whole peek on shorter viewports.
+    // Run out over the outer ~18%, in the horizontal vignette's proportions
+    // (0.92 at the lip, half gone by a third of the way, clear by 22%) so the
+    // phone's frame is edged like the desktop one rather than in its own idiom.
+    //
+    // It used to clear inside 5%, which on a tall phone is 44px — 0.9 of black
+    // to nothing across less than an inch. That is a gradient by construction
+    // and a flat band to look at: what you read is a dark stripe with an edge on
+    // it, and the edge lands wherever 5% happens to fall rather than anywhere
+    // the layout cares about. The short version was protecting the peeking
+    // prev / next notes, which is a real concern on the grid-tap overlay where
+    // the stack runs the full height — but the EXPLORE tab now insets its stage
+    // between the nav band and the dock, so the outer fifth is chrome and air
+    // that no note reaches into.
+    //
+    // Stopped four times on the way rather than once: a straight ramp between
+    // two alphas bands visibly on a near-black field, and the middle stops are
+    // what let it read as falling off instead of as a wedge.
     background:
-      'linear-gradient(to bottom, rgba(0,0,0,0.9) 0%, rgba(0,0,0,0) 5%, rgba(0,0,0,0) 95%, rgba(0,0,0,0.9) 100%)',
+      'linear-gradient(to bottom, ' +
+      'rgba(0,0,0,0.92) 0%, rgba(0,0,0,0.62) 4%, rgba(0,0,0,0.3) 9%, rgba(0,0,0,0.09) 14%, rgba(0,0,0,0) 18%, ' +
+      'rgba(0,0,0,0) 82%, rgba(0,0,0,0.09) 86%, rgba(0,0,0,0.3) 91%, rgba(0,0,0,0.62) 96%, rgba(0,0,0,0.92) 100%)',
   },
 
   // Shared-element bridge image. Fixed to the viewport; box + transform written
@@ -1952,15 +2033,35 @@ const st = {
     color: 'rgba(207, 202, 183, 0.85)',
   },
 
-  // ── Mobile theme caption ──────────────────────────────────
-  // Bottom-centre: the NN/MM note counter.
-  mCounterWrap: {
-    position: 'absolute',
+  // ── Mobile explore dock ───────────────────────────────────
+  // The band the stepper and counter share at the bottom of the phone's EXPLORE
+  // tab. Fixed to the viewport and exactly M_DOCK_H tall, which is the same
+  // height the note stage above it stops short by — that shared number is what
+  // keeps a long transcript off the category label. Ignores pointer events so
+  // only the arrows inside are tappable and the gutter stays swipeable.
+  mDock: {
+    position: 'fixed',
     left: 0,
     right: 0,
-    bottom: M_COUNTER_BOTTOM,
-    zIndex: 20,
+    bottom: 0,
+    height: M_DOCK_H,
+    zIndex: 46,
     display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    justifyContent: 'flex-start',
+    gap: M_DOCK.gap,
+    paddingBottom: M_DOCK.padBottom,
+    pointerEvents: 'none',
+  },
+
+  // ── Mobile theme caption ──────────────────────────────────
+  // The NN/MM note counter, second row of the dock.
+  mCounterWrap: {
+    flex: '0 0 auto',
+    height: M_DOCK.counterH,
+    display: 'flex',
+    alignItems: 'center',
     justifyContent: 'center',
     pointerEvents: 'none',
   },
@@ -1973,17 +2074,14 @@ const st = {
   },
 
   // ── Mobile theme stepper ──────────────────────────────────
-  // Centered category feature flanked by grain-filtered ‹ / › arrows, docked
-  // directly above the note counter: which category you're in and how far
-  // through it you are read as one block, and the top of the screen is left to
-  // the note itself. The wrap ignores pointer events so only the arrows are
-  // tappable — the empty gutter around the note stays swipeable.
+  // Centered category feature flanked by grain-filtered ‹ / › arrows, the first
+  // row of the dock and directly above the note counter: which category you're
+  // in and how far through it you are read as one block, and the top of the
+  // screen is left to the note itself.
   mStepperWrap: {
-    position: 'fixed',
-    bottom: M_COUNTER_BOTTOM + M_STEPPER_GAP,
-    left: 0,
-    right: 0,
-    zIndex: 46,
+    flex: '0 0 auto',
+    height: M_DOCK.stepperH,
+    alignSelf: 'stretch',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',

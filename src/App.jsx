@@ -217,6 +217,15 @@ const GRID_CONTENT_LEFT = FILTER_SIDEBAR_LEFT + FILTER_SIDEBAR_W + FILTER_SIDEBA
 /** Inset of `.grid-tile-num` from the cell's left edge — also the shared
  *  left align for INDEX / EXPLORE and the confessions count. */
 const GRID_TILE_NUM_INSET = 18; // px
+
+/* The "N Confessions" tally above the first row of the index, off for now.
+ *
+ * A switch rather than a deletion: the count is positioned against the tile
+ * numbers and timed to the grid entrance, and both of those were fitted by hand
+ * (see the block it guards). Nothing else reads it, so this is the only thing
+ * that has to move to bring it back — `noteCount` itself stays in use, since the
+ * lattice sizes itself from the same number. */
+const SHOW_GRID_COUNT = false;
 const GRID_NAV_LEFT = GRID_CONTENT_LEFT + GRID_TILE_NUM_INSET;
 
 /**
@@ -990,11 +999,24 @@ const ABOUT_DRAWER = {
   sheetShadow: '0 -20px 50px rgba(0, 0, 0, 0.45)',
   // In the drawer's slide family — a sheet crossing the whole screen wants a
   // touch less than the 0.48 a third of one takes, or the travel reads slow.
-  sheetRiseS: 0.46,
-  // Shorter on the way out. Coming up is the panel arriving and can be watched;
-  // going down is the answer to a tap, and anything that leisurely on a dismiss
-  // reads as the sheet not having heard it.
-  sheetFallS: 0.34,
+  //
+  // One number for both directions. The way out used to be shorter (0.34), on
+  // the theory that an arrival can be watched while a dismissal is an answer to
+  // a tap; what that actually bought was a sheet that dropped out from under
+  // you. The ease-out it shared with the entrance dumps 70% of the travel in the
+  // first 40% of the time, and over 0.34s of an 844px screen that is the whole
+  // panel gone in ~140ms, followed by a thin sliver of its top edge crawling the
+  // rest of the way. Both halves of the complaint — too fast, then a blink —
+  // come out of that one asymmetry.
+  sheetTravelS: 0.46,
+  // The way out is the way in, reversed: it leaves at rest and gathers speed,
+  // where it arrived at speed and settled. Not the literal frame-reverse of the
+  // entrance's curve — mirroring an ease-out that strong gives an ease-in that
+  // has moved 8px in its first 100ms, which reads as the tap being ignored.
+  // This is the same idea a power gentler: moving from the first frame, still
+  // accelerating away, and off the bottom of the screen rather than lingering
+  // there as an edge.
+  sheetFallEase: [0.55, 0.085, 0.68, 0.53],
 };
 
 /* A hidden tab can't animate its way to nothing: `box-sizing: border-box` keeps
@@ -2319,7 +2341,19 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false, onPeekLan
             key="about-backdrop"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
+            // Held for the whole of the sheet's fall, on the sheet's own curve.
+            // At 0.28s it was reaching black-free ~120ms before the panel had
+            // finished leaving, so the archive behind snapped back to full
+            // brightness with the sheet still crossing it — that flash is the
+            // blink. Coming up the scrim can still lead, which is the point of
+            // it: the page dims, and then something arrives on the dimmed page.
+            exit={{
+              opacity: 0,
+              transition: {
+                duration: ABOUT_DRAWER.sheetTravelS,
+                ease: ABOUT_DRAWER.sheetFallEase,
+              },
+            }}
             transition={{ duration: 0.28, ease: easeOut }}
             onClick={onClose}
             style={{
@@ -2354,10 +2388,16 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false, onPeekLan
             exit={
               reduceMotion
                 ? { opacity: 0, transition: { duration: ABOUT_DRAWER.fadeS, ease: easeOut } }
-                : { y: '100%', transition: { duration: ABOUT_DRAWER.sheetFallS, ease: easeOut } }
+                : {
+                    y: '100%',
+                    transition: {
+                      duration: ABOUT_DRAWER.sheetTravelS,
+                      ease: ABOUT_DRAWER.sheetFallEase,
+                    },
+                  }
             }
             transition={{
-              duration: reduceMotion ? ABOUT_DRAWER.fadeS : ABOUT_DRAWER.sheetRiseS,
+              duration: reduceMotion ? ABOUT_DRAWER.fadeS : ABOUT_DRAWER.sheetTravelS,
               ease: easeOut,
               // Behind the bar clearing itself off, same as the desktop drawer.
               delay: reduceMotion ? 0 : ABOUT_DRAWER.navFadeS,
@@ -4889,7 +4929,10 @@ function GridView({
   // The filter bar floats over the top; measure it so the grid starts just below
   // (its height changes when chips wrap or the active facet changes).
   const barRef = useRef(null);
-  const [barH, setBarH] = useState(188);
+  // Seeded near the real measurement (76 top pad + a 35px control row + 20
+  // bottom pad) so the first paint doesn't place the grid low and then snap it
+  // up once the ResizeObserver reports.
+  const [barH, setBarH] = useState(131);
   useLayoutEffect(() => {
     const el = barRef.current;
     if (!el) return;
@@ -5599,7 +5642,10 @@ function GridView({
               // the search shrinks rather than the tabs wrapping under it.
               flexWrap: 'nowrap',
               width: '100%',
-              marginBottom: 16,
+              // Nothing follows this row any more — it used to space the tally
+              // that now rides with the grid. Left in, it fed straight into the
+              // bar's measured height, which is what the grid offsets itself by,
+              // so it read as a hole under the controls rather than as air.
             }}
           >
             <div
@@ -6016,8 +6062,14 @@ function GridView({
           // Mobile: bar is docked at the top, so pad the top by its height and
           // leave the bottom light. Desktop: clear the left filter rail so tiles
           // never sit under it, and mirror it with a matching right gutter.
+          //
+          // Only a few px past the bar, not the 24 this used to add: the bar's
+          // box already carries 20px of padding below the controls, and `barH`
+          // includes it, so a generous constant here was a second helping of the
+          // same air — together they left the first lattice line 60px clear of
+          // the filter row.
           padding: compact
-            ? `${barH + 24}px 16px 56px`
+            ? `${barH + 4}px 16px 56px`
             : `112px 48px 64px ${FILTER_SIDEBAR_LEFT + FILTER_SIDEBAR_W + FILTER_SIDEBAR_GAP}px`,
           // Lightbox open → the whole grid recedes into its inactive image
           // state (desaturated + softened + dimmed) so the focused note reads
@@ -6095,8 +6147,10 @@ function GridView({
                 number (GRID_TILE_NUM_INSET), floating in the band just above
                 the first row. Absolutely placed inside grid-stack so it never
                 shifts the tiles. Fades in with the tile labels once the
-                entrance settles, and out with the grid when a note opens. */}
-            <motion.div
+                entrance settles, and out with the grid when a note opens.
+
+                Currently hidden — see SHOW_GRID_COUNT. */}
+            {SHOW_GRID_COUNT && <motion.div
               className="grid-count"
               initial={false}
               animate={{ opacity: noteOpen ? 0 : entranceStage === 'settled' ? 1 : 0 }}
@@ -6131,7 +6185,7 @@ function GridView({
               <span style={{ color: INK }}>
                 {` ${noteCount === 1 ? 'Confession' : 'Confessions'}`}
               </span>
-            </motion.div>
+            </motion.div>}
             <GridLattice
               ref={latticeRef}
               lines={latticeLines}

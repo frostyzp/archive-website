@@ -150,6 +150,17 @@ const copySlotH = (vw) => Math.round(bodyFontPx(vw) * COPY.perFontPx) + COPY.tai
  * going to play is a second of a screen that looks stuck. */
 const COPY_HOLD_S = 1;
 
+/* The opening loader, off for now — the piece starts on the first beat.
+ *
+ * A switch rather than a deletion, and it has to do two things rather than one.
+ * Not rendering the loader is the obvious half; the other is the wait in front
+ * of the hero title, which is a second long specifically because it is counting
+ * a beat after the loader LIFTS. Left at a second with nothing in front of it,
+ * hiding the loader would trade an animation for an equally long blank screen —
+ * so the title falls back to the short wait the skipEntrance path already uses.
+ * `hadLoader` inside the component is where those two meet. */
+const SHOW_OPENING_LOADER = false;
+
 const DEAL = {
   flyS: 0.62, //   s — offstage → resting place
   fadeS: 0.4, //   s — leaving the stage (stepping backwards)
@@ -751,7 +762,11 @@ export default function OnboardingBeats({
   skipEntrance = false,
 } = {}) {
   const reduce = useReducedMotion();
-  const [loading, setLoading] = useState(!skipEntrance && !reduce);
+  // Whether this run opens behind the loader at all — see SHOW_OPENING_LOADER.
+  // Read by the hero title's wait as well as by the loader itself, since that
+  // wait only makes sense while there is something in front of it.
+  const hadLoader = SHOW_OPENING_LOADER && !skipEntrance && !reduce;
+  const [loading, setLoading] = useState(hadLoader);
   const [titleGate, setTitleGate] = useState(reduce);
   const [heroTitleRevealed, setHeroTitleRevealed] = useState(reduce);
   const [heroQuestionRevealed, setHeroQuestionRevealed] = useState(reduce);
@@ -817,9 +832,9 @@ export default function OnboardingBeats({
       setTitleGate(false);
       return undefined;
     }
-    const id = setTimeout(() => setTitleGate(true), skipEntrance ? 200 : 1000);
+    const id = setTimeout(() => setTitleGate(true), hadLoader ? 1000 : 200);
     return () => clearTimeout(id);
-  }, [loading, reduce, skipEntrance]);
+  }, [loading, reduce, hadLoader]);
 
   /* Forward off the end of the story is the way into the archive, not a beat
      that isn't there. The piece is already listening for the gesture on three
@@ -1243,9 +1258,17 @@ export default function OnboardingBeats({
             instant={reduce}
             onRevealComplete={() => setHeroQuestionRevealed(true)}
             style={{
-              maxWidth: 400,
+              /* Carried up with the type rather than left where it was. The
+                 measure is what sets the break, and this sentence breaks after
+                 "ABOUT" — one char more than fits and "ABOUT" drops, which
+                 pushes the line under it past the measure too and turns two
+                 lines into three. At 20px in Courier the first line runs ~403px,
+                 so 400 was exactly the wrong side of it. */
+              maxWidth: 444,
               fontFamily: "'Courier New', Courier, monospace",
-              fontSize: 'clamp(14px, 2vw, 18px)',
+              // The ceiling is what desktop actually reads: 2vw passes 18px at
+              // 900px wide, so every real screen sits on the clamp's top value.
+              fontSize: 'clamp(15px, 2.2vw, 20px)',
               lineHeight: 1.45,
               letterSpacing: '0.01em',
               textTransform: 'uppercase',

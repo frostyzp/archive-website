@@ -831,7 +831,14 @@ const V_SCROLL_SETTLE_MS = 150;
 // stepper and the next-note chevron. Three lines is what the longest ones can
 // spend without reaching them; anything past that scrolls under the fade.
 const V_TRANSCRIPT_LINES = 3;
-const V_IMAGE_HEIGHT = `min(${CARD_HEIGHT_VH_MOBILE}vh, ${CARD_HEIGHT_MAX}px)`;
+// What the phone's note view spends on everything that is not the image: the
+// nav across the top, the DATE / LOCATION block above the note, the transcript
+// below it, the gaps between them, and the bottom dock. None of that scales
+// with the screen — only the image does — so on a short phone the note has to
+// be the thing that yields. Without this term it held its 44vh and pushed the
+// metadata up under the wordmark.
+const V_MOBILE_CHROME_PX = 400;
+const V_IMAGE_HEIGHT = `min(${CARD_HEIGHT_VH_MOBILE}vh, ${CARD_HEIGHT_MAX}px, calc(100vh - ${V_MOBILE_CHROME_PX}px))`;
 
 const HOVER_EASE = 'cubic-bezier(0.17, 0.84, 0.44, 1)';
 
@@ -3374,6 +3381,12 @@ const st = {
     fontSize: 10,
     letterSpacing: '0.04em',
     lineHeight: 1.5,
+    // Caps to sit with the label rather than under it: the sheet holds locations
+    // title-cased ("San Francisco, CA"), which read as prose next to a tracked
+    // uppercase label. Free of layout risk because Courier is monospace — caps
+    // carry the same advance as lowercase, so no row can change width. Dates are
+    // numeric, so the transform is a no-op on that row.
+    textTransform: 'uppercase',
     color: ACCENT,
     whiteSpace: 'nowrap',
   },
