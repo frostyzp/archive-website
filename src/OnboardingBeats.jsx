@@ -4,11 +4,10 @@ import { INK, inkA } from './colors';
 import { PAGE_BG, PAGE_GRADIENT } from './NoiseGradient';
 import { TunableGrainBackground } from './noise';
 import AsciiWall from './AsciiWall';
-import BodyKicker from './BodyKicker';
-import PrintMargin, { BOOTH_CAPTION } from './PrintMargin';
 import WordmarkDraw from './WordmarkDraw';
 import {
   BODY_LINE,
+  BODY_LINE_COMPACT,
   CTA_HOVER_CSS,
   EnterButton,
   FINAL_QUESTION,
@@ -39,8 +38,7 @@ import {
  *   1  HERO      the wordmark writes itself over the ascii confession field,
  *                the opening question, the cue to swipe. No photograph yet.
  *   2  INTRO     the Dolores Park booth lands, and the line that explains it.
- *   3  BODY      AC_171. The statement is left hanging and BodyKicker's three
- *                verbs finish it, ascii creeping in around them.
+ *   3  BODY      AC_171. The statement, verbs included.
  *   4  FRAGMENT  AC_148.
  *   5  CLOSING   AC_185, and the way into the archive.
  *
@@ -86,8 +84,8 @@ const CARD = { w: 520, h: 460 };
    sizes everything by how much of this it can fit across. */
 const PILE = { w: 700, h: 625, maxFit: 1.15 };
 
-/* The words get a slot of their own, tall enough for the longest beat — three
-   lines plus three verbs — and every beat starts at the top of it.
+/* The words get a slot of their own, tall enough for the longest beat — the
+   body's three lines — and every beat starts at the top of it.
  *
  * The slot is a reservation on purpose. The pile and the copy used to share one
  * centred column, which meant the column re-centred every time a line left and
@@ -95,33 +93,36 @@ const PILE = { w: 700, h: 625, maxFit: 1.15 };
  * Nothing about a beat's own copy is allowed to move the pile, so both are
  * anchored and short copy simply leaves the rest of its slot empty.
  *
- * Its height is derived rather than picked. The tallest beat is the body, and
- * its type is viewport-clamped, so the same paragraph is ~206px tall on a wide
- * desktop and ~130 on a phone; measured against real renders it lands at about
- * 8× its own font size at every width. A single fixed number was right on one
+ * Its height is derived rather than picked. The body sets the type size the
+ * slot is measured in; the closing beat is taller still, because it hangs the
+ * enter arrow under its last line, and that cue is added on as `COPY.cuePx`.
+ * The body's type is viewport-clamped, so the same paragraph is ~206px tall on
+ * a wide desktop and ~130 on a phone. A single fixed number was right on one
  * screen and over-reserved by 140px on a phone — and that over-reservation was
  * dead air below the copy, which is exactly the room the pile needs to sit
  * centred.
  *
- * So perFontPx tracks BODY_LINE's authored rag: it was 11.6 while that copy set
- * six lines, and re-measuring is the price of re-breaking the sentence. It counts
- * from the first line to the lowest ink rather than to the kicker's box, because
- * the kicker's ascii marks hang a good way past their own block. Rounding up
+ * So perFontPx tracks BODY_LINE's authored rag. Rounding up
  * rather than down — an over-reserved slot only costs the pile some of its
  * centring, while an under-reserved one runs the copy into the bottom of the
  * screen. */
 /* The same clamp the intro and fragment beats set, rather than a smaller one of
-   its own. This beat is the longest — three lines and three verbs against their
-   one line — and it had been shrunk to buy the pile room, but a beat that sets
-   its type two sizes down reads as a caption next to the ones either side of it.
-   The slot below derives its height from this, so the room comes out of the
-   pile's centring instead. */
+   its own. This beat is the longest — three lines against their one — and it
+   had been shrunk to buy the pile room, but a beat that sets its type two sizes
+   down reads as a caption next to the ones either side of it. The slot below
+   derives its height from this, so the room comes out of the pile's centring
+   instead. */
 const BODY_TYPE = { minPx: 20, vw: 2.9, maxPx: 33 };
 const COPY = {
   gapPx: 26, //        between the pile and the first line
-  perFontPx: 8.4, //   the body beat's height, in multiples of its own type
+  perFontPx: 4.8, //   the body beat's height, in multiples of its own type
   tailPx: 24, //       air under its last line
-  bottomAirPx: 24, //  and under the slot, off the bottom of the screen
+  /* The closing beat hangs a 48px ↓ under its last line (plus the button's
+     padding). The slot is shared, so this is empty air on every other beat
+     and the room the arrow needs on the last — without it the cue sat on the
+     bottom of the screen. */
+  cuePx: 76,
+  bottomAirPx: 40, //  and under the slot, off the bottom of the screen
 };
 
 /** The body beat's rendered type size at this width — the clamp, in numbers. */
@@ -129,7 +130,8 @@ const bodyFontPx = (vw) =>
   Math.min(BODY_TYPE.maxPx, Math.max(BODY_TYPE.minPx, (vw * BODY_TYPE.vw) / 100));
 
 /** How much room the copy has to be given below the pile at this width. */
-const copySlotH = (vw) => Math.round(bodyFontPx(vw) * COPY.perFontPx) + COPY.tailPx;
+const copySlotH = (vw) =>
+  Math.round(bodyFontPx(vw) * COPY.perFontPx) + COPY.tailPx + COPY.cuePx;
 
 /* How long a beat holds before its line starts writing itself.
  *
@@ -256,7 +258,11 @@ const cardFilter = (dim) =>
  * centred for the beat that is about it, and buried by the notes that came out
  * of it. */
 const DEAL_SLOTS = [
-  { x: 0, y: 0, rotate: -5, scale: 0.7 },
+  // Booth (beat 2). The scan already leans ~5° in the file; another −5 here
+  // compounded it and the print read as listing out of the middle even though
+  // x is 0. Leave the paper's own sit, and keep it on the midline — it is
+  // alone on this beat, so there is no stack for a tilt to hide in.
+  { x: 0, y: 0, rotate: 0, scale: 0.7 },
   { x: -48, y: -14, rotate: 3.5, scale: 0.94 },
   { x: 0, y: 8, rotate: -4.5, scale: 0.97 },
   { x: 48, y: 18, rotate: 7, scale: 1 },
@@ -322,7 +328,6 @@ const BOOTH = {
   alt: 'A hand-painted "Confession Box — everyone has an AI secret" sign staked in Dolores Park.',
   // Held at the size it always was while the notes grew past it.
   widthMul: 0.98,
-  caption: BOOTH_CAPTION,
 };
 
 const PHOTOS = [
@@ -577,7 +582,7 @@ function arcKeyframes({ x, y, endX, endY, ux, uy, side }) {
 }
 
 /* Type sizes are per beat because the blocks are wildly different lengths —
-   one line against the body's three plus three verbs — and they all have to sit
+   one line against the body's three — and they all have to sit
    in the same slot under the pile without pushing it off the screen. */
 const BEATS = [
   { id: 'hero' },
@@ -591,7 +596,6 @@ const BEATS = [
     text: BODY_LINE,
     // The one beat whose type the layout also reads — see COPY.
     fontSize: `clamp(${BODY_TYPE.minPx}px, ${BODY_TYPE.vw}vw, ${BODY_TYPE.maxPx}px)`,
-    kicker: true,
   },
   {
     id: 'fragment',
@@ -735,12 +739,6 @@ function PilePhoto({ photo, index, beat, leaving, reduceMotion, offstage }) {
       }}
     >
       <div style={{ position: 'relative', width: '100%', flex: 'none' }}>
-        {/* Inside the card rather than under it, so the margin takes the pile's
-            tilt, its flight and its place in the stack without being given any
-            of them separately — and so it cannot outlive the print it belongs to
-            when the pile scatters. Nothing sits under the pile, so its depth is
-            left unreserved and it simply hangs. */}
-        {photo.caption ? <PrintMargin frameWidth={width}>{photo.caption}</PrintMargin> : null}
         <img
           src={photo.src}
           alt={photo.alt}
@@ -982,6 +980,7 @@ export default function OnboardingBeats({
     // are only ever asked to be off the bottom of it, and being too far under
     // one costs a frame of a beat nobody has swiped to yet.
     offstage: offstageY(900, 0, 1),
+    copyW: 660,
   });
   useEffect(() => {
     const measure = () => {
@@ -1021,14 +1020,18 @@ export default function OnboardingBeats({
         // Where the notes wait is a consequence of where the pile ends up, so
         // it is taken from the same measurement rather than guessed alongside it.
         offstage: offstageY(vh, stageTop, fit),
+        copyW: Math.min(vw * 0.74, 660),
       });
     };
     measure();
     window.addEventListener('resize', measure);
     return () => window.removeEventListener('resize', measure);
   }, []);
-  const { fit, stageTop, offstage } = box;
+  const { fit, stageTop, offstage, copyW } = box;
   const copyTop = stageTop + PILE.h * fit + COPY.gapPx;
+  /* The body's three-line rag is 312px at 20px. Below that the last word of
+     each of the first two lines ("personal", "we") wraps onto a row of its own. */
+  const compactBody = copyW < 318;
 
   const current = BEATS[beat];
   const atClosing = beat === LAST;
@@ -1359,7 +1362,9 @@ export default function OnboardingBeats({
                     can never report — and then wait out the throw (COPY_HOLD_S)
                     before the line starts writing itself. */}
                 <RevealWords
-                  text={current.text}
+                  text={
+                    current.id === 'body' && compactBody ? BODY_LINE_COMPACT : current.text
+                  }
                   as="h2"
                   cfg={word}
                   start
@@ -1374,22 +1379,6 @@ export default function OnboardingBeats({
                     color: INK,
                   }}
                 />
-                {current.kicker && (
-                  <BodyKicker
-                    start
-                    delayS={COPY_HOLD_S}
-                    style={{
-                      marginTop: 'clamp(10px, 2vh, 22px)',
-                      maxWidth: 620,
-                      fontFamily: SERIF,
-                      fontWeight: 400,
-                      fontSize: current.fontSize,
-                      lineHeight: 1.18,
-                      letterSpacing: '-0.01em',
-                      color: INK,
-                    }}
-                  />
-                )}
                 {current.enter && (
                   <div style={{ marginTop: 'clamp(10px, 2vh, 22px)' }}>
                     {/* The hero's scroll cue, come back for the last beat, and

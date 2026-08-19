@@ -34,7 +34,6 @@ import { NOTE_STILL_IDS } from './noteStills';
 import AsciiWall from './AsciiWall';
 import WordmarkGL from './WordmarkGL';
 import WordmarkDraw from './WordmarkDraw';
-import BodyKicker from './BodyKicker';
 
 /* ─────────────────────────────────────────────────────────────────────
  * ONBOARDING SCROLL STORYBOARD  (mobile-first editorial reveal)
@@ -1047,13 +1046,22 @@ function HeroTitleDraw({ hold = false, onRevealComplete, reduceMotion = false })
 
 const INTRO_LINE =
   'We invited strangers to write a confession about their relationship with artificial intelligence (A.I.)';
-// Left hanging on purpose — BodyKicker finishes the sentence with the three
-// verbs, each set at its own angle. Line breaks are authored, not wrapped, so
-// the rag matches the Figma comp at every viewport width.
+// One paragraph, authored rag — the verbs finish the sentence on the last
+// line rather than in a second block, so there is no extra gap under "how we".
 const BODY_LINE = [
-  'A.I. is entering into the most',
-  'personal aspects of our lives,',
-  'changing how we',
+  'A.I. is entering into the most personal',
+  'aspects of our lives, changing how we',
+  'communicate, work, think…',
+].join('\n');
+/* The three-line rag is ~312px at the body's 20px floor. A phone's copy
+   column is `min(74vw)` — 278px on a 375-wide screen — so the last word of
+   each of the first two lines wraps onto a row of its own ("personal", "we").
+   Shorter breaks that still keep those words with their neighbours. */
+const BODY_LINE_COMPACT = [
+  'A.I. is entering into the',
+  'most personal aspects of',
+  'our lives, changing how we',
+  'communicate, work, think…',
 ].join('\n');
 const FRAGMENT_LINE = ['And even', 'substituting our', 'human relationships…'].join(
   '\n'
@@ -2199,17 +2207,14 @@ export default function OnboardingReveal({
           />
         </Beat>
 
-        {/* BODY — the statement cascades in and stops short; the three verbs
-            that finish it land off-axis, and ascii noise creeps in around them
-            (see BodyKicker). */}
-        <Beat style={{ gap: 'clamp(10px, 2vh, 20px)' }}>
+        {/* BODY — one paragraph, verbs included. */}
+        <Beat>
           <RevealWords
             text={BODY_LINE}
             as="h2"
             cfg={WORD_DISPLAY}
             style={FRAGMENT_STYLE}
           />
-          <BodyKicker style={FRAGMENT_STYLE} />
         </Beat>
 
         {/* NOTE ② — slides in from the left. */}
@@ -2351,6 +2356,7 @@ export {
   FRAGMENT_STYLE,
   INTRO_LINE,
   BODY_LINE,
+  BODY_LINE_COMPACT,
   FRAGMENT_LINE,
   FINAL_QUESTION,
   NOTES,

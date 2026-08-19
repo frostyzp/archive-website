@@ -19,7 +19,6 @@ import { NoiseDisplaceFilter } from './NoiseDisplaceFilter';
 import {
   HorizontalConfessionStack,
   VerticalConfessionStack,
-  StaticNoteReader,
   DialNavHint,
   NavGrainFilter,
 } from './SideDial';
@@ -90,7 +89,8 @@ const MORPH_SETTLE_MS = 180;
  * order you'd read it. The middle empties, then the wheel walks off the
  * side it pivots on. Times are ms after INDEX is clicked.
  *
- *    0ms   the note stack in the middle fades out             (260ms)
+ *    0ms   the note stack in the middle fades out, and the
+ *          category counter above the active word with it      (260ms)
  *  140ms   the dial's words slide left and fade, top of the
  *          arc first, 80ms apart, each spoke riding with its
  *          own word                                           (500ms each)
@@ -600,32 +600,6 @@ export function LeftThemeDial({
             </motion.div>
           );
         })}
-      </motion.div>
-
-      {/* Which category you're on ("03 / 06"), set small above the active
-          wordmark. Deliberately NOT the note counter pinned bottom-centre — that
-          one counts notes inside the current category, this one counts categories.
-          Keyed on activeId so the figure crossfades as the wheel turns instead of
-          hard-cutting mid-spin. */}
-      <motion.div
-        style={st.dialCatCount}
-        aria-label={`Category ${idx + 1} of ${n}`}
-        {...settleIn}
-        // Rides out with the row it labels.
-        exit={rowExit(0)}
-      >
-        <AnimatePresence mode="wait">
-          <motion.span
-            key={activeId}
-            initial={reduceMotion ? { opacity: 1 } : { opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: reduceMotion ? 0 : 0.4, ease: GRADIENT_EASE }}
-          >
-            <span style={st.dCounterCurrent}>{String(idx + 1).padStart(2, '0')}</span>
-            <span style={st.dCounterTotal}>{` / ${String(n).padStart(2, '0')}`}</span>
-          </motion.span>
-        </AnimatePresence>
       </motion.div>
     </motion.div>
   );
@@ -1298,31 +1272,26 @@ export default function NoteOpenView({
         }}
         style={{
           ...st.stageArea,
-          ...(isMobile ? (standalone ? st.stageAreaDocked : st.stageAreaReader) : null),
           pointerEvents: revealed && !introOpen ? 'auto' : 'none',
         }}
       >
-        {isMobile && !standalone ? (
-          // Opened from the index: one note, held still. See StaticNoteReader
-          // for why the phone doesn't get the carousel here.
-          <StaticNoteReader
-            confession={themed[activeIndex]}
-            reduceMotion={reduceMotion}
-            stepKey={activeIndex}
-          />
-        ) : isMobile ? (
+        {isMobile ? (
           <VerticalConfessionStack
             confessions={themed}
             activeIndex={activeIndex}
             onActiveChange={setActiveIndex}
-            // Behind a first look the cards' own staggered wave is spent while
-            // nobody can see it, and Framer reads `initial` once, so it cannot
-            // be replayed on dismissal. They settle immediately instead and the
-            // wrapper's fade above is the whole entrance.
-            mountEntrance={!reduceMotion && !introOpen}
-            entranceDelay={reduceMotion ? 0 : 0.08}
+            // Overlay: the wrapper already faded the stage in, so the cards
+            // sit still rather than waving in over a note the reader just
+            // tapped. Explore behind a first look does the same, because
+            // Framer reads `initial` once and cannot replay it on dismissal.
+            mountEntrance={!reduceMotion && standalone && !introOpen}
+            entranceDelay={reduceMotion || !standalone ? 0 : 0.08}
             metaBlockCrossfade
             transcriptInstantWords
+            // Index overlay: THEME sits with DATE / LOCATION, matching the
+            // desktop Lightbox. Explore already names the category on the
+            // stepper, so it stays off there.
+            showTheme={!standalone}
           />
         ) : (
           <HorizontalConfessionStack
@@ -1344,13 +1313,10 @@ export default function NoteOpenView({
 
       {/* Dark edge gradients so notes dissolve into black at the edges they
           slide toward: left/right on desktop's horizontal strip, top/bottom on
-          the mobile vertical carousel (matching where prev/next peek). */}
-      {/* Nothing to fade out on the phone's index reader — it shows one note
-          with no neighbours travelling past the edges, so the vignette would
-          only be dimming the top of its own metadata. */}
-      {isMobile && !standalone ? null : (
-        <div aria-hidden="true" style={isMobile ? st.edgeVignetteV : st.edgeVignette} />
-      )}
+          the mobile vertical carousel (matching where prev/next peek). Phone
+          EXPLORE uses the same full-viewport wash as the index preview overlay
+          — notes run under it rather than stopping short of the fade. */}
+      <div aria-hidden="true" style={isMobile ? st.edgeVignetteV : st.edgeVignette} />
 
       {/* First look — see EXPLORE_INTRO. Waits on the flight landing, so it
           doesn't fade up over the categories still travelling to the wheel.
@@ -1392,10 +1358,10 @@ export default function NoteOpenView({
           >
             <span
               style={{
+                position: 'relative',
                 display: 'flex',
                 flexDirection: 'column',
                 alignItems: 'center',
-                gap: EXPLORE_INTRO.cueGapPx,
                 maxWidth: EXPLORE_INTRO.maxWidth,
               }}
             >
@@ -1421,12 +1387,22 @@ export default function NoteOpenView({
                   delay: reduceMotion ? 0 : EXPLORE_INTRO.holdS + EXPLORE_INTRO.cueHoldS,
                 }}
                 style={{
+                  // Out of the sentence's flow so the two lines stay centred on
+                  // the dial's active category (the same `top: 50%` the wheel
+                  // uses). In the column it pulled that axis down by the cue's
+                  // own height.
+                  position: 'absolute',
+                  top: '100%',
+                  left: '50%',
+                  transform: 'translateX(-50%)',
+                  marginTop: EXPLORE_INTRO.cueGapPx,
                   fontFamily: MONO,
                   fontSize: 11,
                   letterSpacing: '0.16em',
                   textTransform: 'uppercase',
                   lineHeight: 1.5,
                   color: inkA(0.45),
+                  whiteSpace: 'nowrap',
                 }}
               >
                 {/* Named for the gesture the reader actually has. */}
@@ -1766,17 +1742,6 @@ const edgeFadeGradient = (direction) => {
 
 const edgeFadeV = edgeFadeGradient('to bottom');
 
-/* The band the app's own chrome holds across the top of this tab — the wordmark
-   and the menu button, which sit outside this view and paint above it. Mirrors
-   App's ARCHIVE_NAV_CHROME_HEIGHT (40) at its top offset (~23), plus air.
-
-   The note stage is the middle of three bands: this at the top, the dock at the
-   bottom, and the note centred in what is left. Stated rather than left to luck,
-   because the metadata block rides above the note and had only 6px of daylight
-   under the wordmark on a tall phone — and on a short one, once the dock took
-   its share from the bottom, the block was centred straight up behind it. */
-const M_NAV_BAND = 72;
-
 /* Phone overlay chrome, top row. BACK and the ˄ (previous note) chevron share
    one line. The chevron used to sit on its own row below BACK, which spent a
    whole band of the screen on a single glyph and pushed the note down for it;
@@ -1844,27 +1809,13 @@ const st = {
     // The scrolling stack fills the viewport; its own paddingLeft/Right centre
     // the active card at 50%, so the note sits dead-centre with the left dial
     // overlaid on top and the neighbours sliding out toward the edges.
+    // Phone EXPLORE used to dock this under the nav / above the category
+    // stepper, which parked peeking notes short of the top/bottom wash the
+    // index preview uses. Full-bleed, same as that overlay, so the vignette
+    // can dissolve neighbours at the edges they slide toward.
     position: 'absolute',
     inset: 0,
     zIndex: 1,
-  },
-  // The phone's EXPLORE tab gives the top band to the app's chrome and the
-  // bottom one to the dock, and centres the note in what is left, rather than
-  // running under either. Only that view: the grid-tap overlay renders no dock,
-  // and on desktop the wheel is beside the note rather than below it, so both
-  // keep the full height.
-  stageAreaDocked: {
-    top: M_NAV_BAND,
-    bottom: M_DOCK_H,
-  },
-  // The grid-tap overlay's own band on a phone. Its chrome is the BACK / ˄ row
-  // at the top and the ˅ at the bottom, both at the same inset; the note is
-  // centred between them. The carousel didn't need this — its notes run under
-  // the chrome by design, that being what a peeking neighbour is — but the
-  // static reader is one note that has to sit clear of both.
-  stageAreaReader: {
-    top: M_NAV_ROW_TOP + M_NAV_BTN,
-    bottom: `calc(${M_NAV_ROW_BOTTOM} + ${M_NAV_BTN}px)`,
   },
   edgeVignette: {
     position: 'absolute',
@@ -1876,6 +1827,7 @@ const st = {
   },
   // Mobile: fade top/bottom into black so the peeking prev/next notes dissolve
   // at the edges they slide toward (the vertical analogue of edgeVignette).
+  // Shared by the index preview overlay and the EXPLORE tab.
   edgeVignetteV: {
     position: 'absolute',
     inset: 0,

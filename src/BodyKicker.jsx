@@ -7,8 +7,9 @@ import { inkA } from './colors';
  * BODY KICKER STORYBOARD
  *
  * Closes the body statement. The sentence above ("…changing how we")
- * dissolves in first and is left hanging; these three verbs finish it,
- * each landing off-axis, and then the machine noise creeps in around them.
+ * dissolves in first and is left hanging; these three verbs finish it on
+ * one line — "communicate, work, think…" — then the machine noise creeps
+ * in around them.
  *
  * Read top-to-bottom. Each value is ms after the beat scrolls into view.
  *
@@ -40,37 +41,17 @@ const TIMING = {
 
 const MONO = 'var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace)';
 
-/* The three verbs that finish the sentence. `tilt` is the resting angle in
-   degrees; `offX` is where the line sits across the block, −1 to 1, and `spread`
-   is how far off centre that is allowed to carry it.
- *
- * Every line hangs off the block's CENTRE and is walked out from there, which is
- * what makes the scatter a single tunable thing. The lines used to be anchored to
- * the column's edges instead — one flex-start, one flex-end, one centred — and at
- * 620px that left ~370px of empty block between the end of "communicate" and the
- * start of "work": three unrelated fragments in the corners of a wide box rather
- * than one strewn group. Nothing about that arrangement could be tightened, since
- * an edge anchor has no dial on it; the old per-line nudge was no help either,
- * being a percentage of the WORD's own width, so it moved the short verbs least
- * and the whole block barely at all.
- *
- * The offsets stay deliberately uneven, and the middle line is the one thrown
- * furthest: evening them out, or ordering them, immediately reads as a set of
- * three rather than as type someone put down by hand.
- *
- * `spread` has a floor as well as a ceiling. The verbs' type is viewport-clamped
- * and the block is not, so a phone sets "communicate" at 37% of the block's width
- * against 28% on a desktop — pull the lines much closer than this and the long
- * verb's tail arrives underneath the start of "work" at 390px while still looking
- * loose at 1440. */
+/* The three verbs that finish the sentence, as one list: commas and an
+   ellipsis are part of the copy, not decoration around three stacked words.
+   `tilt` is a rest angle in degrees — shallow on purpose, so the line still
+   reads as a line. */
 const VERBS = {
   entryTiltMul: 2.1, // entrance angle as a multiple of the resting tilt
-  spread: 16.5, //     % of the block a verb sits off centre at offX ±1
   spring: { type: 'spring', stiffness: 180, damping: 18, mass: 1 },
   items: [
-    { text: 'communicate', tilt: -3.4, offX: -0.8 },
-    { text: 'work', tilt: -11, offX: 1 },
-    { text: 'think', tilt: 1.6, offX: -0.45 },
+    { text: 'communicate,', tilt: -1.4 },
+    { text: 'work,', tilt: 2.2 },
+    { text: 'think…', tilt: -0.8 },
   ],
 };
 
@@ -208,7 +189,7 @@ const SHOW_MARKS = false;
 const IN_VIEW = { once: true, margin: '0px 0px -24% 0px' };
 
 /**
- * The tail of the body statement: three tilted verbs, then ascii noise.
+ * The tail of the body statement: three verbs on one line, then ascii noise.
  *
  * Stage-driven — one integer walks the whole sequence, so the storyboard above
  * is the only place the order lives. Under reduced motion every stage resolves
@@ -239,7 +220,6 @@ export default function BodyKicker({ style, start, delayS = 0 }) {
       asciiIdle: [TIMING.asciiIdle, 0, 6000, 50],
       entryTiltMul: [VERBS.entryTiltMul, 0, 5, 0.1],
       tiltScale: [1, 0, 3, 0.05],
-      spread: [VERBS.spread, 0, 40, 0.5],
       typeS: [MARKS.typeS, 0, 0.2, 0.002],
       frameMs: [MARKS.frameMs, 30, 400, 10],
       markAlpha: [MARKS.alpha, 0.1, 1, 0.05],
@@ -291,7 +271,12 @@ export default function BodyKicker({ style, start, delayS = 0 }) {
         maxWidth: 620,
         margin: '0 auto',
         display: 'flex',
-        flexDirection: 'column',
+        flexDirection: 'row',
+        flexWrap: 'nowrap',
+        justifyContent: 'center',
+        alignItems: 'baseline',
+        gap: '0.33em',
+        whiteSpace: 'nowrap',
         ...style,
       }}
     >
@@ -301,15 +286,8 @@ export default function BodyKicker({ style, start, delayS = 0 }) {
         return (
           <motion.div
             key={verb.text}
-            /* The offset is `left` rather than a transform: it resolves against
-               the BLOCK's width, so the scatter holds its proportions from a
-               desktop down to a phone, and it leaves the transform entirely to
-               the entrance's untilt, which turns the line about its own
-               centre. */
             style={{
-              alignSelf: 'center',
-              position: 'relative',
-              left: `${verb.offX * dials.spread}%`,
+              flex: '0 0 auto',
               transformOrigin: '50% 60%',
             }}
             initial={{

@@ -2429,7 +2429,7 @@ const META_ENTRANCE_HOLD_S = 0.8;
  * incoming note wherever it currently sits off-screen and throw the block out to
  * meet it, then drag it back as the stack scrolls in.
  */
-function MetaCrossfadeSlot({ confession, reduceMotion, columnWidth, anchorEl }) {
+function MetaCrossfadeSlot({ confession, reduceMotion, columnWidth, anchorEl, showTheme = false }) {
   const slotRef = useRef(null);
   const [pos, setPos] = useState(null);
   // Until the first measurement lands the block has no meaningful position, so
@@ -2486,7 +2486,7 @@ function MetaCrossfadeSlot({ confession, reduceMotion, columnWidth, anchorEl }) 
   if (!confession) return null;
   const date = confession?.metadata?.date || '';
   const location = confession?.metadata?.location || '';
-  if (!date && !location) return null;
+  if (!date && !location && !showTheme) return null;
 
   return (
     <motion.div
@@ -2532,6 +2532,7 @@ function MetaCrossfadeSlot({ confession, reduceMotion, columnWidth, anchorEl }) 
           reduceMotion={reduceMotion}
           columnWidth="100%"
           crossfadeBlock
+          showTheme={showTheme}
         />
       </motion.div>
     </motion.div>
@@ -2589,17 +2590,23 @@ function MetaValueReveal({ text, reduceMotion, delay = 0 }) {
  * character (see MetaValueReveal); the dial page fades each value in as one
  * piece after META_TIMING.metaRow.
  */
-export function NoteMeta({ confession, reduceMotion, columnWidth = '100%', crossfadeBlock = false }) {
+export function NoteMeta({ confession, reduceMotion, columnWidth = '100%', crossfadeBlock = false, showTheme = false }) {
   const date = confession?.metadata?.date || '';
   const location = confession?.metadata?.location || '';
-  if (!date && !location) return null;
+  const theme = showTheme
+    ? (confession?.category ? String(confession.category).toUpperCase() : 'N/A')
+    : '';
+  if (!date && !location && !showTheme) return null;
 
   // Always render BOTH labels (even if a value is blank) so the scaffold's
   // height never changes note-to-note — a missing value must not drop a row and
-  // shift the divider up. Only the values differ.
+  // shift the divider up. Only the values differ. THEME is the index preview's
+  // extra row (same as the desktop Lightbox); EXPLORE already names the
+  // category on the dial / stepper, so it stays off there.
   const rows = [
     ['DATE', date],
     ['LOCATION', location],
+    ...(showTheme ? [['THEME', theme]] : []),
   ];
 
   if (crossfadeBlock) {
@@ -2877,7 +2884,7 @@ export function StaticNoteReader({ confession, reduceMotion = false, stepKey }) 
               decoding="async"
               style={{
                 ...st.cardImg,
-                filter: grainHeld ? 'none' : grainOnlyFilter,
+                filter: grainHeld ? grainOnlyFilter : 'none',
               }}
             />
           </div>
@@ -2906,6 +2913,7 @@ export function VerticalConfessionStack({
   mountEntrance = true,
   metaBlockCrossfade = false,
   transcriptInstantWords = false,
+  showTheme = false,
 }) {
   const scrollRef = useRef(null);
   const itemRefs = useRef([]);
@@ -2946,6 +2954,12 @@ export function VerticalConfessionStack({
   const progScrollUntilRef = useRef(0);
   const rafRef = useRef(0);
   const scrollEndRef = useRef(0);
+  // Mandatory snap on a list that mounts at scrollTop 0 will park on the first
+  // snap box (often a spacer, or a neighbour in the render window) before the
+  // layout effect can aim at the seeded note. Keep snap off until that aim
+  // has landed, and ignore scroll-driven index changes until then — otherwise
+  // opening from the index shows the wrong confession.
+  const [snapReady, setSnapReady] = useState(false);
 
   const [grainHeld, setGrainHeld] = useState(true);
   useLayoutEffect(() => {
@@ -2971,31 +2985,64 @@ export function VerticalConfessionStack({
   );
 
   useLayoutEffect(() => {
-    const img = imgRefs.current[activeIndex];
-    if (!img) return;
-    const h = img.getBoundingClientRect().height;
+    const box = imgRefs.current[activeIndex];
+    if (!box) return;
+    const h = box.getBoundingClientRect().height;
     if (h > 0) itemStrideRef.current = h + V_STACK_GAP;
-  }, [activeIndex, n, renderLo, renderHi]);
+    if (metaBlockCrossfade) setMetaAnchorEl(box);
+  }, [activeIndex, n, renderLo, renderHi, metaBlockCrossfade]);
 
   const scrollItemToCenter = useCallback((i, behavior) => {
     const el = scrollRef.current;
-    if (!el) return;
+    if (!el) return false;
     const item = itemRefs.current[i];
-    if (!item) return;
-    const img = imgRefs.current[i] || item.querySelector('img') || item;
-    const ir = img.getBoundingClientRect();
+    if (!item) return false;
+    // Aim at the snap box (fixed V_IMAGE_HEIGHT), never the <img> — a
+    // still-decoding image is 0px tall, which parked the stack on the
+    // wrong note when opening from the index.
+    const box = imgRefs.current[i] || item;
+    const ir = box.getBoundingClientRect();
+    if (ir.height < 2) return false;
     const er = el.getBoundingClientRect();
     const delta = ir.top + ir.height / 2 - vCenterY(er.top, el.clientHeight);
-    if (Math.abs(delta) < SNAP_EPSILON) return;
+    if (Math.abs(delta) < SNAP_EPSILON) return true;
     progScrollUntilRef.current =
       performance.now() + (behavior === 'smooth' ? 700 : 260);
-    el.scrollBy({ top: delta, behavior: behavior || 'auto' });
+    if (behavior === 'smooth') {
+      el.scrollBy({ top: delta, behavior: 'smooth' });
+    } else {
+      // Instant jump with snap disabled so mandatory snap cannot intercept
+      // and settle on a neighbour (the index-preview mis-aim).
+      const prev = el.style.scrollSnapType;
+      el.style.scrollSnapType = 'none';
+      el.scrollTop += delta;
+      el.style.scrollSnapType = prev;
+    }
+    return true;
   }, []);
 
   useLayoutEffect(() => {
     if (hasInitialScrolledRef.current) return;
-    scrollItemToCenter(activeIndexRef.current, 'auto');
+    if (!scrollItemToCenter(activeIndexRef.current, 'auto')) return;
     hasInitialScrolledRef.current = true;
+    setSnapReady(true);
+  }, [scrollItemToCenter, n, renderLo, renderHi]);
+
+  useEffect(() => {
+    if (hasInitialScrolledRef.current) return undefined;
+    let frames = 0;
+    let raf = 0;
+    const tick = () => {
+      frames += 1;
+      if (scrollItemToCenter(activeIndexRef.current, 'auto')) {
+        hasInitialScrolledRef.current = true;
+        setSnapReady(true);
+        return;
+      }
+      if (frames < 40) raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
   }, [scrollItemToCenter]);
 
   useEffect(() => {
@@ -3094,6 +3141,7 @@ export function VerticalConfessionStack({
     if (rafRef.current) return;
     rafRef.current = requestAnimationFrame(() => {
       rafRef.current = 0;
+      if (!hasInitialScrolledRef.current) return;
       if (performance.now() < progScrollUntilRef.current) return;
       const best = detectCenteredIndex();
       if (best < 0) return;
@@ -3126,9 +3174,16 @@ export function VerticalConfessionStack({
           reduceMotion={reduceMotion}
           columnWidth="min(86vw, 430px)"
           anchorEl={metaAnchorEl}
+          showTheme={showTheme}
         />
       ) : null}
-      <div ref={scrollRef} style={st.vScrollContainer}>
+      <div
+        ref={scrollRef}
+        style={{
+          ...st.vScrollContainer,
+          scrollSnapType: snapReady ? 'y mandatory' : 'none',
+        }}
+      >
       <CardNoiseFilterDefs params={stackNoiseParams} />
       {confessions.map((c, i) => {
         const inWindow = i >= renderLo && i <= renderHi;
@@ -3192,20 +3247,23 @@ export function VerticalConfessionStack({
             }}
           >
             {isActive && !metaBlockCrossfade ? (
-              <NoteMeta confession={c} reduceMotion={reduceMotion} />
+              <NoteMeta confession={c} reduceMotion={reduceMotion} showTheme={showTheme} />
             ) : null}
             <div
-              ref={metaBlockCrossfade && isActive ? (el) => setMetaAnchorEl(el) : undefined}
+              ref={(el) => {
+                imgRefs.current[i] = el;
+              }}
               style={{
                 ...st.cardImageBox,
                 height: V_IMAGE_HEIGHT,
                 scrollSnapAlign: 'center',
+                // Coverflow writes a transform on this box; the vertical stack
+                // does not, and will-change:transform on a snap target fights
+                // native overflow scroll on WebKit.
+                willChange: 'auto',
               }}
             >
               <img
-                ref={(el) => {
-                  imgRefs.current[i] = el;
-                }}
                 src={c.image}
                 alt={`Confession ${c.id}`}
                 draggable={false}
@@ -3213,15 +3271,16 @@ export function VerticalConfessionStack({
                 decoding="async"
                 style={{
                   ...st.cardImg,
-                  willChange: isActive && !useLiteNeighbors ? 'transform' : 'auto',
                   opacity: isActive
                     ? 1
                     : ring <= 1
                       ? V_INACTIVE_OPACITY.near
                       : V_INACTIVE_OPACITY.far,
-                  transform: `scale(${isActive ? 1 : inactive.scale})`,
+                  // Same size active and idle — scaling the image as it snaps
+                  // into the centre read as a jump on a phone, where the note
+                  // is already near full-width.
                   filter: isActive
-                    ? grainHeld && !useLiteNeighbors
+                    ? grainHeld && !useLiteNeighbors && mountEntrance
                       ? grainOnlyFilter
                       : 'none'
                     : useLiteNeighbors || !inactiveFilter
@@ -3497,9 +3556,10 @@ const st = {
     pointerEvents: 'none',
   },
   metaAboveRow: {
-    // Two stacked label/value rows (DATE, LOCATION) above the note image. The
-    // column width is set by the caller (`columnWidth`, ~80% of the image) so
-    // the label/value pairs sit closer together; centred within the card.
+    // Two or three stacked label/value rows (DATE, LOCATION, and THEME on the
+    // index preview) above the note image. The column width is set by the
+    // caller (`columnWidth`, ~80% of the image) so the label/value pairs sit
+    // closer together; centred within the card.
     display: 'flex',
     flexDirection: 'column',
     rowGap: 4,
