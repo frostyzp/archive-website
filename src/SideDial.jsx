@@ -822,8 +822,10 @@ const SNAP_EPSILON = 2;
 const V_INACTIVE_OPACITY = { near: 0.46, far: 0.14 };
 // How many notes either side of the focus to mount fully (image + meta). The
 // rest are height-only spacers so scroll-snap geometry stays correct without
-// downloading/decoding every note in the category.
-const V_RENDER_WINDOW = 2;
+// downloading/decoding every note in the category. Held wide enough that a
+// normal flick does not run off the mounted window — swapping a snap box for
+// a spacer mid-gesture is what made Safari abort the scroll.
+const V_RENDER_WINDOW = 5;
 // Past this many notes, a programmatic move stops being a scroll worth watching
 // and becomes a wait. Inside it the stack glides the whole way; beyond it, it
 // cuts to one note short and glides the rest (see the effect that uses this).
@@ -1134,6 +1136,18 @@ const dialNavHintStyles = {
     fontSize: 17,
   },
 };
+
+/** WebKit (Safari, all iOS browsers) can hang on `scrollTo({ behavior: 'smooth' })`
+ *  so the strip never accepts another gesture. Jump instead; the vertical stack
+ *  animates scrollTop itself for the same reason. */
+function scrollLeftTo(el, left, smooth) {
+  if (!el) return;
+  if (!smooth || (typeof navigator !== 'undefined' && /Safari/.test(navigator.userAgent) && !/Chrome|Chromium|Android/.test(navigator.userAgent)) || (typeof navigator !== 'undefined' && /iP(hone|ad|od)/.test(navigator.userAgent))) {
+    el.scrollLeft = left;
+    return;
+  }
+  el.scrollTo({ left, behavior: 'smooth' });
+}
 
 export function HorizontalConfessionStack({
   confessions,
@@ -1874,7 +1888,7 @@ export function HorizontalConfessionStack({
 
       isProgScrollingRef.current = true;
       progScrollTargetRef.current = clamped;
-      el.scrollTo({ left: clamped, behavior: 'smooth' });
+      scrollLeftTo(el, clamped, true);
 
       if (progScrollSafetyTimerRef.current) clearTimeout(progScrollSafetyTimerRef.current);
       const distance = Math.abs(clamped - el.scrollLeft);
@@ -1936,7 +1950,7 @@ export function HorizontalConfessionStack({
     isProgScrollingRef.current = true;
     progScrollTargetRef.current = clamped;
     lastSnapAtRef.current = Date.now();
-    el.scrollTo({ left: clamped, behavior: 'smooth' });
+    scrollLeftTo(el, clamped, true);
 
     if (progScrollSafetyTimerRef.current) clearTimeout(progScrollSafetyTimerRef.current);
     const distance = Math.abs(clamped - el.scrollLeft);
@@ -2921,7 +2935,6 @@ export function VerticalConfessionStack({
   const itemStrideRef = useRef(0);
   const reduceMotion = useReducedMotion();
   const [metaAnchorEl, setMetaAnchorEl] = useState(null);
-  const [isScrolling, setIsScrolling] = useState(false);
   // Drives the render window during a flick — updated on every scroll frame so
   // notes we're flying past mount before activeIndex catches up from the parent.
   const [scrollFocus, setScrollFocus] = useState(activeIndex);
@@ -2954,12 +2967,26 @@ export function VerticalConfessionStack({
   const progScrollUntilRef = useRef(0);
   const rafRef = useRef(0);
   const scrollEndRef = useRef(0);
+  const scrollAnimRef = useRef(0);
+  const snapReadyRef = useRef(false);
   // Mandatory snap on a list that mounts at scrollTop 0 will park on the first
   // snap box (often a spacer, or a neighbour in the render window) before the
   // layout effect can aim at the seeded note. Keep snap off until that aim
   // has landed, and ignore scroll-driven index changes until then — otherwise
   // opening from the index shows the wrong confession.
   const [snapReady, setSnapReady] = useState(false);
+  snapReadyRef.current = snapReady;
+
+  const stopScrollAnim = useCallback(() => {
+    if (scrollAnimRef.current) {
+      cancelAnimationFrame(scrollAnimRef.current);
+      scrollAnimRef.current = 0;
+    }
+  }, []);
+
+  const applySnapType = useCallback((el) => {
+    el.style.scrollSnapType = snapReadyRef.current ? 'y proximity' : 'none';
+  }, []);
 
   const [grainHeld, setGrainHeld] = useState(true);
   useLayoutEffect(() => {
@@ -3006,20 +3033,36 @@ export function VerticalConfessionStack({
     const er = el.getBoundingClientRect();
     const delta = ir.top + ir.height / 2 - vCenterY(er.top, el.clientHeight);
     if (Math.abs(delta) < SNAP_EPSILON) return true;
-    progScrollUntilRef.current =
-      performance.now() + (behavior === 'smooth' ? 700 : 260);
-    if (behavior === 'smooth') {
-      el.scrollBy({ top: delta, behavior: 'smooth' });
-    } else {
-      // Instant jump with snap disabled so mandatory snap cannot intercept
-      // and settle on a neighbour (the index-preview mis-aim).
-      const prev = el.style.scrollSnapType;
-      el.style.scrollSnapType = 'none';
-      el.scrollTop += delta;
-      el.style.scrollSnapType = prev;
+    const to = el.scrollTop + delta;
+    // CSS `behavior: 'smooth'` plus scroll-snap hangs on WebKit: the animation
+    // never finishes, and the carousel ignores further swipes. Drive scrollTop
+    // ourselves with snap off, then put proximity back.
+    stopScrollAnim();
+    el.style.scrollSnapType = 'none';
+    const ms = behavior === 'smooth' && !reduceMotion ? 380 : 0;
+    progScrollUntilRef.current = performance.now() + (ms || 260);
+    if (ms <= 0) {
+      el.scrollTop = to;
+      applySnapType(el);
+      return true;
     }
+    const from = el.scrollTop;
+    const dist = to - from;
+    const start = performance.now();
+    const tick = (now) => {
+      const t = Math.min(1, (now - start) / ms);
+      const eased = 1 - (1 - t) ** 3;
+      el.scrollTop = from + dist * eased;
+      if (t < 1) {
+        scrollAnimRef.current = requestAnimationFrame(tick);
+      } else {
+        scrollAnimRef.current = 0;
+        applySnapType(el);
+      }
+    };
+    scrollAnimRef.current = requestAnimationFrame(tick);
     return true;
-  }, []);
+  }, [applySnapType, reduceMotion, stopScrollAnim]);
 
   useLayoutEffect(() => {
     if (hasInitialScrolledRef.current) return;
@@ -3128,14 +3171,20 @@ export function VerticalConfessionStack({
 
   const isScrollingRef = useRef(false);
   const handleScroll = useCallback(() => {
-    if (!isScrollingRef.current) {
-      isScrollingRef.current = true;
-      setIsScrolling(true);
-    }
+    if (!isScrollingRef.current) isScrollingRef.current = true;
     window.clearTimeout(scrollEndRef.current);
     scrollEndRef.current = window.setTimeout(() => {
       isScrollingRef.current = false;
-      setIsScrolling(false);
+      if (!hasInitialScrolledRef.current) return;
+      if (performance.now() < progScrollUntilRef.current) return;
+      const best = detectCenteredIndex();
+      if (best < 0) return;
+      setScrollFocus(best);
+      if (best !== activeIndexRef.current) {
+        sourceRef.current = 'user';
+        onActiveChange(best);
+      }
+      scrollItemToCenter(best, 'auto');
     }, V_SCROLL_SETTLE_MS);
 
     if (rafRef.current) return;
@@ -3145,26 +3194,32 @@ export function VerticalConfessionStack({
       if (performance.now() < progScrollUntilRef.current) return;
       const best = detectCenteredIndex();
       if (best < 0) return;
+      // Mount ahead of the flick without telling the parent yet. A setState
+      // on every note (onActiveChange) re-rendered the scroller mid-momentum,
+      // which is how Safari dropped the gesture.
       setScrollFocus((cur) => (cur === best ? cur : best));
-      if (best !== activeIndexRef.current) {
-        sourceRef.current = 'user';
-        onActiveChange(best);
-      }
     });
-  }, [detectCenteredIndex, onActiveChange]);
+  }, [detectCenteredIndex, onActiveChange, scrollItemToCenter]);
 
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return undefined;
+    const onTouch = () => {
+      stopScrollAnim();
+      applySnapType(el);
+    };
     el.addEventListener('scroll', handleScroll, { passive: true });
+    el.addEventListener('touchstart', onTouch, { passive: true });
     return () => {
       el.removeEventListener('scroll', handleScroll);
+      el.removeEventListener('touchstart', onTouch);
       window.clearTimeout(scrollEndRef.current);
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      stopScrollAnim();
     };
-  }, [handleScroll]);
+  }, [applySnapType, handleScroll, stopScrollAnim]);
 
-  const useLiteNeighbors = isScrolling || reduceMotion;
+  const useLiteNeighbors = reduceMotion;
 
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%' }}>
@@ -3181,72 +3236,39 @@ export function VerticalConfessionStack({
         ref={scrollRef}
         style={{
           ...st.vScrollContainer,
-          scrollSnapType: snapReady ? 'y mandatory' : 'none',
+          scrollSnapType: snapReady ? 'y proximity' : 'none',
         }}
       >
       <CardNoiseFilterDefs params={stackNoiseParams} />
       {confessions.map((c, i) => {
         const inWindow = i >= renderLo && i <= renderHi;
-        if (!inWindow) {
-          return (
-            <div
-              key={c.id}
-              data-vcard
-              data-vspacer
-              ref={(el) => {
-                itemRefs.current[i] = el;
-              }}
-              aria-hidden="true"
-              style={st.vItem}
-            >
-              <div
-                ref={(el) => {
-                  imgRefs.current[i] = el;
-                }}
-                style={{
-                  height: V_IMAGE_HEIGHT,
-                  width: '100%',
-                  flexShrink: 0,
-                  scrollSnapAlign: 'center',
-                }}
-              />
-            </div>
-          );
-        }
-
         const isActive = i === activeIndex;
-        const staggerDelay =
-          !mountEntrance || reduceMotion
-            ? 0
-            : Math.min(Math.abs(i - activeIndex) * 0.1, 0.9);
         const ring = Math.abs(i - activeIndex);
         const eagerImage = ring <= 1;
         return (
-          <motion.div
+          <div
             key={c.id}
             data-vcard
             ref={(el) => {
               itemRefs.current[i] = el;
             }}
-            initial={reduceMotion || !mountEntrance ? false : { opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={
-              reduceMotion || !mountEntrance
-                ? { duration: 0 }
-                : { duration: 0.3, ease: EASE_OUT, delay: staggerDelay + entranceDelay }
+            aria-hidden={inWindow ? undefined : 'true'}
+            onClick={
+              inWindow
+                ? () => {
+                    if (i !== activeIndexRef.current) {
+                      sourceRef.current = 'external';
+                      onActiveChange(i);
+                    }
+                  }
+                : undefined
             }
-            onClick={() => {
-              if (i !== activeIndexRef.current) {
-                sourceRef.current = 'external';
-                onActiveChange(i);
-              }
-            }}
             style={{
               ...st.vItem,
-              cursor: isActive ? 'default' : 'pointer',
+              cursor: inWindow ? (isActive ? 'default' : 'pointer') : 'default',
             }}
           >
-            {isActive && !metaBlockCrossfade ? (
+            {inWindow && isActive && !metaBlockCrossfade ? (
               <NoteMeta confession={c} reduceMotion={reduceMotion} showTheme={showTheme} />
             ) : null}
             <div
@@ -3254,42 +3276,40 @@ export function VerticalConfessionStack({
                 imgRefs.current[i] = el;
               }}
               style={{
-                ...st.cardImageBox,
+                ...(inWindow ? st.cardImageBox : null),
                 height: V_IMAGE_HEIGHT,
+                width: inWindow ? undefined : '100%',
+                flexShrink: 0,
                 scrollSnapAlign: 'center',
-                // Coverflow writes a transform on this box; the vertical stack
-                // does not, and will-change:transform on a snap target fights
-                // native overflow scroll on WebKit.
                 willChange: 'auto',
               }}
             >
-              <img
-                src={c.image}
-                alt={`Confession ${c.id}`}
-                draggable={false}
-                loading={eagerImage ? 'eager' : 'lazy'}
-                decoding="async"
-                style={{
-                  ...st.cardImg,
-                  opacity: isActive
-                    ? 1
-                    : ring <= 1
-                      ? V_INACTIVE_OPACITY.near
-                      : V_INACTIVE_OPACITY.far,
-                  // Same size active and idle — scaling the image as it snaps
-                  // into the centre read as a jump on a phone, where the note
-                  // is already near full-width.
-                  filter: isActive
-                    ? grainHeld && !useLiteNeighbors && mountEntrance
-                      ? grainOnlyFilter
-                      : 'none'
-                    : useLiteNeighbors || !inactiveFilter
-                      ? 'none'
-                      : inactiveFilter,
-                }}
-              />
+              {inWindow ? (
+                <img
+                  src={c.image}
+                  alt={`Confession ${c.id}`}
+                  draggable={false}
+                  loading={eagerImage ? 'eager' : 'lazy'}
+                  decoding="async"
+                  style={{
+                    ...st.cardImg,
+                    opacity: isActive
+                      ? 1
+                      : ring <= 1
+                        ? V_INACTIVE_OPACITY.near
+                        : V_INACTIVE_OPACITY.far,
+                    filter: isActive
+                      ? grainHeld && !useLiteNeighbors && mountEntrance
+                        ? grainOnlyFilter
+                        : 'none'
+                      : useLiteNeighbors || !inactiveFilter
+                        ? 'none'
+                        : inactiveFilter,
+                  }}
+                />
+              ) : null}
             </div>
-            {isActive && c.transcription ? (
+            {inWindow && isActive && c.transcription ? (
               <div style={st.vMetaBlock} aria-live="polite">
                 <TranscriptReveal
                   key={c.id}
@@ -3300,7 +3320,7 @@ export function VerticalConfessionStack({
                 />
               </div>
             ) : null}
-          </motion.div>
+          </div>
         );
       })}
     </div>
@@ -3369,14 +3389,11 @@ const st = {
     paddingBottom: `calc(${V_STACK_PAD_VH} * var(--vh, 1vh) - ${V_CENTER_OFFSET}px)`,
     overflowY: 'auto',
     overflowX: 'hidden',
-    // Native snap: each note settles to centre after a swipe. Mandatory rather
-    // than proximity — proximity only engages when the scroll happens to end
-    // near a note, so a normal swipe would often just drift and stop wherever it
-    // ran out, which read as the snapping not working. Nothing here is taller
-    // than the viewport, so mandatory can't strand content between snap points,
-    // and the transcript is its own nested scroller so scrolling it doesn't move
-    // this container at all.
-    scrollSnapType: 'y mandatory',
+    // Proximity rather than mandatory: WebKit's mandatory snap aborts a flick
+    // when a snap box remounts or when a smooth scroll is still "in flight".
+    // JS recentres on settle (see handleScroll), so a swipe still lands on a
+    // note — proximity just keeps native momentum alive on the way there.
+    scrollSnapType: 'y proximity',
     // Shifts the snapport's centre down by half of this — i.e. exactly
     // V_CENTER_OFFSET — so CSS parks a note where the JS math expects it.
     scrollPaddingTop: V_CENTER_OFFSET * 2,

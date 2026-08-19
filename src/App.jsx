@@ -1154,14 +1154,26 @@ const ABOUT_RESOURCES = [
     ],
   },
   {
-    id: 'books',
-    heading: 'Books',
+    id: 'art',
+    heading: 'Participatory art',
     bg: '#E8D59A',
     items: [
       {
-        title: 'Artificial Intimacy: Who We Become When We Talk to Machines (2026)',
-        detail: 'Sherry Turkle',
-        href: 'https://www.sherryturkle.com/the-author',
+        title: 'The Strangers Project',
+        detail:
+          'Brandon Doman — 100,000+ handwritten, anonymous stories, collected in person.',
+        href: 'https://strangersproject.com/',
+      },
+      {
+        title: 'PostSecret',
+        detail: 'Frank Warren — anonymous secrets mailed in on handmade postcards.',
+        href: 'https://postsecret.com/',
+      },
+      {
+        title: 'The Future of Secrets',
+        detail:
+          'Sarah Newman — an installation that collects and anonymously redistributes people’s secrets.',
+        href: 'https://sarahwnewman.com/info',
       },
     ],
   },
@@ -1571,7 +1583,7 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false, onPeekLan
   const sectionResources = (
     <>
       {renderPara(
-        'Folks in our ecosystem that we admire who inspired What We Tell AI.',
+        'Resources, references, and organizations that inspired What We Tell AI.',
         'res-intro',
       )}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 28, marginTop: 4 }}>
@@ -5773,12 +5785,6 @@ function GridView({
         }
         @media (max-width: 760px) {
           .confession-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-          /* Off-screen tiles skip layout/paint until scrolled near — big win on
-             a 165-tile phone grid with no change to the entrance animation. */
-          .grid-tile {
-            content-visibility: auto;
-            contain-intrinsic-size: 180px 180px;
-          }
         }
         @media (max-width: 460px) {
           .confession-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -6409,7 +6415,6 @@ function GridView({
           WebkitOverflowScrolling: 'touch',
           touchAction: 'pan-y',
           overscrollBehaviorY: 'contain',
-          scrollbarGutter: 'stable',
           // Mobile: bar is docked at the top, so pad the top by its height and
           // leave the bottom light. Desktop: clear the left filter rail so tiles
           // never sit under it, and mirror it with a matching right gutter.
@@ -8843,7 +8848,9 @@ function ArchivePage({
       exit={{ opacity: 0 }}
       transition={{ duration: 0.6, ease }}
       style={{
-        height: '100vh',
+        // `--vh` is 1svh on phones so this is the visible screen, not the
+        // 100vh Safari reports with its chrome hidden (see index.html).
+        height: 'calc(100 * var(--vh, 1vh))',
         position: 'relative',
         overflow: 'hidden',
         // The views fade in over this base, so it has to be the page colour too

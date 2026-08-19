@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>What We Tell AI</title>
     <meta
       name="description"
@@ -113,15 +113,26 @@
         :root { --vh: 1svh; }
       }
       *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+      html {
+        /* Safari inflates type after first layout unless this is pinned, and a
+           1px horizontal overflow makes it zoom the page to fit, then snap
+           back — the index reading as everything scaling up once it "loads". */
+        -webkit-text-size-adjust: 100%;
+        text-size-adjust: 100%;
+        overflow-x: clip;
+      }
       body {
         background: #0a0a0a;
         color: var(--ink);
         font-family: var(--font-primary);
-        min-height: 100vh;
+        min-height: calc(100 * var(--vh, 1vh));
         -webkit-font-smoothing: antialiased;
         -moz-osx-font-smoothing: grayscale;
+        -webkit-text-size-adjust: 100%;
+        text-size-adjust: 100%;
+        overflow-x: clip;
       }
-      #root { min-height: 100vh; }
+      #root { min-height: calc(100 * var(--vh, 1vh)); }
       ::-webkit-scrollbar { display: none; }
     </style>
   </head>
