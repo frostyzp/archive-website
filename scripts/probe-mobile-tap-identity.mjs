@@ -152,16 +152,15 @@ for (const n of TAPS) {
     })()
   `);
 
+  // ONE tap. Sending the touch pair and then the mouse pair is two activations,
+  // not a more thorough one: the first opens the note and the second lands on
+  // the overlay that just opened under the finger, which reads back as a tap
+  // that opened nothing.
   await send('Input.dispatchTouchEvent', {
     type: 'touchStart',
     touchPoints: [{ x: pt.x, y: pt.y, id: 1 }],
   });
   await send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
-  for (const type of ['mousePressed', 'mouseReleased']) {
-    await send('Input.dispatchMouseEvent', {
-      type, x: pt.x, y: pt.y, button: 'left', clickCount: 1,
-    });
-  }
 
   // What opened. The overlay's biggest image is the note being previewed.
   const READ_OPEN = `

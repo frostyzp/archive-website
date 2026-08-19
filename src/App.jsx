@@ -48,7 +48,7 @@ import {
   CardNoiseFilterDefs,
   useInactiveCardParams,
 } from './noise';
-import { ACCENT, INK, inkA } from './colors';
+import { ACCENT, INK, inkA, WORDMARK_INK } from './colors';
 import { PaperTextureLayer, usePaperStockDials } from './PaperTexture';
 import { WordmarkDrawInline } from './WordmarkDraw';
 import { LINK_UNDERLINE, LINK_UNDERLINE_CSS, linkUnderlineRaised } from './linkUnderline';
@@ -204,6 +204,22 @@ const ARCHIVE_EDGE_WASH_Z = 150;
 
 /** One vertical rhythm for fixed title / view toggle / ABOUT. */
 const ARCHIVE_NAV_CHROME_HEIGHT = 40;
+
+/** Where the top chrome ends: it hangs at top: 24 and stands this tall. */
+const ARCHIVE_NAV_CHROME_BOTTOM = 24 + ARCHIVE_NAV_CHROME_HEIGHT;
+
+/**
+ * The first line anything docking under that chrome may start on.
+ *
+ * Everything that sits beneath the wordmark row used to carry its own idea of
+ * how far down that was, arrived at by eye and written as one number. The phone
+ * nav sheet cleared it by 28px; the phone filter bar, doing the same job for the
+ * same row, cleared it by 12 — close enough that the search field and the
+ * wordmark read as one crowded block, and close enough that anything rendering a
+ * few pixels taller than it does here closes the gap altogether. One number, so
+ * they cannot disagree about a row they are both measuring from.
+ */
+const ARCHIVE_UNDER_NAV_PAD = ARCHIVE_NAV_CHROME_BOTTOM + 28;
 
 /** Desktop grid filter rail geometry — shared by the index sidebar, About
  *  drawer tab top, and the INDEX / EXPLORE nav. Nav + the "N Confessions"
@@ -697,7 +713,7 @@ const NAV_SHEET = {
   // wordmark button's 12px padding, less each item's own 4px padding.
   padLeft: 16 + 12 - 4,
   // Clear of the bar, which stays visible on top of the sheet.
-  padTop: 24 + ARCHIVE_NAV_CHROME_HEIGHT + 28,
+  padTop: ARCHIVE_UNDER_NAV_PAD,
   // The rows carry their own padding and 24px type brings its own leading, so
   // there is no flex gap on top of that — the three of them read as one block.
   gap: 0,
@@ -2161,11 +2177,19 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false, onPeekLan
                 // Animated rather than set in `style` so the tab lights with the
                 // panel it belongs to instead of snapping ahead of the slide.
                 backgroundColor: isActive ? ABOUT_DRAWER.bg : ABOUT_DRAWER.idle,
-                // The accent the drawer already spends on called-out type, rather
-                // than a brighter grey: the tab is being offered, and the yellow
-                // is what the rest of the panel uses to say so.
+                // At rest a tab is set in the wordmark's own white. Closed, the
+                // ABOUT tab is one of exactly two permanent things in the frame
+                // and the other is the logo; at inkA(0.48) it read as a caption
+                // filed beside it rather than as the page's other way in. The
+                // separation between a filed tab and the open one is carried by
+                // the stock they are cut from — #1f1f1f against the panel's
+                // #2e2e2e — which is the difference that means something here.
+                //
+                // Reaching for one still lights it in the accent the drawer
+                // spends on called-out type: the tab is being offered, and the
+                // yellow is how the rest of the panel says so.
                 color:
-                  isActive ? '#fff' : invited || reached ? ACCENT_INK : inkA(0.48),
+                  isActive ? '#fff' : invited || reached ? ACCENT_INK : WORDMARK_INK,
               }}
               transition={{
                 duration: reduceMotion ? 0 : ABOUT_DRAWER.fadeS,
@@ -2299,8 +2323,16 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false, onPeekLan
             // at) while putting the copy back on exactly the inset it had, so the
             // mailing-list card can bleed out past the text without its dashed
             // edge being sliced off. Nothing here moves the reading column.
+            // The phone's foot is deep because the sheet's own bottom edge is
+            // not the bottom of what the reader can see. A fixed element pinned
+            // to `bottom: 0` on a phone is pinned to the layout viewport, and
+            // the browser's own toolbar sits over the last ~70–90px of that —
+            // so a foot of 72 put the closing line exactly where the address bar
+            // covers it, and the page appeared to end mid-sentence. `env()` adds
+            // the home indicator on top of that when the site runs without a
+            // toolbar to hide behind.
             padding: compact
-              ? `0 ${colBleedGutter}px 72px`
+              ? `0 ${colBleedGutter}px calc(120px + env(safe-area-inset-bottom, 0px))`
               : `0 ${colBleedGutter}px 48px`,
             marginInline: -colBleedGutter,
           }}
@@ -3259,7 +3291,7 @@ const DEPARTURE = {
 const RAIL_POSE = { scale: 12 / WHEEL.labelFont, track: '0.1em' };
 // Colour has to match `st.word` in NoteOpenView, since the overlay hands the
 // words back to the real dial at the end of the flight.
-const DIAL_POSE = { scale: 1, track: '0em', color: ACCENT };
+const DIAL_POSE = { scale: 1, track: '0em', color: inkA(0.85) };
 // Rows further from the arc's centre set off fractionally later, so the fan
 // opens and closes outward instead of every word moving as one block.
 const FLIGHT_STAGGER_S = 0.025;
@@ -4298,6 +4330,53 @@ const LatticeLine = memo(function LatticeLine({ line, text, endInset }) {
 });
 
 /**
+ * The footprint a note leaves while its image is still coming down the wire.
+ *
+ * It used to be a grey square: a filled panel at 8% ink, pulsing. On a sheet
+ * whose every rule is already drawn out of characters, a solid rectangle is the
+ * one shape on the page that isn't typed, and a row of them reads as the page
+ * having gone wrong rather than as the page not being finished. So the tile
+ * borrows the lattice's own device and draws its four edges in the same
+ * scrambled mono glyphs the hairlines are made of — the note's outline, in the
+ * hand the grid already writes in, with nothing inside it yet.
+ *
+ * The runs are long and clipped rather than counted, which is how the hairlines
+ * work too: a tile can be any size, and measuring each one to fit a character
+ * grid would cost a layout pass per note for a placeholder that is gone in a
+ * second. Seeded off the note's id so it doesn't reshuffle on every re-render.
+ */
+const TILE_FRAME_H_CHARS = 90;
+const TILE_FRAME_V_CHARS = 46;
+
+const TileAsciiFrame = memo(function TileAsciiFrame({ seed }) {
+  const runs = useMemo(
+    () => ({
+      top: latticeAscii(`${seed}-frame-t`, TILE_FRAME_H_CHARS),
+      bottom: latticeAscii(`${seed}-frame-b`, TILE_FRAME_H_CHARS),
+      left: latticeAscii(`${seed}-frame-l`, TILE_FRAME_V_CHARS).split('').join('\n'),
+      right: latticeAscii(`${seed}-frame-r`, TILE_FRAME_V_CHARS).split('').join('\n'),
+    }),
+    [seed]
+  );
+  return (
+    <span aria-hidden="true" className="grid-tile-ascii">
+      <span className="grid-tile-ascii-h" style={{ top: 0 }}>
+        {runs.top}
+      </span>
+      <span className="grid-tile-ascii-h" style={{ bottom: 0 }}>
+        {runs.bottom}
+      </span>
+      <span className="grid-tile-ascii-v" style={{ left: 0 }}>
+        {runs.left}
+      </span>
+      <span className="grid-tile-ascii-v" style={{ right: 0 }}>
+        {runs.right}
+      </span>
+    </span>
+  );
+});
+
+/**
  * The lattice layer — ASCII hairlines drawn on independently of the tiles. Each
  * line is a seeded scramble of mono glyphs pinned to a cell edge, and it types
  * itself on a character at a time in a shuffled order once the notes have
@@ -4932,7 +5011,9 @@ function GridView({
   // Seeded near the real measurement (76 top pad + a 35px control row + 20
   // bottom pad) so the first paint doesn't place the grid low and then snap it
   // up once the ResizeObserver reports.
-  const [barH, setBarH] = useState(131);
+  // Seeded at what the bar actually measures, so the grid below doesn't jump on
+  // the first frame: ARCHIVE_UNDER_NAV_PAD + the controls + 20px of bottom pad.
+  const [barH, setBarH] = useState(147);
   useLayoutEffect(() => {
     const el = barRef.current;
     if (!el) return;
@@ -5429,17 +5510,46 @@ function GridView({
           pointer-events: none;
         }
         .grid-tile { box-sizing: border-box; transition: filter 0.4s ${HOVER_EASE}; }
-        /* Loading skeleton — a faint warm fill that breathes until the note's
-           image has decoded (tiles load lazily). Inset to the image box so it
-           reads as the note materialising in place. */
-        .grid-tile-loading {
+        /* Loading placeholder — the note's outline typed in the lattice's own
+           glyphs until its image has decoded (tiles load lazily). Inset to the
+           image box, so what breathes there is the shape the note will take.
+           See TileAsciiFrame. */
+        .grid-tile-ascii {
           position: absolute;
           inset: ${TILE_PADDING}px;
-          border-radius: 2px;
-          background: rgba(207, 202, 183, 0.08);
+          overflow: hidden;
           animation: gridTilePulse 1.5s ${HOVER_EASE} infinite;
           pointer-events: none;
+          user-select: none;
           z-index: 0;
+        }
+        .grid-tile-ascii-h,
+        .grid-tile-ascii-v {
+          position: absolute;
+          display: block;
+          overflow: hidden;
+          font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+          font-size: 8px;
+          /* The hairlines' own ink, exactly — the frame is one of them. */
+          color: rgba(207, 202, 183, 0.32);
+          white-space: pre;
+        }
+        /* The horizontals run the full width and the verticals the full height;
+           each is clipped by the frame above rather than counted to fit. The
+           two axes carry the hairlines' own metrics, which differ: tracking on
+           the horizontal run, a tightened leading on the stacked one. */
+        .grid-tile-ascii-h {
+          left: 0;
+          right: 0;
+          line-height: 1;
+          letter-spacing: 0.06em;
+        }
+        .grid-tile-ascii-v {
+          top: 0;
+          bottom: 0;
+          width: 0.72em;
+          line-height: 0.92;
+          letter-spacing: 0;
         }
         @keyframes gridTilePulse {
           0%, 100% { opacity: 0.45; }
@@ -5579,7 +5689,7 @@ function GridView({
           .grid-tile-num, .grid-tile-cat { transition: none; }
           .grid-tile { transition: none; }
           .grid-tile img { transition: none; }
-          .grid-tile-loading { animation: none; }
+          .grid-tile-ascii { animation: none; }
         }
       `}</style>
 
@@ -5606,8 +5716,9 @@ function GridView({
           right: 0,
           zIndex: 6,
           pointerEvents: 'none',
-          // Top padding on mobile clears the fixed ABOUT row (top:24, ~40 tall).
-          padding: compact ? '76px 16px 20px' : '44px 24px 26px',
+          // Top padding on mobile clears the fixed wordmark / menu row, on the
+          // same measurement the nav sheet uses rather than its own.
+          padding: compact ? `${ARCHIVE_UNDER_NAV_PAD}px 16px 20px` : '44px 24px 26px',
           background: filterBarScrim(compact ? 'to bottom' : 'to top'),
         }}
       >
@@ -6267,7 +6378,7 @@ function GridView({
                   cursor: 'pointer',
                 }}
               >
-                {!loaded ? <span aria-hidden="true" className="grid-tile-loading" /> : null}
+                {!loaded ? <TileAsciiFrame seed={c.id} /> : null}
                 <img
                   src={c.image}
                   alt={`Note ${c.id}`}
@@ -6508,12 +6619,27 @@ function Lightbox({ confession, onClose, onPrev, onNext, onExplore }) {
     ...(themeBelow ? [] : [themeRow]),
   ];
 
+  // Set at the transcription's size rather than EXPLORE's 10px. This preview is
+  // one column of type — metadata, note, transcription, top to bottom — and the
+  // block above the image was running four points under the block below it,
+  // which read as a caption attached to the image rather than as the note's own
+  // record. EXPLORE keeps its smaller block: there the metadata is chrome around
+  // a carousel, not part of a single read.
+  const metaLabelStyle = {
+    ...NOTE_META_STYLE.label,
+    fontSize: TRANSCRIPTION_FONT_SIZE,
+  };
+  const metaValueStyle = {
+    ...NOTE_META_STYLE.value,
+    fontSize: TRANSCRIPTION_FONT_SIZE,
+  };
+
   // Shared so the THEME row is the same row wherever it lands — above the note
   // on desktop, below the transcription on a phone — including its link into
   // the category.
   const renderMetaRow = ([label, value, kind]) => (
     <div key={label} style={NOTE_META_STYLE.row}>
-      <span style={NOTE_META_STYLE.label}>{label}</span>
+      <span style={metaLabelStyle}>{label}</span>
       {kind === 'theme' && confession?.category && onExplore ? (
         <button
           type="button"
@@ -6530,10 +6656,10 @@ function Lightbox({ confession, onClose, onPrev, onNext, onExplore }) {
             textAlign: 'left',
           }}
         >
-          <span style={{ ...NOTE_META_STYLE.value, ...LINK_UNDERLINE }}>{value}</span>
+          <span style={{ ...metaValueStyle, ...LINK_UNDERLINE }}>{value}</span>
         </button>
       ) : (
-        <span style={NOTE_META_STYLE.value}>{value}</span>
+        <span style={metaValueStyle}>{value}</span>
       )}
     </div>
   );

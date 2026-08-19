@@ -97,6 +97,20 @@
         --font-mono: 'Courier New', Courier, monospace;
         --ink: #CFCAB7;
         --ink-rgb: 207, 202, 183;
+        /* One unit of viewport height that a phone can't overstate. `vh` on iOS
+           and Android measures the viewport with the browser's own chrome hidden,
+           so a layout that fills 100vh is taller than what you can actually see —
+           by around 15% on Safari. Anything sized in it (the note image on the
+           phone's EXPLORE stack, most of all) then grows past the space the fixed
+           chrome around it left, which is how the note ends up over its own DATE /
+           LOCATION block on a real handset and never in a desktop window. `svh`
+           is the smallest the viewport gets, i.e. chrome showing, so a layout
+           built on it fits at every point of the address bar's travel and doesn't
+           reflow as it slides. */
+        --vh: 1vh;
+      }
+      @supports (height: 1svh) {
+        :root { --vh: 1svh; }
       }
       *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
       body {

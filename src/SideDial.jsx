@@ -9,7 +9,7 @@ import {
 } from './noise.jsx';
 import { TRANSCRIPTION_TEXT } from './text';
 import { BASELINE_PROBE_STYLE, useTextDissolve } from './textDissolve';
-import { ACCENT, INK, INK_ON_GRAIN, accentA } from './colors';
+import { ACCENT, INK, accentA, inkA } from './colors';
 import { formatCategoryLabel } from './themes';
 import { CURSOR_FLOAT, cursorOffset, floatAngles } from './cursorFloat';
 
@@ -824,7 +824,17 @@ const V_INACTIVE_OPACITY = { near: 0.46, far: 0.14 };
 // rest are height-only spacers so scroll-snap geometry stays correct without
 // downloading/decoding every note in the category.
 const V_RENDER_WINDOW = 2;
+// Past this many notes, a programmatic move stops being a scroll worth watching
+// and becomes a wait. Inside it the stack glides the whole way; beyond it, it
+// cuts to one note short and glides the rest (see the effect that uses this).
+// Held at the render window's own reach, so the note the glide starts from is
+// always one that is actually mounted.
+const V_LONG_JUMP_ITEMS = 4;
 const V_SCROLL_SETTLE_MS = 150;
+// How long one note takes to hand over to the next in the static reader. Long
+// enough to read as a change of note rather than a redraw, short enough that a
+// run of ˅ presses doesn't queue up behind itself.
+const READER_STEP_S = 0.22;
 // Lines of transcript shown on a phone before the rest is scrolled to. The
 // column hangs below the note with the bottom chrome underneath it, so the
 // desktop cap (~6 lines) let a long confession run down into the category
@@ -838,7 +848,12 @@ const V_TRANSCRIPT_LINES = 3;
 // be the thing that yields. Without this term it held its 44vh and pushed the
 // metadata up under the wordmark.
 const V_MOBILE_CHROME_PX = 400;
-const V_IMAGE_HEIGHT = `min(${CARD_HEIGHT_VH_MOBILE}vh, ${CARD_HEIGHT_MAX}px, calc(100vh - ${V_MOBILE_CHROME_PX}px))`;
+// In `--vh`, not `vh` — see the note on the variable in index.html. This is the
+// height a phone's browser chrome overlaps, so measuring it in the taller unit
+// is what puts the note on top of its own metadata on a handset.
+const V_IMAGE_HEIGHT =
+  `min(calc(${CARD_HEIGHT_VH_MOBILE} * var(--vh, 1vh)), ${CARD_HEIGHT_MAX}px, ` +
+  `calc(100 * var(--vh, 1vh) - ${V_MOBILE_CHROME_PX}px))`;
 
 const HOVER_EASE = 'cubic-bezier(0.17, 0.84, 0.44, 1)';
 
@@ -1065,7 +1080,12 @@ const dialNavHintStyles = {
     letterSpacing: '0.16em',
     lineHeight: 1,
     textTransform: 'uppercase',
-    color: INK_ON_GRAIN,
+    // The transcript's ink, same as the category dial. This used to be near-pure
+    // white, to keep the grain from eating type this fine, which left the legend
+    // as the only cold thing on a warm page and reading brighter than the
+    // confession it sits above. The caption isn't grained — only the arrow
+    // glyphs are — so it can wear the parchment without the compensation.
+    color: inkA(0.85),
     paddingLeft: 1,
   },
   key: {
@@ -1093,13 +1113,18 @@ const dialNavHintStyles = {
   },
   keyGlyph: {
     // ESC / ← / → / ↑ / ↓ as plain Courier glyphs so the legend reads as
-    // monospaced text rather than drawn icons. Off the INK ladder on purpose —
-    // see INK_ON_GRAIN for why type this fine can't wear the parchment.
+    // monospaced text rather than drawn icons.
+    //
+    // On the transcript's ink with its caption. These are the pieces that are
+    // actually grained (see NAV_GRAIN), which is what the old near-white was
+    // compensating for — but they are also 12–17px and sitting in a lit box, so
+    // there is enough stroke here to survive the filter. Worth a look if the
+    // grain is ever turned up: this is the first type that will go to mush.
     fontFamily: COURIER,
     fontSize: 12,
     letterSpacing: '0.04em',
     lineHeight: 1,
-    color: INK_ON_GRAIN,
+    color: inkA(0.85),
   },
   keyGlyphArrow: {
     // Stepped up off the ESC size: a lone arrow sitting in the same key box
@@ -2794,6 +2819,85 @@ function TranscriptReveal({ text, reduceMotion, instantWords = false, maxLines }
  *  parks a note somewhere the detector then reads as off-centre. */
 const vCenterY = (top, clientHeight) => top + clientHeight / 2 + V_CENTER_OFFSET;
 
+/**
+ * One note, held still: DATE / LOCATION, the image, the transcript. No scroller,
+ * no neighbours, no snap — the note you asked for is the note that is there, and
+ * it changes only when you press a chevron.
+ *
+ * This is what the phone shows when a note is opened from the INDEX. The
+ * vertical carousel above is right for EXPLORE, where the frame is a category
+ * and swiping through its notes is the point. From the index it was answering a
+ * different question: you tap one note out of a hundred and sixty-five, and what
+ * arrives is a scroller parked — approximately, from a stack that is mostly
+ * unmounted spacers at the moment it has to aim — at the note you tapped, with
+ * its neighbours peeking above and below. Every part of that is a chance to show
+ * the wrong note, and the reader has no way to tell a mis-aim from a design.
+ *
+ * Stepping is a crossfade rather than a scroll for the same reason: there is no
+ * list on screen to move, so nothing should look like it is moving through one.
+ */
+export function StaticNoteReader({ confession, reduceMotion = false, stepKey }) {
+  const inactive = useInactiveCardParams();
+  const noiseEnabled = inactive.noise?.enabled ?? true;
+  const grainOnlyFilter = noiseEnabled ? `url(#${CARD_FILTER_ID})` : 'none';
+  const noiseParams = useMemo(
+    () => ({ ...inactive, noise: { ...(inactive.noise ?? {}), animate: false } }),
+    [inactive]
+  );
+  // The grain filter is expensive to raster and the note arrives under a fade,
+  // so it is held off until the note has landed — same bargain the carousel
+  // makes on every note change.
+  const [grainHeld, setGrainHeld] = useState(true);
+  useLayoutEffect(() => {
+    setGrainHeld(true);
+    const t = setTimeout(() => setGrainHeld(false), GRAIN_HOLD_MS);
+    return () => clearTimeout(t);
+  }, [confession?.id]);
+
+  if (!confession) return null;
+
+  return (
+    <div style={st.readerFrame}>
+      <CardNoiseFilterDefs params={noiseParams} />
+      <AnimatePresence mode="wait">
+        <motion.div
+          key={stepKey ?? confession.id}
+          initial={reduceMotion ? false : { opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: reduceMotion ? 0 : READER_STEP_S, ease: EASE_OUT }}
+          style={st.readerColumn}
+        >
+          <NoteMeta confession={confession} reduceMotion={reduceMotion} />
+          <div style={{ ...st.cardImageBox, height: V_IMAGE_HEIGHT, flex: '0 0 auto' }}>
+            <img
+              src={confession.image}
+              alt={`Confession ${confession.id}`}
+              draggable={false}
+              decoding="async"
+              style={{
+                ...st.cardImg,
+                filter: grainHeld ? 'none' : grainOnlyFilter,
+              }}
+            />
+          </div>
+          {confession.transcription ? (
+            <div style={st.readerTranscript} aria-live="polite">
+              <TranscriptReveal
+                key={confession.id}
+                text={confession.transcription}
+                reduceMotion={reduceMotion}
+                instantWords
+                maxLines={V_TRANSCRIPT_LINES}
+              />
+            </div>
+          ) : null}
+        </motion.div>
+      </AnimatePresence>
+    </div>
+  );
+}
+
 export function VerticalConfessionStack({
   confessions,
   activeIndex,
@@ -2901,10 +3005,34 @@ export function VerticalConfessionStack({
       return;
     }
     if (!hasInitialScrolledRef.current) return;
-    const dist = Math.abs(activeIndex - lastScrolledIndexRef.current);
+    const from = lastScrolledIndexRef.current;
+    const dist = Math.abs(activeIndex - from);
     lastScrolledIndexRef.current = activeIndex;
-    const behavior = reduceMotion || dist > 4 ? 'auto' : 'smooth';
-    scrollItemToCenter(activeIndex, behavior);
+    if (reduceMotion) {
+      scrollItemToCenter(activeIndex, 'auto');
+      return;
+    }
+    if (dist <= V_LONG_JUMP_ITEMS) {
+      scrollItemToCenter(activeIndex, 'smooth');
+      return;
+    }
+    // A long jump — which on EXPLORE is every category change, because the
+    // stack is the whole archive clustered by theme and the next theme's first
+    // note can be twenty notes away. Scrolling that literally would drag the
+    // reader through twenty unrelated confessions to answer a tap on ›, and
+    // most of them are unmounted spacers, so what they would actually see is a
+    // long stretch of empty boxes. Cutting straight there instead is what it
+    // used to do, and reads as the screen replacing itself.
+    //
+    // So: cut most of the way in one frame, landing one note short of the
+    // target, then scroll the last note's worth. The distance is short enough
+    // that the note either side is already mounted, and what the reader sees is
+    // the stack arriving at the new note rather than being swapped for it.
+    const approach = activeIndex + (activeIndex > from ? -1 : 1);
+    scrollItemToCenter(approach, 'auto');
+    // Next frame, so the cut has landed and the arrival is a separate move
+    // rather than being folded into it by the browser.
+    requestAnimationFrame(() => scrollItemToCenter(activeIndex, 'smooth'));
   }, [activeIndex, reduceMotion, scrollItemToCenter]);
 
   const detectCenteredIndex = useCallback(() => {
@@ -3178,8 +3306,8 @@ const st = {
     gap: V_STACK_GAP,
     // Headroom so the first / last note can reach the resting position — the
     // centre shifted down by V_CENTER_OFFSET, hence the ± on each end.
-    paddingTop: `calc(${V_STACK_PAD_VH}vh + ${V_CENTER_OFFSET}px)`,
-    paddingBottom: `calc(${V_STACK_PAD_VH}vh - ${V_CENTER_OFFSET}px)`,
+    paddingTop: `calc(${V_STACK_PAD_VH} * var(--vh, 1vh) + ${V_CENTER_OFFSET}px)`,
+    paddingBottom: `calc(${V_STACK_PAD_VH} * var(--vh, 1vh) - ${V_CENTER_OFFSET}px)`,
     overflowY: 'auto',
     overflowX: 'hidden',
     // Native snap: each note settles to centre after a swipe. Mandatory rather
@@ -3227,6 +3355,33 @@ const st = {
   // during the gesture and is why a swipe so often landed off-centre. Out of
   // flow, every item is exactly the image box, so nothing reflows while
   // scrolling and the snap points hold still.
+  // ── Static note reader (phone, opened from the index) ──────
+  // A plain centred column in the space it was given. Nothing here scrolls: the
+  // note is sized to fit the band, and the transcript is capped to the same
+  // three lines the carousel caps to, with the rest behind its own fade.
+  readerFrame: {
+    position: 'relative',
+    width: '100%',
+    height: '100%',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    fontFamily: COURIER,
+  },
+  readerColumn: {
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: 'min(86vw, 430px)',
+    gap: 14,
+  },
+  readerTranscript: {
+    width: '100%',
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+  },
   vMetaBlock: {
     position: 'absolute',
     top: '100%',

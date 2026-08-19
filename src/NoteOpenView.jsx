@@ -16,9 +16,15 @@ import {
 import { TunableGrainBackground } from './noise';
 import { NOISE_GRADIENT } from './NoiseGradient';
 import { NoiseDisplaceFilter } from './NoiseDisplaceFilter';
-import { HorizontalConfessionStack, VerticalConfessionStack, DialNavHint, NavGrainFilter } from './SideDial';
+import {
+  HorizontalConfessionStack,
+  VerticalConfessionStack,
+  StaticNoteReader,
+  DialNavHint,
+  NavGrainFilter,
+} from './SideDial';
 import { themeStats, sortConfessionsByEmotions, formatCategoryLabel } from './themes';
-import { ACCENT, INK, inkA } from './colors';
+import { INK, inkA } from './colors';
 import { LINK_UNDERLINE } from './linkUnderline';
 
 /* ─────────────────────────────────────────────────────────
@@ -648,8 +654,20 @@ function MobileThemeCaption({ label, position, total, reduceMotion }) {
   };
   return (
     <div style={st.mCounterWrap}>
-      <AnimatePresence mode="wait">
-        <motion.div key={`${label}-${position}`} {...fade} style={st.mCounter}>
+      {/* The two numbers cross INSIDE each other rather than taking turns.
+          Under mode="wait" the outgoing count had to finish leaving before the
+          incoming one was allowed to start, which put a hole in the middle of
+          every change: 0.4s out, 0.4s back, and for most of the second between
+          them there was no count on screen at all. Every moment you would want
+          to read it — mid-swipe, or stepping to another category — is inside
+          that hole. Stacked absolutely in a fixed-height slot, one comes up as
+          the other goes, and the number is never not there. */}
+      <AnimatePresence initial={false}>
+        <motion.div
+          key={`${label}-${position}`}
+          {...fade}
+          style={{ ...st.mCounter, position: 'absolute' }}
+        >
           {String(position).padStart(2, '0')}/{String(total).padStart(2, '0')}
         </motion.div>
       </AnimatePresence>
@@ -1280,11 +1298,19 @@ export default function NoteOpenView({
         }}
         style={{
           ...st.stageArea,
-          ...(isMobile && standalone ? st.stageAreaDocked : null),
+          ...(isMobile ? (standalone ? st.stageAreaDocked : st.stageAreaReader) : null),
           pointerEvents: revealed && !introOpen ? 'auto' : 'none',
         }}
       >
-        {isMobile ? (
+        {isMobile && !standalone ? (
+          // Opened from the index: one note, held still. See StaticNoteReader
+          // for why the phone doesn't get the carousel here.
+          <StaticNoteReader
+            confession={themed[activeIndex]}
+            reduceMotion={reduceMotion}
+            stepKey={activeIndex}
+          />
+        ) : isMobile ? (
           <VerticalConfessionStack
             confessions={themed}
             activeIndex={activeIndex}
@@ -1319,7 +1345,12 @@ export default function NoteOpenView({
       {/* Dark edge gradients so notes dissolve into black at the edges they
           slide toward: left/right on desktop's horizontal strip, top/bottom on
           the mobile vertical carousel (matching where prev/next peek). */}
-      <div aria-hidden="true" style={isMobile ? st.edgeVignetteV : st.edgeVignette} />
+      {/* Nothing to fade out on the phone's index reader — it shows one note
+          with no neighbours travelling past the edges, so the vignette would
+          only be dimming the top of its own metadata. */}
+      {isMobile && !standalone ? null : (
+        <div aria-hidden="true" style={isMobile ? st.edgeVignetteV : st.edgeVignette} />
+      )}
 
       {/* First look — see EXPLORE_INTRO. Waits on the flight landing, so it
           doesn't fade up over the categories still travelling to the wheel.
@@ -1686,9 +1717,54 @@ const M_DOCK = {
   // Scaled rather than fixed: 76px is right on a tall phone and is what a tall
   // phone still gets (9vh reaches it at 844), but on a 667px screen the same
   // 76px is a tenth of the display spent on nothing, taken from the note above.
-  padBottom: 'clamp(28px, 9vh, 76px)',
+  padBottom: 'clamp(28px, calc(9 * var(--vh, 1vh)), 76px)',
 };
 const M_DOCK_H = `calc(${M_DOCK.stepperH + M_DOCK.gap + M_DOCK.counterH}px + ${M_DOCK.padBottom})`;
+
+/* ── Edge fade ─────────────────────────────────────────────
+ *
+ * The dark run-out at the top and bottom of the phone's EXPLORE stack, where
+ * the previous and next notes slide away.
+ *
+ * Written as a curve rather than a list of stops because the list is what kept
+ * reading as a band. A gradient between two alphas is a straight line in alpha,
+ * and a straight line on a near-black field is the one shape the eye finds an
+ * edge in — it sees the corners where the ramp starts and stops, and calls the
+ * span between them a stripe. Adding a few stops by hand moves those corners
+ * around without removing them.
+ *
+ * So: no flat lip and no corner at either end. Alpha leaves the edge already
+ * falling, at (1 - t)² of its peak, and arrives at nothing with the slope
+ * already near zero — the far end of a square law is a long tail, and a long
+ * tail has nowhere to put an edge. Sampled finely enough that the steps between
+ * samples land under the 1/255 the display can show anyway.
+ */
+const EDGE_FADE = {
+  peak: 0.92, //   alpha at the very edge of the screen
+  runPct: 26, //   how far in, as a % of the axis, it takes to reach nothing
+  power: 2, //     shape of the falloff; 1 is the straight ramp that banded
+  samples: 10, //  stops written per edge
+};
+
+/** The stops for one edge, as `rgba(...) N%` strings, edge → inward. */
+const edgeFadeStops = (from) =>
+  Array.from({ length: EDGE_FADE.samples }, (_, i) => {
+    const t = i / (EDGE_FADE.samples - 1);
+    const alpha = EDGE_FADE.peak * (1 - t) ** EDGE_FADE.power;
+    const pct = EDGE_FADE.runPct * t;
+    const at = from === 'start' ? pct : 100 - pct;
+    return { alpha: Math.round(alpha * 1000) / 1000, at: Math.round(at * 10) / 10 };
+  });
+
+const edgeFadeGradient = (direction) => {
+  const stops = [
+    ...edgeFadeStops('start'),
+    ...edgeFadeStops('end').reverse(),
+  ].map((s) => `rgba(0,0,0,${s.alpha}) ${s.at}%`);
+  return `linear-gradient(${direction}, ${stops.join(', ')})`;
+};
+
+const edgeFadeV = edgeFadeGradient('to bottom');
 
 /* The band the app's own chrome holds across the top of this tab — the wordmark
    and the menu button, which sit outside this view and paint above it. Mirrors
@@ -1781,6 +1857,15 @@ const st = {
     top: M_NAV_BAND,
     bottom: M_DOCK_H,
   },
+  // The grid-tap overlay's own band on a phone. Its chrome is the BACK / ˄ row
+  // at the top and the ˅ at the bottom, both at the same inset; the note is
+  // centred between them. The carousel didn't need this — its notes run under
+  // the chrome by design, that being what a peeking neighbour is — but the
+  // static reader is one note that has to sit clear of both.
+  stageAreaReader: {
+    top: M_NAV_ROW_TOP + M_NAV_BTN,
+    bottom: `calc(${M_NAV_ROW_BOTTOM} + ${M_NAV_BTN}px)`,
+  },
   edgeVignette: {
     position: 'absolute',
     inset: 0,
@@ -1796,27 +1881,7 @@ const st = {
     inset: 0,
     zIndex: 5,
     pointerEvents: 'none',
-    // Run out over the outer ~18%, in the horizontal vignette's proportions
-    // (0.92 at the lip, half gone by a third of the way, clear by 22%) so the
-    // phone's frame is edged like the desktop one rather than in its own idiom.
-    //
-    // It used to clear inside 5%, which on a tall phone is 44px — 0.9 of black
-    // to nothing across less than an inch. That is a gradient by construction
-    // and a flat band to look at: what you read is a dark stripe with an edge on
-    // it, and the edge lands wherever 5% happens to fall rather than anywhere
-    // the layout cares about. The short version was protecting the peeking
-    // prev / next notes, which is a real concern on the grid-tap overlay where
-    // the stack runs the full height — but the EXPLORE tab now insets its stage
-    // between the nav band and the dock, so the outer fifth is chrome and air
-    // that no note reaches into.
-    //
-    // Stopped four times on the way rather than once: a straight ramp between
-    // two alphas bands visibly on a near-black field, and the middle stops are
-    // what let it read as falling off instead of as a wedge.
-    background:
-      'linear-gradient(to bottom, ' +
-      'rgba(0,0,0,0.92) 0%, rgba(0,0,0,0.62) 4%, rgba(0,0,0,0.3) 9%, rgba(0,0,0,0.09) 14%, rgba(0,0,0,0) 18%, ' +
-      'rgba(0,0,0,0) 82%, rgba(0,0,0,0.09) 86%, rgba(0,0,0,0.3) 91%, rgba(0,0,0,0.62) 96%, rgba(0,0,0,0.92) 100%)',
+    background: edgeFadeV,
   },
 
   // Shared-element bridge image. Fixed to the viewport; box + transform written
@@ -1981,13 +2046,18 @@ const st = {
     fontFamily: MONO,
     fontSize: WHEEL.labelFont,
     lineHeight: 1,
-    // Every label on the wheel is the accent; the arc's own opacity ramp is what
-    // separates the active one from its neighbours, so this doesn't need a
-    // second colour for the lit slot. Sat above INK rather than on it because
-    // the wheel is the one piece of type the eye is meant to track while it
-    // spins — see DIAL_POSE in App.jsx, which has to carry the same value or
-    // the words change colour halfway through the flight to the rail.
-    color: ACCENT,
+    // The transcript's ink. Every label on the wheel carries it; the arc's own
+    // opacity ramp is what separates the active one from its neighbours, so this
+    // doesn't need a second colour for the lit slot.
+    //
+    // It sat on ACCENT, which put the loudest colour on the page on the label
+    // rather than on the confession the label is only a way into. Matching the
+    // transcript makes the two read as one voice, and leaves the accent to the
+    // metadata that genuinely wants to be picked out.
+    //
+    // DIAL_POSE in App.jsx has to carry the same value, or the words change
+    // colour halfway through the flight to the rail.
+    color: inkA(0.85),
     whiteSpace: 'nowrap',
     // Categories render all-caps to match the dial + wordmark style elsewhere.
     textTransform: 'uppercase',
@@ -1996,8 +2066,12 @@ const st = {
   // "03 / 06" category position, sat above the active wordmark. Shares the
   // wheel's baseX so it stays centred over the active label (which parks at the
   // slot anchor, since wheelSlot(0) is a zero translate), then lifts clear of the
-  // labelFont-tall word plus a little breathing room. Smaller than the bottom note
-  // counter — it's an orienting detail, not the headline.
+  // labelFont-tall word plus a little breathing room.
+  //
+  // Set at the bottom note counter's size, not under it. The two are the same
+  // kind of thing said about two different axes — where you are in the themes,
+  // where you are in this theme — and running one a size down implied a rank
+  // between them that isn't there.
   dialCatCount: {
     position: 'absolute',
     left: WHEEL.baseX,
@@ -2006,7 +2080,7 @@ const st = {
     zIndex: 3,
     pointerEvents: 'none',
     fontFamily: '"Courier New", Courier, var(--font-mono, ui-monospace, monospace)',
-    fontSize: 11,
+    fontSize: 14,
     letterSpacing: '0.14em',
     fontVariantNumeric: 'tabular-nums',
     whiteSpace: 'nowrap',
@@ -2056,9 +2130,13 @@ const st = {
   },
 
   // ── Mobile theme caption ──────────────────────────────────
-  // The NN/MM note counter, second row of the dock.
+  // The NN/MM note counter, second row of the dock. Positioned, because the
+  // outgoing and incoming counts overlap during a change and are stacked on top
+  // of each other here rather than queued (see MobileThemeCaption).
   mCounterWrap: {
+    position: 'relative',
     flex: '0 0 auto',
+    alignSelf: 'stretch',
     height: M_DOCK.counterH,
     display: 'flex',
     alignItems: 'center',

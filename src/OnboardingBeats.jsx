@@ -1168,7 +1168,14 @@ export default function OnboardingBeats({
           closing beat: that beat carries the archive's own way in, and two
           entrances at once makes the reader choose at the moment the piece is
           trying to land. Faded rather than unmounted so it returns if you
-          swipe back, and hidden from the pointer and tab order while gone. */}
+          swipe back, and hidden from the pointer and tab order while gone.
+
+          It also waits for the title to finish writing itself on. An offer to
+          skip that is already sitting there while the wordmark is still being
+          drawn asks whether this is worth watching before there is anything to
+          watch — and it is the only fixed, fully-lit thing on screen during the
+          draw, so it takes the eye to the corner at exactly the moment the
+          middle of the frame is doing the work. */}
       <motion.a
         className="onboarding-cta"
         href="/?view=grid"
@@ -1176,10 +1183,10 @@ export default function OnboardingBeats({
           e.preventDefault();
           onEnter();
         }}
-        aria-hidden={atClosing}
-        tabIndex={atClosing ? -1 : 0}
+        aria-hidden={atClosing || !heroTitleRevealed}
+        tabIndex={atClosing || !heroTitleRevealed ? -1 : 0}
         initial={false}
-        animate={{ opacity: atClosing ? 0 : 1 }}
+        animate={{ opacity: atClosing || !heroTitleRevealed ? 0 : 1 }}
         transition={{ duration: reduce ? 0 : 0.4, ease }}
         style={{
           position: 'absolute',
@@ -1199,7 +1206,7 @@ export default function OnboardingBeats({
           textTransform: 'uppercase',
           lineHeight: 1,
           textDecoration: 'none',
-          pointerEvents: atClosing ? 'none' : 'auto',
+          pointerEvents: atClosing || !heroTitleRevealed ? 'none' : 'auto',
         }}
       >
         <span style={ONBOARDING_LINK_UNDERLINE}>Skip Intro</span>
