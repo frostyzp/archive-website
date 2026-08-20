@@ -1132,7 +1132,7 @@ const ABOUT_RESOURCES = [
     bg: '#EDC5C5',
     items: [
       {
-        title: 'Cyborg Psychology, MIT Media Lab',
+        title: 'Cyborg Psychology',
         detail: 'Pat Pataranutaporn & Pattie Maes',
         href: 'https://www.media.mit.edu/groups/cyborg-psychology/overview/',
       },
@@ -1178,6 +1178,18 @@ const ABOUT_RESOURCES = [
     ],
   },
   {
+    id: 'books',
+    heading: 'Books',
+    bg: '#E5D4B8',
+    items: [
+      {
+        title: 'Artificial Intimacy: Who We Become When We Talk to Machines (2026)',
+        detail: 'Sherry Turkle',
+        href: 'https://www.sherryturkle.com/the-author',
+      },
+    ],
+  },
+  {
     id: 'journalism',
     heading: 'Journalism & essays',
     bg: '#D5E0C4',
@@ -1207,7 +1219,7 @@ const ABOUT_RESOURCES = [
       {
         title: 'Olivia Is Curious',
         detail: 'Field notes on cyborg psychology.',
-        href: 'https://oliviaiscurious.substack.com/',
+        href: 'https://oliviatai.com',
       },
       {
         title: 'The research jungle behind this work',
@@ -2069,8 +2081,8 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false, onPeekLan
         {
           key: 'email',
           label: 'Email',
-          value: 'hello@whatwetellai.com',
-          href: 'mailto:hello@whatwetellai.com',
+          value: 'Olivia@syntheticwisdom.io',
+          href: 'mailto:Olivia@syntheticwisdom.io',
           last: true,
         },
       ].map((row) => (
