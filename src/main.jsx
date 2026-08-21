@@ -1,5 +1,6 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
+import { Analytics } from '@vercel/analytics/react';
 import { DialRoot } from 'dialkit';
 import 'dialkit/styles.css';
 import App from './App';
@@ -31,6 +32,7 @@ const showDial = new URLSearchParams(window.location.search).get('dial') === '1'
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
     <Root />
+    <Analytics />
     {showDial && <DialRoot position="top-right" />}
   </React.StrictMode>
 );
