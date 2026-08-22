@@ -1759,7 +1759,7 @@ function AboutModal({ open, onOpen, onClose, skipPeekEntrance = false, onPeekLan
           value: (
             <a
               className="about-credit-link"
-              href="https://oliviaiscurious.substack.com/"
+              href="http://oliviatai.com/"
               target="_blank"
               rel="noopener noreferrer"
               style={creditCardValueStyle}
