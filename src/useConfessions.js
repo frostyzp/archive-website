@@ -49,6 +49,14 @@ async function imageExists(url) {
  * in small concurrent batches so we don't fire hundreds of requests at once.
  */
 async function keepConfessionsWithImages(confessions, isCancelled) {
+  // Production is a static host: missing files 404 and the grid already
+  // drops them on <img onError>. HEAD-probing every note on every visit
+  // was ~350 extra Edge Requests per pageview — that is what ran the
+  // Vercel bill (tens of millions of requests a day, two observability
+  // events each). Vite's SPA fallback still needs the probe in dev.
+  if (import.meta.env.PROD) {
+    return confessions.filter((c) => c.image);
+  }
   const kept = [];
   for (let i = 0; i < confessions.length; i += IMG_PROBE_CONCURRENCY) {
     if (isCancelled()) return kept;
