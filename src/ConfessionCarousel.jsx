@@ -114,7 +114,7 @@ export function ConfessionCarousel({ confessions, activeIndex, onActiveChange })
               }}
             >
               <img
-                src={confession.image}
+                src={confession.thumb || confession.image}
                 alt={`Confession ${confession.id}`}
                 draggable={false}
                 loading="lazy"

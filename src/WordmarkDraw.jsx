@@ -32,7 +32,7 @@ import { WORDMARK_STROKES, WORDMARK_VIEWBOX } from './wordmarkStrokes';
  * anywhere else without touching a neighbour.
  */
 
-const SRC = '/wwtai_2.svg';
+const SRC = '/wwtai_2.min.svg';
 
 /* The flat art, shown if the vector can't be fetched. It is the same lockup
    baked to a small transparent PNG, so a failed fetch costs the write-on rather
@@ -187,7 +187,11 @@ async function loadPathData() {
   const res = await fetch(SRC);
   if (!res.ok) throw new Error(`wordmark ${res.status}`);
   const text = await res.text();
-  dCache = [...text.matchAll(/<path[^>]*\sd="([^"]*)"/g)].map((m) => m[1]);
+  const paths = [...text.matchAll(/<path[^>]*\sd="([^"]*)"/g)].map((m) => m[1]);
+  if (paths.length < WORDMARK_STROKES.length) {
+    throw new Error(`wordmark expected ${WORDMARK_STROKES.length} paths, got ${paths.length}`);
+  }
+  dCache = paths;
   return dCache;
 }
 
@@ -388,7 +392,7 @@ function WordmarkDrawRun({ hold, onRevealComplete, reduceMotion, config, heightP
   const [paths, setPaths] = useState(dCache);
   const [failed, setFailed] = useState(false);
   useEffect(() => {
-    if (paths) return undefined;
+    if (paths || !inView) return undefined;
     let alive = true;
     loadPathData().then(
       (d) => alive && setPaths(d),
@@ -397,7 +401,7 @@ function WordmarkDrawRun({ hold, onRevealComplete, reduceMotion, config, heightP
     return () => {
       alive = false;
     };
-  }, [paths]);
+  }, [paths, inView]);
 
   const run = inView && !hold && !!paths;
 

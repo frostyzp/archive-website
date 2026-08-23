@@ -12,6 +12,7 @@ import { BASELINE_PROBE_STYLE, useTextDissolve } from './textDissolve';
 import { ACCENT, INK, accentA, inkA } from './colors';
 import { formatCategoryLabel } from './themes';
 import { CURSOR_FLOAT, cursorOffset, floatAngles } from './cursorFloat';
+import { noteThumbSrc } from './noteImages';
 
 export const EMOTIONS = [
   { id: 'therapist', label: 'Therapist', gradient: 'linear-gradient(to left, #2a1a4a, #111 70%)' },
@@ -1269,39 +1270,20 @@ export function HorizontalConfessionStack({
   // contain, width capped at min(84vw, 560px), then the active scale + the same
   // 0.8 inset `contentW` uses.
   const [maxContentW, setMaxContentW] = useState(null);
-  const noteDimsRef = useRef(new Map());
   useEffect(() => {
     if (typeof window === 'undefined' || !confessions?.length) return undefined;
     let cancelled = false;
-    const dims = noteDimsRef.current;
     const recompute = () => {
       if (cancelled) return;
-      const boxH = Math.min(
-        window.innerHeight * (CARD_HEIGHT_VH / 100),
-        CARD_HEIGHT_MAX
-      );
       const boxMaxW = Math.min(
         window.innerWidth * (CARD_WIDTH_VW / 100),
         CARD_WIDTH_MAX
       );
-      let widest = 0;
-      confessions.forEach((c) => {
-        const d = c.image && dims.get(c.image);
-        if (!d || !d.w || !d.h) return;
-        const layoutW = Math.min(boxH * (d.w / d.h), boxMaxW);
-        if (layoutW > widest) widest = layoutW;
-      });
-      if (widest > 0) setMaxContentW(Math.round(widest * ACTIVE_IMG_SCALE * 0.8));
+      // A displayed note cannot exceed the box cap. Using that (instead of
+      // loading every scan to find the widest aspect) keeps EXPLORE from
+      // downloading the whole archive on open.
+      setMaxContentW(Math.round(boxMaxW * ACTIVE_IMG_SCALE * 0.8));
     };
-    confessions.forEach((c) => {
-      if (!c.image || dims.has(c.image)) return;
-      const img = new Image();
-      img.onload = () => {
-        dims.set(c.image, { w: img.naturalWidth, h: img.naturalHeight });
-        recompute();
-      };
-      img.src = c.image;
-    });
     recompute();
     window.addEventListener('resize', recompute);
     return () => {
@@ -2248,23 +2230,16 @@ export function HorizontalConfessionStack({
                   : undefined
               }
             >
+              {ringDist <= 4 ? (
               <img
                 ref={
                   isActive && item.copy === MIDDLE_COPY
                     ? measureActiveImg
                     : undefined
                 }
-                src={item.confession.image}
+                src={noteThumbSrc(item.confession)}
                 alt={`Confession ${item.confession.id}`}
                 draggable={false}
-                // Off the raster path, like the grid's tiles and the vertical
-                // stack's cards. The strip carries COPY_COUNT × every note for
-                // the infinite scroll, so a synchronous decode here is paid on
-                // the frame the view is trying to appear on. (Not `lazy`: the
-                // cards take their width from the image's intrinsic size, and
-                // `allImagesResolved` gates the coverflow's geometry on every
-                // image having loaded — an unloaded neighbour collapses the
-                // strip and the stride math with it.)
                 decoding="async"
                 style={{
                   ...st.cardImg,
@@ -2284,6 +2259,16 @@ export function HorizontalConfessionStack({
                     : inactiveFilter || 'none',
                 }}
               />
+              ) : (
+              <div
+                aria-hidden
+                style={{
+                  height: '100%',
+                  width: maxContentW || 280,
+                  flexShrink: 0,
+                }}
+              />
+              )}
             </div>
 
             {isActive &&
@@ -2892,7 +2877,7 @@ export function StaticNoteReader({ confession, reduceMotion = false, stepKey }) 
           <NoteMeta confession={confession} reduceMotion={reduceMotion} />
           <div style={{ ...st.cardImageBox, height: V_IMAGE_HEIGHT, flex: '0 0 auto' }}>
             <img
-              src={confession.image}
+              src={noteThumbSrc(confession)}
               alt={`Confession ${confession.id}`}
               draggable={false}
               decoding="async"
@@ -3286,7 +3271,7 @@ export function VerticalConfessionStack({
             >
               {inWindow ? (
                 <img
-                  src={c.image}
+                  src={noteThumbSrc(c)}
                   alt={`Confession ${c.id}`}
                   draggable={false}
                   loading={eagerImage ? 'eager' : 'lazy'}

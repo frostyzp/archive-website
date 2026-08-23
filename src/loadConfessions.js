@@ -1,4 +1,5 @@
 import Papa from 'papaparse';
+import { noteImageUrl } from './noteImages';
 import { HIDDEN_THEMES } from './themes';
 
 /**
@@ -8,9 +9,8 @@ import { HIDDEN_THEMES } from './themes';
 const CSV_URL =
   'https://docs.google.com/spreadsheets/d/e/2PACX-1vSWmqlXlkSkmqTYF3c7dkvdK0fPHE4TESolAwBqtjeXzC0nb57tuOHjNCRV5w2kAHNpemTzUHunrpDJ/pub?gid=1216878281&single=true&output=csv';
 
-/** Public folder `public/confession_notes_2/*.webp` (served as `/confession_notes_2/…`). */
 function confessionNoteImageUrl(globalId) {
-  return `/confession_notes_2/${globalId}.webp`;
+  return noteImageUrl(globalId, 'full');
 }
 
 const cleanString = (v) => (v == null ? '' : String(v).trim());
@@ -42,6 +42,7 @@ function rowToConfession(r) {
     globalId,
     id: numericId(globalId) ?? globalId,
     image: globalId ? confessionNoteImageUrl(globalId) : null,
+    thumb: globalId ? noteImageUrl(globalId, 'thumb') : null,
     transcription: cleanString(r['Transcription']),
     category: theme,
     metadata: {

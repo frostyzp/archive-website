@@ -8,6 +8,8 @@ import {
   useImperativeHandle,
   forwardRef,
   memo,
+  lazy,
+  Suspense,
 } from 'react';
 import { createPortal } from 'react-dom';
 import {
@@ -68,8 +70,11 @@ import {
   GRID_IMAGE_FILTER,
   NoiseDisplaceFilter,
 } from './NoiseDisplaceFilter';
-import CubeScene from './CubeScene';
+import LazyNoteImg from './LazyNoteImg';
+import { noteFullSrc, noteThumbSrc } from './noteImages';
 import { CURSOR_FLOAT, cursorOffset, floatAngles } from './cursorFloat';
+
+const CubeScene = lazy(() => import('./CubeScene'));
 const ease = [0.22, 1, 0.36, 1];
 /** Shared hover / color / opacity transition curve (ease-out-quart). */
 const HOVER_EASE = 'cubic-bezier(0.17, 0.84, 0.44, 1)';
@@ -3946,12 +3951,11 @@ function WallView({ confessions, sidebarInset = SIDEBAR_WIDTH, onExplore }) {
                     opacity: isDimmed(c) ? 0.12 : 1,
                   }}
                 >
-                  <img
+                  <LazyNoteImg
                     className="cstamp__img"
-                    src={c.image}
+                    src={noteThumbSrc(c)}
                     alt={`Note ${c.id}`}
                     draggable={false}
-                    loading="lazy"
                     decoding="async"
                     onError={() =>
                       setFailedIds((s) => {
@@ -6623,11 +6627,10 @@ function GridView({
                 }}
               >
                 {!loaded ? <TileAsciiFrame seed={c.id} /> : null}
-                <img
-                  src={c.image}
+                <LazyNoteImg
+                  src={noteThumbSrc(c)}
                   alt={`Note ${c.id}`}
                   draggable={false}
-                  loading="lazy"
                   decoding="async"
                   onError={() =>
                     setFailedIds((s) => {
@@ -7034,7 +7037,7 @@ function Lightbox({ confession, onClose, onPrev, onNext, onExplore }) {
                 }}
               >
                 <img
-                  src={confession.image}
+                  src={noteFullSrc(confession)}
                   alt={`Confession ${confession.id}`}
                   draggable={false}
                   style={{
@@ -7402,8 +7405,8 @@ function NoteDrawer({ confession, onClose, onPrev, onNext }) {
           {confession && (
             <>
               <motion.img
-                key={confession.image}
-                src={confession.image}
+                key={noteThumbSrc(confession) || confession.id}
+                src={noteThumbSrc(confession)}
                 alt={`Confession ${confession.id}`}
                 draggable={false}
                 initial={reduceMotion ? false : { opacity: 0, scale: 0.98 }}
@@ -7916,7 +7919,7 @@ function ExperimentStage({ note, reduceMotion, onPrev, onNext, canNav }) {
               }}
             >
               <img
-                src={note.image}
+                src={noteThumbSrc(note)}
                 alt={`Note ${note.id}`}
                 draggable={false}
                 style={{
@@ -8036,7 +8039,9 @@ function CubeView({ confessions, onExplore }) {
       }}
     >
       {notes.length > 0 ? (
-        <CubeScene notes={notes} onSelect={setSelected} />
+        <Suspense fallback={null}>
+          <CubeScene notes={notes} onSelect={setSelected} />
+        </Suspense>
       ) : (
         <div
           style={{
@@ -8342,7 +8347,7 @@ function ExperimentView({ confessions }) {
                   }}
                 >
                   <img
-                    src={note.image}
+                    src={noteThumbSrc(note)}
                     alt=""
                     aria-hidden="true"
                     draggable={false}

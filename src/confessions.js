@@ -9,14 +9,11 @@
  *  - metadata: { location, session, collected }
  */
 
-const NOTE_IMAGES = [
-  '/notes/AC_006.png',
-  '/notes/AC_007%201.png',
-  '/notes/AC_063.png',
-  '/notes/AC_141.png',
-];
+import { noteImageUrl } from './noteImages';
 
-const img = (i) => NOTE_IMAGES[i % NOTE_IMAGES.length];
+const NOTE_IDS = ['AC_006', 'AC_007', 'AC_063', 'AC_141'];
+const img = (i) => noteImageUrl(NOTE_IDS[i % NOTE_IDS.length], 'full');
+const thumbFor = (i) => noteImageUrl(NOTE_IDS[i % NOTE_IDS.length], 'thumb');
 
 const meta = (location, session, collected) => ({ location, session, collected });
 
@@ -73,11 +70,14 @@ const SESSIONS = ['26_1', '26_2', '26_3', '26_4', '26_5'];
 const DATES = ['4/10/26', '4/15/26', '4/20/26', '4/22/26', '4/28/26', '5/1/26'];
 
 const buildSet = (category, transcriptions, idStart, { reverseImages = false } = {}) =>
-  transcriptions.map((t, i) => ({
+  transcriptions.map((t, i) => {
+    const slot = reverseImages
+      ? (NOTE_IDS.length - 1 - i + NOTE_IDS.length) % NOTE_IDS.length
+      : i;
+    return {
     id: idStart + i,
-    image: reverseImages
-      ? NOTE_IMAGES[(NOTE_IMAGES.length - 1 - i + NOTE_IMAGES.length) % NOTE_IMAGES.length]
-      : img(i),
+    image: img(slot),
+    thumb: thumbFor(slot),
     transcription: t,
     category,
     metadata: meta(
@@ -85,7 +85,8 @@ const buildSet = (category, transcriptions, idStart, { reverseImages = false } =
       SESSIONS[(idStart + i) % SESSIONS.length],
       DATES[(idStart + i) % DATES.length],
     ),
-  }));
+  };
+  });
 
 export const CONFESSIONS = [
   ...buildSet('Refusal', REFUSAL, 1),

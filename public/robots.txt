@@ -1,2 +1,8 @@
 User-agent: *
 Allow: /
+Disallow: /confession_notes_2/
+Disallow: /notes/
+Disallow: /wwtai_2.svg
+Disallow: /wwtai_2.min.svg
+Disallow: /wordmark.svg
+Disallow: /intro-booth-table.png

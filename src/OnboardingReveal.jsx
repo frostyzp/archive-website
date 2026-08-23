@@ -31,6 +31,7 @@ import {
   useInactiveCardParams,
 } from './noise';
 import { NOTE_STILL_IDS } from './noteStills';
+import { noteImageUrl } from './noteImages';
 import AsciiWall from './AsciiWall';
 import WordmarkGL from './WordmarkGL';
 import WordmarkDraw from './WordmarkDraw';
@@ -1093,7 +1094,7 @@ const NOTES = [
     transcript: 'Forgive my sin: I talk to AI way more than to ALL people in my life, combined :(',
   },
 ];
-const noteSrc = (id) => `/confession_notes_2/${id}.webp`;
+const noteSrc = (id) => noteImageUrl(id, 'thumb');
 
 /* ─── Reveal primitives ───────────────────────────────────────────────── */
 
@@ -1565,7 +1566,7 @@ function IntroBoothStill({ width }) {
       >
         {printW ? <PrintMargin frameWidth={printW}>{BOOTH_CAPTION}</PrintMargin> : null}
         <img
-          src="/intro-booth-park.png"
+          src="/intro-booth-park.webp"
           alt="A hand-painted “Confession Box — everyone has an AI secret” sign staked in Dolores Park."
           draggable={false}
           loading="eager"

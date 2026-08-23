@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite --port 5190",
-    "build": "vite build",
+    "thumbs": "node scripts/generate-note-thumbs.mjs",
+    "build": "node scripts/generate-note-thumbs.mjs && vite build",
     "preview": "vite preview --port 5190"
   },
   "dependencies": {
@@ -22,6 +23,7 @@
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4",
+    "sharp": "^0.35.3",
     "vite": "^6"
   }
 }

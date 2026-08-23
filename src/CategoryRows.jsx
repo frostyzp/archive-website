@@ -18,6 +18,7 @@ import {
   CARD_WIDTH_MAX,
 } from './SideDial';
 import { useConfessions } from './useConfessions';
+import { noteThumbSrc } from './noteImages';
 import { CONFESSIONS as FALLBACK_CONFESSIONS } from './confessions';
 import { deriveEmotions, sortConfessionsByEmotions } from './themes';
 
@@ -399,7 +400,7 @@ function CategoryRow({
               }}
             >
               <img
-                src={note.image}
+                src={noteThumbSrc(note)}
                 alt=""
                 draggable={false}
                 decoding="async"
@@ -634,7 +635,7 @@ export default function CategoryRows() {
   // and how wide both should be. The note box is height-driven, so its height is
   // known outright and its width follows the note's own aspect ratio (up to the
   // cap) — which is what the divider has to match to sit flush with the edges.
-  const activeAspect = useNoteAspect(activeNote?.image);
+  const activeAspect = useNoteAspect(noteThumbSrc(activeNote));
   const activeHalfH = (noteBox.h * dial.activeScale) / 2;
   const paintedW = activeAspect
     ? Math.min(noteBox.maxW, noteBox.h * activeAspect)

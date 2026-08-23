@@ -25,6 +25,7 @@ import {
 import { themeStats, sortConfessionsByEmotions, formatCategoryLabel } from './themes';
 import { INK, inkA } from './colors';
 import { LINK_UNDERLINE } from './linkUnderline';
+import { noteThumbSrc } from './noteImages';
 
 /* ─────────────────────────────────────────────────────────
  * NOTE-OPEN VIEW
@@ -1656,7 +1657,7 @@ export default function NoteOpenView({
           <NoiseDisplaceFilter id={BRIDGE_FILTER_ID} animate={!reduceMotion} />
           <img
             ref={bridgeScope}
-            src={confession.image}
+            src={noteThumbSrc(confession)}
             alt=""
             draggable={false}
             style={{ ...st.bridge, filter: BRIDGE_FILTER }}

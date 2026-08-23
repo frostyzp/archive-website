@@ -119,7 +119,7 @@ function NoteTile({ note, position, cell, tilt, baseZ, onSelect, dragRef }) {
   const paperRef = useRef(null);
   const hovered = useRef(false);
   const [cellW, cellH] = cell;
-  const tex = useNoteTexture(note.image);
+  const tex = useNoteTexture(note.thumb || note.image);
 
   useFrame(() => {
     const m = paperRef.current;

@@ -324,7 +324,7 @@ const SWIPE = {
    notes' width the sign in it stops being legible. */
 const BOOTH = {
   key: 'booth',
-  src: '/intro-booth-park.png',
+  src: '/intro-booth-park.webp',
   alt: 'A hand-painted "Confession Box — everyone has an AI secret" sign staked in Dolores Park.',
   // Held at the size it always was while the notes grew past it.
   widthMul: 0.98,
@@ -712,7 +712,7 @@ function dealPose({ index, beat, reduceMotion, offstage }) {
   };
 }
 
-function PilePhoto({ photo, index, beat, leaving, reduceMotion, offstage }) {
+function PilePhoto({ photo, index, beat, leaving, reduceMotion, offstage, load }) {
   const rest = DEAL_SLOTS[index];
   const pose = leaving
     ? dispersePose({ ...rest, order: index })
@@ -740,7 +740,7 @@ function PilePhoto({ photo, index, beat, leaving, reduceMotion, offstage }) {
     >
       <div style={{ position: 'relative', width: '100%', flex: 'none' }}>
         <img
-          src={photo.src}
+          src={load ? photo.src : undefined}
           alt={photo.alt}
           draggable={false}
           style={{
@@ -1332,6 +1332,11 @@ export default function OnboardingBeats({
                   leaving={leaving}
                   reduceMotion={reduce}
                   offstage={offstage}
+                  load={
+                    leaving ||
+                    i < beat ||
+                    (i === beat && (beat > 0 || heroQuestionRevealed))
+                  }
                 />
               ))}
             </div>

@@ -132,7 +132,7 @@ const DEAL_SLOTS = [
    is built on — a print can only become a grid cell if the archive has a cell
    for it. */
 const PRINTS = [
-  { key: 'booth', src: '/intro-booth-park.png', widthMul: 0.98 },
+  { key: 'booth', src: '/intro-booth-park.webp', widthMul: 0.98 },
   { key: 'AC_171', noteId: 'AC_171', src: noteSrc('AC_171'), widthMul: 1 },
   { key: 'AC_148', noteId: 'AC_148', src: noteSrc('AC_148'), widthMul: 1 },
   { key: 'AC_185', noteId: 'AC_185', src: noteSrc('AC_185'), widthMul: 1 },
